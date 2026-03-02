@@ -24,6 +24,12 @@ local SOUNDS = {
   -- Day/night phase transition audio cues
   duskHorn = "rbxassetid://9114046944", -- deep foghorn/horn blast for nightfall
   dawnBell = "rbxassetid://9114049951", -- bell chime / rooster crow for dawn
+
+  -- Combat sounds
+  swingSwoosh = "rbxassetid://12222084", -- cutlass swing swoosh
+  hitPlayer = "rbxassetid://3932505093", -- impact on player hit
+  hitContainer = "rbxassetid://3084680507", -- impact on container hit
+  swingMiss = "rbxassetid://12222130", -- miss / air swoosh
 }
 
 -- Volume settings per sound type
@@ -33,6 +39,10 @@ local VOLUMES = {
   buttonClick = 0.3,
   duskHorn = 0.6,
   dawnBell = 0.5,
+  swingSwoosh = 0.5,
+  hitPlayer = 0.6,
+  hitContainer = 0.6,
+  swingMiss = 0.3,
 }
 
 -- References
@@ -151,6 +161,36 @@ function SoundController:PlayPhaseTransitionSound(phase: string)
     play2DSound(SOUNDS.duskHorn, VOLUMES.duskHorn)
   elseif phase == "Dawn" then
     play2DSound(SOUNDS.dawnBell, VOLUMES.dawnBell)
+  end
+end
+
+--[[
+	Plays the swing swoosh sound (on every attack).
+]]
+function SoundController:PlaySwingSound()
+  play2DSound(SOUNDS.swingSwoosh, VOLUMES.swingSwoosh)
+end
+
+--[[
+	Plays a combat hit sound at a 3D position.
+	@param hitType "player" | "container" | "miss"
+	@param parent BasePart to attach the 3D sound to (or nil for 2D)
+]]
+function SoundController:PlayCombatHitSound(hitType: string, parent: BasePart?)
+  if hitType == "player" then
+    if parent then
+      play3DSound(SOUNDS.hitPlayer, VOLUMES.hitPlayer, parent)
+    else
+      play2DSound(SOUNDS.hitPlayer, VOLUMES.hitPlayer)
+    end
+  elseif hitType == "container" then
+    if parent then
+      play3DSound(SOUNDS.hitContainer, VOLUMES.hitContainer, parent)
+    else
+      play2DSound(SOUNDS.hitContainer, VOLUMES.hitContainer)
+    end
+  elseif hitType == "miss" then
+    play2DSound(SOUNDS.swingMiss, VOLUMES.swingMiss)
   end
 end
 
