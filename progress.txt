@@ -884,3 +884,114 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
   shop only shows the 5 purchasable tiers
 - Next highest-priority features: LOOT-003 (container breaking VFX),
   COMBAT-005 (ragdoll physics), COMBAT-002 (heavy swing), UI-010 (gear shop UI)
+
+---
+
+## 2026-03-02 — LOOT-003: Container Breaking & Damage VFX System
+
+### What was done
+- Created `src/client/Controllers/ContainerVFXController.lua` — a client-side Knit
+  controller that provides visual and audio feedback for container damage states
+  and breaking.
+- Extended `src/client/Controllers/SoundController.lua` with escalating container
+  hit sounds (3 tiers) and container break sounds.
+
+### ContainerVFXController.lua — complete implementation
+
+#### Container tracking
+- Tracks all containers via server signals (ContainerSpawned, ContainerDamaged,
+  ContainerBroken) — no client-side prediction
+- Each container is tracked with model reference, HP fraction, and VFX state
+- Container models are found by naming convention (`Container_{id}` in
+  `workspace.Containers`) and cached for performance
+
+#### Hit impact VFX (every hit)
+- Spawns a brief particle burst on the container body on each hit
+- Particle color shifts based on HP: brown wood chips (healthy) → mixed
+  wood/gold (cracking) → bright gold (leaking, close to breaking)
+- Particle count escalates: 6 (healthy) → 12 (cracking) → 20 (leaking)
+- Uses Attachment + ParticleEmitter with :Emit() burst, cleaned up via Debris
+
+#### Cracking VFX (50% HP threshold)
+- Material changes to CrackedLava to visually show structural damage
+- Highlight instance with dark brown fill/outline for crack overlay effect
+- Original material is stored as attribute for potential restoration
+
+#### Gold light leak VFX (25% HP threshold)
+- Highlight transitions to gold tint (FillColor + OutlineColor)
+- Pulsing PointLight (gold, range 12) with Sine InOut tween for breathing glow
+- Gold particle emitter (rate=8) with LightEmission for visible leak through cracks
+- Builds on top of cracking state (both active simultaneously)
+
+#### Break explosion VFX (0% HP)
+- Debris particle burst (25 particles) — color matches container type:
+  wood brown (default), metal grey (reinforced trunk), gold (captain's vault),
+  purple (cursed chest)
+- Gold coin particle burst (30 particles) with LightEmission for visible
+  doubloon scatter visual
+- Brief PointLight flash (brightness 5 → 0 over 0.4s) for impact feel
+- All VFX anchored to a temporary invisible Part, cleaned up via Debris (2s)
+
+#### VFX state machine
+- Three states: "healthy" → "cracking" → "leaking"
+- State transitions only fire VFX changes when crossing thresholds
+- Clean transitions: moving from leaking → healthy cleans up all VFX,
+  moving between states properly layers effects
+
+### SoundController.lua changes
+- **New sound IDs**: `containerHitQuiet`, `containerHitMedium`, `containerHitLoud`
+  (using base container hit sound with volume scaling), `containerBreak`
+  (rbxassetid://5743416168 — shatter/explosion), `containerBreakVault`
+  (louder variant for Captain's Vault)
+- **New volumes**: containerHitQuiet=0.3, containerHitMedium=0.5,
+  containerHitLoud=0.8, containerBreak=0.7, containerBreakVault=1.0
+- **New method**: `PlayContainerHitSound(tier, parent?)` — plays escalating
+  3D hit sound based on tier ("quiet" | "medium" | "loud")
+- **New method**: `PlayContainerBreakSound(containerType, position)` — plays
+  3D break sound at a world position; Captain's Vault gets louder variant
+
+### How it integrates with existing systems
+- **ContainerService**: Already fires ContainerDamaged(containerId, hpFraction)
+  and ContainerBroken(containerId, containerType, position) to all clients.
+  ContainerVFXController connects to these signals — zero server changes needed.
+- **CombatService**: Already handles hit detection and calls
+  ContainerService:DamageContainer(). No changes needed.
+- **SoundController**: New methods extend the existing pattern. ContainerVFXController
+  delegates all sound to SoundController which respects sfxEnabled setting.
+
+### Acceptance criteria verification
+- [x] Container HP is tracked and validated server-side only (ContainerService,
+      already implemented in LOOT-002)
+- [x] Damage applied equals the player's equipped gear damage value
+      (CombatService, already implemented in COMBAT-001)
+- [x] Visual states change at 50% HP (cracking: CrackedLava material +
+      Highlight overlay) and 25% HP (gold light: pulsing PointLight +
+      gold particles + gold Highlight tint)
+- [x] Container break triggers scatter when HP hits 0 (ContainerService
+      already scatters via DoubloonService; VFX now shows break explosion)
+- [x] Any player can hit any container (CombatService hit detection is
+      player-agnostic)
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via StyLua
+  formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The container hit sound IDs (containerHitQuiet/Medium/Loud) all use the same
+  base asset with volume scaling. Replace with 3 distinct audio assets from the
+  Creator Store if available (wood cracking at different intensities).
+- The break sound (rbxassetid://5743416168) should be verified in Studio.
+  Replace with a custom shatter sound if it doesn't sound right.
+- To consume container VFX events from another controller, listen to the same
+  ContainerService signals (ContainerDamaged, ContainerBroken, ContainerSpawned)
+- The VFX controller auto-discovers via Knit (placed in Controllers folder)
+- The Highlight instance is used for crack/gold overlays because it works
+  well with placeholder box models. When MODEL-001 provides proper 3D models,
+  consider SurfaceGui or mesh-based crack decals instead.
+- The gold leak pulsing PointLight tween repeats infinitely (-1 repeat count).
+  It is cleaned up when the container breaks or VFX are cleared.
+- LOOT-004 (Container Break Sound Escalation) is a separate feature that adds
+  more detailed audio escalation. The current 3-tier system provides basic
+  escalation; LOOT-004 can build on this with distinct audio assets.
+- Next highest-priority features: LOOT-004 (detailed sound escalation),
+  COMBAT-005 (ragdoll physics), COMBAT-002 (heavy swing), UI-010 (gear shop UI),
+  UI-001 (HUD doubloons counter)

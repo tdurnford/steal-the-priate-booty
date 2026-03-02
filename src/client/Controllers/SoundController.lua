@@ -30,6 +30,15 @@ local SOUNDS = {
   hitPlayer = "rbxassetid://3932505093", -- impact on player hit
   hitContainer = "rbxassetid://3084680507", -- impact on container hit
   swingMiss = "rbxassetid://12222130", -- miss / air swoosh
+
+  -- Container damage escalation sounds (3 tiers)
+  containerHitQuiet = "rbxassetid://3084680507", -- light tap (same base, lower vol)
+  containerHitMedium = "rbxassetid://3084680507", -- medium crack
+  containerHitLoud = "rbxassetid://3084680507", -- loud cracking/splintering
+
+  -- Container break sound
+  containerBreak = "rbxassetid://5743416168", -- satisfying explosion/shatter
+  containerBreakVault = "rbxassetid://5743416168", -- louder variant for Captain's Vault
 }
 
 -- Volume settings per sound type
@@ -43,6 +52,11 @@ local VOLUMES = {
   hitPlayer = 0.6,
   hitContainer = 0.6,
   swingMiss = 0.3,
+  containerHitQuiet = 0.3,
+  containerHitMedium = 0.5,
+  containerHitLoud = 0.8,
+  containerBreak = 0.7,
+  containerBreakVault = 1.0,
 }
 
 -- References
@@ -192,6 +206,61 @@ function SoundController:PlayCombatHitSound(hitType: string, parent: BasePart?)
   elseif hitType == "miss" then
     play2DSound(SOUNDS.swingMiss, VOLUMES.swingMiss)
   end
+end
+
+--[[
+	Plays an escalating container hit sound based on damage tier.
+	Volume increases as the container approaches breaking.
+	@param tier "quiet" | "medium" | "loud"
+	@param parent BasePart to attach 3D sound to
+]]
+function SoundController:PlayContainerHitSound(tier: string, parent: BasePart?)
+  local soundKey = "containerHitQuiet"
+  if tier == "medium" then
+    soundKey = "containerHitMedium"
+  elseif tier == "loud" then
+    soundKey = "containerHitLoud"
+  end
+
+  if parent then
+    play3DSound(SOUNDS[soundKey], VOLUMES[soundKey], parent)
+  else
+    play2DSound(SOUNDS[soundKey], VOLUMES[soundKey])
+  end
+end
+
+--[[
+	Plays the container break sound at a 3D position.
+	Captain's Vault gets a louder, more distinct break sound.
+	@param containerType The container type ID
+	@param position World position for the sound
+]]
+function SoundController:PlayContainerBreakSound(containerType: string, position: Vector3)
+  local soundKey = "containerBreak"
+  if containerType == "captains_vault" then
+    soundKey = "containerBreakVault"
+  end
+
+  -- Create a temporary part at the position for 3D audio
+  local anchor = Instance.new("Part")
+  anchor.Name = "BreakSoundAnchor"
+  anchor.Size = Vector3.new(1, 1, 1)
+  anchor.Position = position
+  anchor.Anchored = true
+  anchor.CanCollide = false
+  anchor.CanQuery = false
+  anchor.CanTouch = false
+  anchor.Transparency = 1
+  anchor.Parent = workspace
+
+  play3DSound(SOUNDS[soundKey], VOLUMES[soundKey], anchor)
+
+  -- Clean up anchor after sound finishes
+  task.delay(3, function()
+    if anchor and anchor.Parent then
+      anchor:Destroy()
+    end
+  end)
 end
 
 --[[
