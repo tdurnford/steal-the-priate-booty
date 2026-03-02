@@ -770,3 +770,117 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Next highest-priority features: COMBAT-005 (ragdoll physics — would make
   combat feel better), LOOT-003 (container breaking VFX), GEAR-002 (gear
   purchase & equip), COMBAT-002 (heavy swing)
+
+---
+
+## 2026-03-02 — GEAR-002: Gear Purchase & Equip System
+
+### What was done
+- Created `src/server/Services/GearService.lua` — a server-authoritative Knit
+  service that handles gear purchasing, equipping, and visual tool replication.
+- Created `src/client/Controllers/GearController.lua` — a client-side Knit
+  controller that tracks equipped/owned gear and provides API for shop UI.
+
+### GearService.lua — complete implementation
+
+#### Client-callable methods
+- `Client:PurchaseGear(gearId)` — validates via DataService.PurchaseGear
+  (checks config existence, ownership, treasury balance), auto-equips on
+  purchase, gives visual tool, fires GearChanged signal
+- `Client:EquipGear(gearId)` — validates via DataService.EquipGear (checks
+  ownership), swaps visual tool, fires GearChanged signal
+- `Client:GetOwnedGear()` — returns a copy of owned gear IDs array
+- `Client:GetGearCatalog()` — returns full catalog with id, name, cost,
+  containerDamage, displayOrder, owned, equipped status per entry (excludes
+  tutorial driftwood from shop listing)
+
+#### Visual gear tool system
+- Creates a Roblox Tool with a colored Handle part per gear tier
+- Placeholder visuals: Driftwood (brown wood), Rusty (dark grey metal),
+  Iron (medium grey), Steel (white metal), Captain's Saber (yellow metal),
+  Legendary Blade (orange neon with PointLight glow)
+- Tool is parented directly to the character (always held, not in backpack)
+- `CanBeDropped = false` prevents players from discarding their weapon
+- Old tools are cleaned up before giving new ones (both character and backpack)
+- Legendary Blade has a gold PointLight (range=8) for visual distinction
+
+#### Character lifecycle
+- On DataService.PlayerDataLoaded: gives gear tool for equipped weapon
+  (waits for CharacterAdded if character doesn't exist yet)
+- On CharacterAdded (respawn): re-gives gear tool via task.defer
+- On PlayerRemoving: cleans up tool reference
+- Handles studio edge case (players already in game when Knit starts)
+
+#### Server-side signals
+- `GearService.GearPurchased` (GoodSignal): fires `(player, gearId)` on purchase
+- `GearService.GearEquipped` (GoodSignal): fires `(player, gearId)` on equip
+
+#### Client signal
+- `GearService.Client.GearChanged` (Knit RemoteSignal): fires `(gearId, action)`
+  where action is "purchased" or "equipped"
+
+### GearController.lua — complete implementation
+
+#### State tracking
+- Loads initial gear state from DataService:GetData() on KnitStart
+- Listens to GearService.GearChanged for purchase/equip updates
+- Listens to DataService.DataChanged for equippedGear/ownedGear sync
+- Plays purchase SFX via SoundController on gear purchase
+
+#### Public API
+- `GetEquippedGear()` — returns current gear ID string
+- `GetEquippedGearDef()` — returns the GameConfig.GearDef for equipped gear
+- `OwnsGear(gearId)` — checks local owned gear cache
+- `PurchaseGear(gearId)` — sends purchase request to server (returns Promise)
+- `EquipGear(gearId)` — sends equip request to server (returns Promise)
+- `GetGearCatalog()` — fetches full catalog from server (returns Promise)
+
+#### Public signal
+- `GearController.GearChanged` (GoodSignal): fires `(gearId, action)` locally
+  so other controllers (CombatController, future ShopUI) can react
+
+### How it integrates with existing systems
+- **DataService**: All persistence (PurchaseGear, EquipGear, OwnsGear) is
+  delegated to DataService. GearService is a thin client-facing layer.
+- **CombatService**: Already reads equipped gear via DataService:GetEquippedGear()
+  → GameConfig.GearById for damage values. No changes needed to CombatService.
+- **SoundController**: Purchase SFX already existed (PlayPurchaseSound).
+  GearController calls it on successful purchase.
+- **GameConfig**: Gear definitions (5 purchasable + driftwood) already defined.
+  GearById lookup used by both GearService and CombatService.
+
+### Acceptance criteria verification
+- [x] Players can purchase gear with treasury doubloons (Client:PurchaseGear
+      → DataService:PurchaseGear validates and deducts)
+- [x] Treasury is correctly deducted on purchase (DataService handles deduction)
+- [x] Purchased gear is permanent and persists across sessions (ProfileService)
+- [x] Only one cutlass can be equipped at a time (DataService.EquipGear sets
+      single equippedGear field)
+- [x] Equipped cutlass model is visible on the player character (Tool with
+      colored Handle part, replicated via Roblox character parenting)
+- [x] Cannot purchase gear player already owns (DataService.PurchaseGear
+      returns false, "Already owned")
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via StyLua
+  formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The gear tool models are placeholder colored parts — when MODEL-004
+  (Cutlass Weapon Models) is implemented, replace `createGearTool()` in
+  GearService with proper 3D models from the asset library
+- The Tool is parented to character (always held), not backpack. This means
+  players always have their cutlass visible. If you want equip/unequip toggle,
+  move the tool between backpack and character.
+- Auto-equip on purchase is a design choice — newly bought gear is immediately
+  equipped. If that's not desired, remove the DataService:EquipGear call from
+  Client:PurchaseGear.
+- GearController.GearChanged signal is how UI-010 (Gear Shop UI) should
+  react to purchase/equip events for updating shop state
+- To consume gear change events from another service:
+  `GearService.GearEquipped:Connect(function(player, gearId) ... end)`
+- To consume from a client controller:
+  `GearController.GearChanged:Connect(function(gearId, action) ... end)`
+- The GetGearCatalog method filters out driftwood (isTutorial=true) so the
+  shop only shows the 5 purchasable tiers
+- Next highest-priority features: LOOT-003 (container breaking VFX),
+  COMBAT-005 (ragdoll physics), COMBAT-002 (heavy swing), UI-010 (gear shop UI)
