@@ -1,16 +1,18 @@
 --[[
   CombatService.lua
-  Server-authoritative combat service for light swing attacks.
+  Server-authoritative combat service for light and heavy swing attacks.
 
   Handles:
     - Validating client attack inputs (cooldowns, state checks)
-    - Server-side hit detection (raycast forward arc, short range)
+    - Server-side hit detection (forward arc, short/medium range)
+    - Light swing: fast 0.4s cooldown, 8 stud range, 70° arc
+    - Heavy swing: 0.8s charge, 1.2s cooldown, 10 stud range, 90° arc
     - Damage to containers (gear containerDamage value)
     - Damage to players (ragdoll + loot spill)
     - Per-target hit cooldown enforcement (2s)
     - Rate-limiting attack inputs to prevent exploit spam
 
-  Client sends attack intent via AttackRequest.
+  Client sends attack intent via AttackRequest (light) or HeavyAttackRequest (heavy).
   Server validates, performs hit detection, and fires results back.
 ]]
 
@@ -28,12 +30,16 @@ local CombatService = Knit.CreateService({
   Name = "CombatService",
   Client = {
     -- Client fires this to request a light swing attack.
-    -- Args: (direction: Vector3) — the look direction of the attacker
     AttackRequest = Knit.CreateSignal(),
 
+    -- Client fires this to request a heavy swing attack.
+    -- Args: (chargeTime: number) — how long the client held the button
+    HeavyAttackRequest = Knit.CreateSignal(),
+
     -- Fired to the attacker when their swing connects.
-    -- Args: (hitType: string, targetName: string?)
+    -- Args: (hitType: string, targetName: string?, attackType: string?)
     --   hitType: "player" | "container" | "npc" | "miss"
+    --   attackType: "light" | "heavy"
     SwingResult = Knit.CreateSignal(),
 
     -- Fired to a player when they are hit and should ragdoll.
@@ -64,6 +70,12 @@ local LIGHT_SWING_RANGE = 8 -- studs
 local LIGHT_SWING_ARC = math.rad(70) -- 70 degree half-angle cone
 local LIGHT_SWING_COOLDOWN = GameConfig.Combat.lightSwingCooldown -- 0.4s
 
+-- Heavy swing parameters
+local HEAVY_SWING_RANGE = GameConfig.Combat.heavySwingRange -- 10 studs
+local HEAVY_SWING_ARC = math.rad(GameConfig.Combat.heavySwingArc) -- 90 degree half-angle cone
+local HEAVY_SWING_COOLDOWN = GameConfig.Combat.heavySwingCooldown -- 1.2s
+local HEAVY_SWING_CHARGE_TIME = GameConfig.Combat.heavySwingChargeTime -- 0.8s
+
 --------------------------------------------------------------------------------
 -- INTERNAL HELPERS
 --------------------------------------------------------------------------------
@@ -89,12 +101,13 @@ local function getGearDamage(player: Player): number
 end
 
 --[[
-  Validates that a player can perform a light swing attack.
+  Validates that a player can perform an attack.
   Checks: session initialized, not ragdolling, not in recovery, cooldown elapsed.
   @param player The attacking player
+  @param cooldown The cooldown duration for this attack type
   @return (canAttack: boolean, reason: string?)
 ]]
-local function validateAttack(player: Player): (boolean, string?)
+local function validateAttack(player: Player, cooldown: number): (boolean, string?)
   if not SessionStateService or not SessionStateService:IsInitialized(player) then
     return false, "Session not initialized"
   end
@@ -110,7 +123,7 @@ local function validateAttack(player: Player): (boolean, string?)
   -- Rate limiting: enforce minimum cooldown between attacks
   local now = os.clock()
   local lastAttack = LastAttackTime[player]
-  if lastAttack and (now - lastAttack) < LIGHT_SWING_COOLDOWN then
+  if lastAttack and (now - lastAttack) < cooldown then
     return false, "Attack on cooldown"
   end
 
@@ -132,13 +145,20 @@ end
   Checks if a target position is within the attacker's forward arc.
   @param attackerCFrame The attacker's CFrame (position + facing)
   @param targetPosition The target's world position
+  @param range The max range in studs
+  @param arc The max half-angle in radians
   @return true if target is within range and arc
 ]]
-local function isInSwingArc(attackerCFrame: CFrame, targetPosition: Vector3): boolean
+local function isInSwingArc(
+  attackerCFrame: CFrame,
+  targetPosition: Vector3,
+  range: number,
+  arc: number
+): boolean
   local toTarget = targetPosition - attackerCFrame.Position
   local distance = toTarget.Magnitude
 
-  if distance > LIGHT_SWING_RANGE then
+  if distance > range then
     return false
   end
 
@@ -148,18 +168,20 @@ local function isInSwingArc(attackerCFrame: CFrame, targetPosition: Vector3): bo
   local dotProduct = lookDir:Dot(dirToTarget)
   local angle = math.acos(math.clamp(dotProduct, -1, 1))
 
-  return angle <= LIGHT_SWING_ARC
+  return angle <= arc
 end
 
 --[[
-  Performs server-side hit detection for a light swing.
+  Performs server-side hit detection for a swing attack.
   Checks for player targets and container targets in the attacker's forward arc.
   @param attacker The attacking player
+  @param range The max range in studs
+  @param arc The max half-angle in radians
   @return (hitType: string, target: any?)
     hitType: "player" | "container" | "miss"
     target: Player (for player hits) or container entry table (for container hits)
 ]]
-local function performHitDetection(attacker: Player): (string, any?)
+local function performHitDetection(attacker: Player, range: number, arc: number): (string, any?)
   local attackerHRP = getHRP(attacker)
   if not attackerHRP then
     return "miss", nil
@@ -175,7 +197,7 @@ local function performHitDetection(attacker: Player): (string, any?)
     if otherPlayer ~= attacker then
       local otherHRP = getHRP(otherPlayer)
       if otherHRP then
-        if isInSwingArc(attackerCFrame, otherHRP.Position) then
+        if isInSwingArc(attackerCFrame, otherHRP.Position, range, arc) then
           -- Check per-target cooldown
           if SessionStateService:CanHitTarget(attacker, otherPlayer.UserId) then
             -- Check target is not already ragdolling
@@ -197,13 +219,10 @@ local function performHitDetection(attacker: Player): (string, any?)
   end
 
   -- Check container targets
-  -- Use a raycast to find containers in the swing arc
   local closestContainerDist = math.huge
   local closestContainerEntry = nil
 
   if ContainerService then
-    -- Check all containers within range using their position
-    -- (Iterating active containers is more reliable than raycasting for box models)
     local rayOrigin = attackerCFrame.Position
     for _, child in
       workspace:FindFirstChild("Containers") and workspace.Containers:GetChildren() or {}
@@ -211,7 +230,7 @@ local function performHitDetection(attacker: Player): (string, any?)
       if child:IsA("Model") then
         local body = child:FindFirstChild("Body")
         if body and body:IsA("BasePart") then
-          if isInSwingArc(attackerCFrame, body.Position) then
+          if isInSwingArc(attackerCFrame, body.Position, range, arc) then
             local dist = (body.Position - rayOrigin).Magnitude
             if dist < closestContainerDist then
               local entry = ContainerService:GetContainerByPart(body)
@@ -236,13 +255,26 @@ end
 --[[
   Handles a player hitting another player.
   Applies ragdoll, calculates loot spill, scatters doubloons.
+  @param attacker The attacking player
+  @param target The hit player
+  @param attackType "light" | "heavy" — determines ragdoll/knockback/spill values
 ]]
-local function handlePlayerHit(attacker: Player, target: Player)
+local function handlePlayerHit(attacker: Player, target: Player, attackType: string)
   -- Record the hit for per-target cooldown
   SessionStateService:RecordHitTarget(attacker, target.UserId)
 
-  -- Apply ragdoll (light hit = 1.5s)
-  local ragdollDuration = GameConfig.Ragdoll.lightHitDuration
+  -- Select ragdoll/knockback/spill values based on attack type
+  local isHeavy = attackType == "heavy"
+  local ragdollDuration = if isHeavy
+    then GameConfig.Ragdoll.heavyHitDuration
+    else GameConfig.Ragdoll.lightHitDuration
+  local knockbackForce = if isHeavy
+    then GameConfig.Ragdoll.heavyHitKnockback
+    else GameConfig.Ragdoll.lightHitKnockback
+  local spillPercent = if isHeavy
+    then GameConfig.LootSpill.heavyHitPercent
+    else GameConfig.LootSpill.lightHitPercent
+
   SessionStateService:StartRagdoll(target, ragdollDuration)
 
   -- Calculate knockback velocity: push target away from attacker
@@ -260,7 +292,7 @@ local function handlePlayerHit(attacker: Player, target: Player)
       knockbackDir = attackerHRP.CFrame.LookVector
       knockbackDir = Vector3.new(knockbackDir.X, 0, knockbackDir.Z).Unit
     end
-    knockbackVelocity = knockbackDir * GameConfig.Ragdoll.lightHitKnockback
+    knockbackVelocity = knockbackDir * knockbackForce
   end
 
   -- Notify the target to ragdoll visually (with knockback)
@@ -271,11 +303,10 @@ local function handlePlayerHit(attacker: Player, target: Player)
     knockbackVelocity
   )
 
-  -- Calculate loot spill (light hit = 10%)
+  -- Calculate loot spill
   local heldDoubloons = SessionStateService:GetHeldDoubloons(target)
   local hasBounty = SessionStateService:HasBounty(target)
-  local spillAmount =
-    GameConfig.calculateSpill(heldDoubloons, GameConfig.LootSpill.lightHitPercent, hasBounty)
+  local spillAmount = GameConfig.calculateSpill(heldDoubloons, spillPercent, hasBounty)
 
   if spillAmount > 0 then
     -- Deduct from target
@@ -286,7 +317,7 @@ local function handlePlayerHit(attacker: Player, target: Player)
     local spillPos = if spillHRP then spillHRP.Position else Vector3.new(0, 5, 0)
 
     if DoubloonService then
-      DoubloonService:ScatterDoubloons(spillPos, spillAmount, 4)
+      DoubloonService:ScatterDoubloons(spillPos, spillAmount, if isHeavy then 6 else 4)
     end
 
     -- Notify nearby clients for VFX
@@ -298,8 +329,9 @@ local function handlePlayerHit(attacker: Player, target: Player)
 
   print(
     string.format(
-      "[CombatService] %s hit %s — ragdoll %.1fs, spilled %d doubloons",
+      "[CombatService] %s %s-hit %s — ragdoll %.1fs, spilled %d doubloons",
       attacker.Name,
+      attackType,
       target.Name,
       ragdollDuration,
       spillAmount
@@ -332,16 +364,16 @@ local function handleContainerHit(attacker: Player, containerEntry: any)
 end
 
 --------------------------------------------------------------------------------
--- CLIENT REQUEST HANDLER
+-- CLIENT REQUEST HANDLERS
 --------------------------------------------------------------------------------
 
 --[[
-  Called when a client fires AttackRequest.
+  Called when a client fires AttackRequest (light swing).
   Validates the attack, performs hit detection, and processes the result.
 ]]
 local function onAttackRequest(player: Player)
-  -- Validate the attack
-  local canAttack, reason = validateAttack(player)
+  -- Validate the attack (use the larger of light/heavy cooldown for rate limit)
+  local canAttack, reason = validateAttack(player, LIGHT_SWING_COOLDOWN)
   if not canAttack then
     return
   end
@@ -349,17 +381,58 @@ local function onAttackRequest(player: Player)
   -- Record attack timestamp for rate limiting
   LastAttackTime[player] = os.clock()
 
-  -- Perform hit detection
-  local hitType, target = performHitDetection(player)
+  -- Perform hit detection with light swing range/arc
+  local hitType, target = performHitDetection(player, LIGHT_SWING_RANGE, LIGHT_SWING_ARC)
 
   if hitType == "player" and target then
-    handlePlayerHit(player, target :: Player)
-    CombatService.Client.SwingResult:Fire(player, "player", (target :: Player).Name)
+    handlePlayerHit(player, target :: Player, "light")
+    CombatService.Client.SwingResult:Fire(player, "player", (target :: Player).Name, "light")
   elseif hitType == "container" and target then
     handleContainerHit(player, target)
-    CombatService.Client.SwingResult:Fire(player, "container", nil)
+    CombatService.Client.SwingResult:Fire(player, "container", nil, "light")
   else
-    CombatService.Client.SwingResult:Fire(player, "miss", nil)
+    CombatService.Client.SwingResult:Fire(player, "miss", nil, "light")
+  end
+end
+
+--[[
+  Called when a client fires HeavyAttackRequest (heavy swing).
+  Validates charge time, cooldown, performs wide-arc hit detection.
+  @param player The attacking player
+  @param chargeTime How long the client claims to have charged (sanity checked)
+]]
+local function onHeavyAttackRequest(player: Player, chargeTime: number)
+  -- Sanity check chargeTime is a number
+  if type(chargeTime) ~= "number" then
+    return
+  end
+
+  -- Validate the attack with heavy cooldown
+  local canAttack, reason = validateAttack(player, HEAVY_SWING_COOLDOWN)
+  if not canAttack then
+    return
+  end
+
+  -- Validate charge time was sufficient (with small tolerance for network latency)
+  if chargeTime < (HEAVY_SWING_CHARGE_TIME - 0.1) then
+    return
+  end
+
+  -- Record attack timestamp for rate limiting
+  LastAttackTime[player] = os.clock()
+
+  -- Perform hit detection with heavy swing range/arc (wider + longer)
+  local hitType, target = performHitDetection(player, HEAVY_SWING_RANGE, HEAVY_SWING_ARC)
+
+  if hitType == "player" and target then
+    handlePlayerHit(player, target :: Player, "heavy")
+    CombatService.Client.SwingResult:Fire(player, "player", (target :: Player).Name, "heavy")
+  elseif hitType == "container" and target then
+    -- Heavy swing deals 2x gear damage to containers
+    handleContainerHit(player, target)
+    CombatService.Client.SwingResult:Fire(player, "container", nil, "heavy")
+  else
+    CombatService.Client.SwingResult:Fire(player, "miss", nil, "heavy")
   end
 end
 
@@ -381,6 +454,10 @@ function CombatService:KnitStart()
   -- Listen for client attack requests
   self.Client.AttackRequest:Connect(function(player: Player)
     onAttackRequest(player)
+  end)
+
+  self.Client.HeavyAttackRequest:Connect(function(player: Player, chargeTime: number)
+    onHeavyAttackRequest(player, chargeTime)
   end)
 
   -- Clean up rate limiting data on player leave

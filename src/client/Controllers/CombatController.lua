@@ -1,12 +1,14 @@
 --[[
   CombatController.lua
-  Client-side combat input handler for light swing attacks.
+  Client-side combat input handler for light and heavy swing attacks.
 
   Handles:
-    - Detecting primary click (Mouse1 / Touch tap) for light swing
+    - Detecting primary click (Mouse1 / Touch tap) for combat
+    - Tap / quick release → light swing (fast, 0.4s cooldown)
+    - Hold 0.8s then release → heavy swing (charge, 1.2s cooldown, vulnerable)
     - Sending attack intent to CombatService
     - Client-side cooldown display (to prevent spamming the server)
-    - Playing swing animation and SFX on attack
+    - Playing swing/charge animations and SFX on attack
     - Receiving hit confirmation and ragdoll triggers from server
     - Physics-based ragdoll via RagdollModule (joint disabling, knockback, tumble)
     - Character respawn cleanup for ragdoll state
@@ -18,6 +20,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 
 local Packages = ReplicatedStorage:WaitForChild("Packages")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -40,8 +43,20 @@ local LastSwingTime = 0
 local IsRagdolled = false
 local RagdollEndTime = 0
 
--- Client-side cooldown (mirrors server for responsive feel)
-local LIGHT_SWING_COOLDOWN = GameConfig.Combat.lightSwingCooldown
+-- Charge state
+local IsCharging = false
+local ChargeStartTime = 0
+local ChargeReady = false -- true when charge threshold is met
+local ChargeVFXPart: BasePart? = nil
+local ChargeTween: Tween? = nil
+
+-- Tracks the active ragdoll cleanup task so overlapping ragdolls cancel the old one
+local RagdollCleanupThread: thread? = nil
+
+-- Config values
+local LIGHT_SWING_COOLDOWN = GameConfig.Combat.lightSwingCooldown -- 0.4s
+local HEAVY_SWING_COOLDOWN = GameConfig.Combat.heavySwingCooldown -- 1.2s
+local HEAVY_CHARGE_TIME = GameConfig.Combat.heavySwingChargeTime -- 0.8s
 
 --------------------------------------------------------------------------------
 -- INTERNAL HELPERS
@@ -72,18 +87,15 @@ local function getLocalHumanoid(): Humanoid?
 end
 
 --[[
-  Plays a simple swing animation on the local character.
+  Plays a light swing animation on the local character.
   Uses a placeholder animation — replace with proper cutlass animation later.
 ]]
-local function playSwingAnimation()
+local function playLightSwingAnimation()
   local humanoid = getLocalHumanoid()
   if not humanoid then
     return
   end
 
-  -- Create a simple animation track for the swing.
-  -- This uses a generic slash animation ID as a placeholder.
-  -- Replace with custom cutlass animation when COMBAT-VFX-001 is implemented.
   local animator = humanoid:FindFirstChildOfClass("Animator")
   if not animator then
     return
@@ -97,47 +109,193 @@ local function playSwingAnimation()
   animation:Destroy()
 end
 
--- Tracks the active ragdoll cleanup task so overlapping ragdolls cancel the old one
-local RagdollCleanupThread: thread? = nil
+--[[
+  Plays a heavy swing animation on the local character.
+  Slower, more dramatic slash with full weight.
+]]
+local function playHeavySwingAnimation()
+  local humanoid = getLocalHumanoid()
+  if not humanoid then
+    return
+  end
+
+  local animator = humanoid:FindFirstChildOfClass("Animator")
+  if not animator then
+    return
+  end
+
+  local animation = Instance.new("Animation")
+  animation.AnimationId = "rbxassetid://522635514" -- same placeholder, different speed
+  local track = animator:LoadAnimation(animation)
+  track.Priority = Enum.AnimationPriority.Action4
+  track:Play(0.05, 1, 1) -- slower speed for heavy feel
+  animation:Destroy()
+end
 
 --[[
-  Checks if the client-side cooldown has elapsed.
+  Creates a charge-up glow VFX on the player's weapon/hand.
+  A gold-orange point light that intensifies during charge.
+]]
+local function startChargeVFX()
+  -- Clean up any existing charge VFX
+  if ChargeVFXPart then
+    ChargeVFXPart:Destroy()
+    ChargeVFXPart = nil
+  end
+  if ChargeTween then
+    ChargeTween:Cancel()
+    ChargeTween = nil
+  end
+
+  local character = LocalPlayer.Character
+  if not character then
+    return
+  end
+
+  -- Attach to the right hand or HumanoidRootPart
+  local attachParent = character:FindFirstChild("RightHand")
+    or character:FindFirstChild("Right Arm")
+    or character:FindFirstChild("HumanoidRootPart")
+  if not attachParent or not attachParent:IsA("BasePart") then
+    return
+  end
+
+  -- Create a glow light that intensifies during charge
+  local light = Instance.new("PointLight")
+  light.Name = "ChargeGlow"
+  light.Color = Color3.fromRGB(255, 180, 50) -- warm gold-orange
+  light.Brightness = 0
+  light.Range = 0
+  light.Parent = attachParent
+
+  -- Tween the light intensity over the charge duration
+  local tweenInfo = TweenInfo.new(HEAVY_CHARGE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+  ChargeTween = TweenService:Create(light, tweenInfo, {
+    Brightness = 4,
+    Range = 12,
+  })
+  ChargeTween:Play()
+
+  -- Store reference for cleanup
+  ChargeVFXPart = light :: any
+end
+
+--[[
+  Cleans up any active charge VFX.
+]]
+local function stopChargeVFX()
+  if ChargeTween then
+    ChargeTween:Cancel()
+    ChargeTween = nil
+  end
+  if ChargeVFXPart then
+    ChargeVFXPart:Destroy()
+    ChargeVFXPart = nil
+  end
+end
+
+--[[
+  Checks if the client-side cooldown has elapsed for a given cooldown duration.
+  @param cooldown The cooldown time to check against
   @return true if the player can swing
 ]]
-local function canSwing(): boolean
+local function canSwing(cooldown: number): boolean
   if IsRagdolled then
     return false
   end
 
   local now = os.clock()
-  return (now - LastSwingTime) >= LIGHT_SWING_COOLDOWN
+  return (now - LastSwingTime) >= cooldown
 end
 
 --------------------------------------------------------------------------------
--- INPUT HANDLING
+-- CHARGE & ATTACK
 --------------------------------------------------------------------------------
 
 --[[
-  Called on primary click (Mouse1).
-  Validates local cooldown and sends attack intent to server.
+  Called on primary button press (Mouse1 down).
+  Begins charging for a potential heavy swing.
 ]]
-local function onPrimaryClick()
-  if not canSwing() then
+local function onPrimaryDown()
+  -- Must be able to at least light swing to start charging
+  if not canSwing(LIGHT_SWING_COOLDOWN) then
     return
   end
 
-  -- Update local cooldown
-  LastSwingTime = os.clock()
+  IsCharging = true
+  ChargeStartTime = os.clock()
+  ChargeReady = false
 
-  -- Play swing animation and swoosh SFX immediately (client-side prediction)
-  playSwingAnimation()
-  if SoundController then
-    SoundController:PlaySwingSound()
+  -- Start charge VFX after a brief delay (don't show for quick taps)
+  task.delay(0.15, function()
+    if IsCharging and not IsRagdolled then
+      startChargeVFX()
+
+      -- Play charge SFX
+      if SoundController then
+        SoundController:PlayHeavyChargeSound()
+      end
+    end
+  end)
+end
+
+--[[
+  Called on primary button release (Mouse1 up).
+  Determines whether to fire light or heavy swing based on charge time.
+]]
+local function onPrimaryUp()
+  if not IsCharging then
+    return
   end
 
-  -- Send attack request to server
-  if CombatService then
-    CombatService.AttackRequest:Fire()
+  local chargeTime = os.clock() - ChargeStartTime
+  IsCharging = false
+  ChargeReady = false
+
+  -- Clean up charge VFX
+  stopChargeVFX()
+
+  -- If ragdolled during charge, cancel entirely
+  if IsRagdolled then
+    return
+  end
+
+  if chargeTime >= HEAVY_CHARGE_TIME then
+    -- HEAVY SWING — charged long enough
+    if not canSwing(HEAVY_SWING_COOLDOWN) then
+      return
+    end
+
+    LastSwingTime = os.clock()
+
+    -- Play heavy swing animation and SFX
+    playHeavySwingAnimation()
+    if SoundController then
+      SoundController:PlayHeavySwingSound()
+    end
+
+    -- Send heavy attack request to server with charge time
+    if CombatService then
+      CombatService.HeavyAttackRequest:Fire(chargeTime)
+    end
+  else
+    -- LIGHT SWING — released before charge threshold
+    if not canSwing(LIGHT_SWING_COOLDOWN) then
+      return
+    end
+
+    LastSwingTime = os.clock()
+
+    -- Play light swing animation and SFX
+    playLightSwingAnimation()
+    if SoundController then
+      SoundController:PlaySwingSound()
+    end
+
+    -- Send light attack request to server
+    if CombatService then
+      CombatService.AttackRequest:Fire()
+    end
   end
 end
 
@@ -149,12 +307,17 @@ end
   Called when the server confirms a swing result.
   @param hitType "player" | "container" | "miss"
   @param targetName string? Name of what was hit
+  @param attackType string? "light" | "heavy"
 ]]
-local function onSwingResult(hitType: string, targetName: string?)
+local function onSwingResult(hitType: string, targetName: string?, attackType: string?)
   -- Play appropriate hit sound
   if SoundController then
     local hrp = getLocalHRP()
-    SoundController:PlayCombatHitSound(hitType, hrp)
+    if attackType == "heavy" and hitType == "player" then
+      SoundController:PlayHeavyHitSound(hrp)
+    else
+      SoundController:PlayCombatHitSound(hitType, hrp)
+    end
   end
 end
 
@@ -170,6 +333,13 @@ local function onRagdollTrigger(
   ragdollDuration: number,
   knockbackVelocity: Vector3?
 )
+  -- If charging, cancel the charge (interrupted by being hit)
+  if IsCharging then
+    IsCharging = false
+    ChargeReady = false
+    stopChargeVFX()
+  end
+
   IsRagdolled = true
   RagdollEndTime = os.clock() + ragdollDuration
 
@@ -221,13 +391,16 @@ function CombatController:KnitStart()
   LocalPlayer.CharacterRemoving:Connect(function(character: Model)
     RagdollModule.cleanup(character)
     IsRagdolled = false
+    IsCharging = false
+    ChargeReady = false
+    stopChargeVFX()
     if RagdollCleanupThread then
       task.cancel(RagdollCleanupThread)
       RagdollCleanupThread = nil
     end
   end)
 
-  -- Listen for primary click input
+  -- Listen for primary button down (start charge)
   UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
     if gameProcessed then
       return
@@ -237,11 +410,21 @@ function CombatController:KnitStart()
       input.UserInputType == Enum.UserInputType.MouseButton1
       or input.UserInputType == Enum.UserInputType.Touch
     then
-      onPrimaryClick()
+      onPrimaryDown()
     end
   end)
 
-  print("[CombatController] Started — primary click to attack")
+  -- Listen for primary button up (release → light or heavy swing)
+  UserInputService.InputEnded:Connect(function(input: InputObject)
+    if
+      input.UserInputType == Enum.UserInputType.MouseButton1
+      or input.UserInputType == Enum.UserInputType.Touch
+    then
+      onPrimaryUp()
+    end
+  end)
+
+  print("[CombatController] Started — click to light swing, hold to charge heavy swing")
 end
 
 return CombatController

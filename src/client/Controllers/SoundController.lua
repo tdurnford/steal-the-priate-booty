@@ -27,6 +27,9 @@ local SOUNDS = {
 
   -- Combat sounds
   swingSwoosh = "rbxassetid://12222084", -- cutlass swing swoosh
+  heavyCharge = "rbxassetid://5206020985", -- rising charge-up whoosh
+  heavySwing = "rbxassetid://3750598695", -- heavy swing release (bigger swoosh)
+  heavyHit = "rbxassetid://4801618977", -- heavy impact on player (loud thud)
   hitPlayer = "rbxassetid://3932505093", -- impact on player hit
   hitContainer = "rbxassetid://3084680507", -- impact on container hit
   swingMiss = "rbxassetid://12222130", -- miss / air swoosh
@@ -52,6 +55,9 @@ local VOLUMES = {
   duskHorn = 0.6,
   dawnBell = 0.5,
   swingSwoosh = 0.5,
+  heavyCharge = 0.4,
+  heavySwing = 0.7,
+  heavyHit = 0.8,
   hitPlayer = 0.6,
   hitContainer = 0.6,
   swingMiss = 0.3,
@@ -190,10 +196,36 @@ function SoundController:PlayPhaseTransitionSound(phase: string)
 end
 
 --[[
-	Plays the swing swoosh sound (on every attack).
+	Plays the swing swoosh sound (on every light attack).
 ]]
 function SoundController:PlaySwingSound()
   play2DSound(SOUNDS.swingSwoosh, VOLUMES.swingSwoosh)
+end
+
+--[[
+	Plays the heavy swing charge-up sound (rising whoosh during hold).
+]]
+function SoundController:PlayHeavyChargeSound()
+  play2DSound(SOUNDS.heavyCharge, VOLUMES.heavyCharge)
+end
+
+--[[
+	Plays the heavy swing release sound (bigger swoosh on release).
+]]
+function SoundController:PlayHeavySwingSound()
+  play2DSound(SOUNDS.heavySwing, VOLUMES.heavySwing)
+end
+
+--[[
+	Plays the heavy hit impact sound at a 3D position.
+	@param parent BasePart to attach the 3D sound to (or nil for 2D)
+]]
+function SoundController:PlayHeavyHitSound(parent: BasePart?)
+  if parent then
+    play3DSound(SOUNDS.heavyHit, VOLUMES.heavyHit, parent)
+  else
+    play2DSound(SOUNDS.heavyHit, VOLUMES.heavyHit)
+  end
 end
 
 --[[

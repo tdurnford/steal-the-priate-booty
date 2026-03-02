@@ -15,6 +15,8 @@ export type CombatConfig = {
   lightSwingCooldown: number,
   heavySwingChargeTime: number,
   heavySwingCooldown: number,
+  heavySwingRange: number,
+  heavySwingArc: number,
   blockSpeedMultiplier: number,
   dashDistance: number,
   dashCooldown: number,
@@ -30,6 +32,8 @@ GameConfig.Combat = {
   -- Heavy swing (hold primary click)
   heavySwingChargeTime = 0.8, -- seconds hold before release
   heavySwingCooldown = 1.2, -- seconds after heavy swing
+  heavySwingRange = 10, -- studs (wider than light swing's 8)
+  heavySwingArc = 90, -- degrees half-angle (wider than light swing's 70)
 
   -- Block (secondary click hold)
   blockSpeedMultiplier = 0.5, -- 50% movement speed while blocking

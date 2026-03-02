@@ -1336,3 +1336,129 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Next highest-priority features: COMBAT-002 (heavy swing — uses the knockback
   system), COMBAT-003 (block mechanic), COMBAT-004 (dash), UI-002 (ship hold
   indicator), SHIP-001 (ship dock system)
+
+---
+
+## 2026-03-02 — COMBAT-002: Heavy Swing Attack
+
+### What was done
+- Extended `src/server/Services/CombatService.lua` with heavy swing server logic:
+  new `HeavyAttackRequest` signal, charge time validation, wider hit detection.
+- Extended `src/client/Controllers/CombatController.lua` with a charge-hold-release
+  input system: hold primary click to charge, release for light or heavy swing.
+- Extended `src/shared/GameConfig.lua` with `heavySwingRange` (10 studs) and
+  `heavySwingArc` (90° half-angle) constants.
+- Extended `src/client/Controllers/SoundController.lua` with heavy swing audio:
+  charge-up whoosh, heavy release swoosh, and heavy impact thud.
+
+### CombatService.lua changes
+
+#### New client signal
+- `HeavyAttackRequest` — client fires with `(chargeTime: number)` to request
+  a heavy swing attack
+
+#### Heavy attack validation
+- `validateAttack()` now accepts a `cooldown` parameter — both light (0.4s) and
+  heavy (1.2s) attacks use the same validation with different cooldown values
+- Server validates `chargeTime >= 0.7s` (0.8s threshold with 0.1s network
+  tolerance) to prevent clients from spoofing instant heavy swings
+
+#### Parameterized hit detection
+- `isInSwingArc()` and `performHitDetection()` now accept `range` and `arc`
+  parameters instead of using hardcoded light swing values
+- Light swing: 8 studs, 70° half-angle (unchanged)
+- Heavy swing: 10 studs, 90° half-angle (wider arc, longer reach)
+
+#### Parameterized player hit handling
+- `handlePlayerHit()` now accepts `attackType` ("light" | "heavy") and selects
+  the correct ragdoll duration, knockback force, and spill percentage:
+  - Light: 1.5s ragdoll, 15 studs/s knockback, 10% spill
+  - Heavy: 2.5s ragdoll, 40 studs/s knockback, 25% spill
+- Heavy hits scatter doubloons in a 6-stud radius (vs 4 for light)
+
+#### SwingResult signal extended
+- Now sends `attackType` ("light" | "heavy") as 4th argument so the client
+  can play the correct hit sound
+
+### CombatController.lua — complete rewrite
+
+#### Charge-hold-release input system
+- **Mouse down** (InputBegan): starts charging, records `ChargeStartTime`
+- **Charge VFX**: after 0.15s (avoids VFX on quick taps), a gold-orange
+  PointLight appears on the player's right hand and tweens brighter over the
+  0.8s charge duration
+- **Mouse up** (InputEnded): checks charge duration:
+  - `< 0.8s` → fires light swing (AttackRequest, same as before)
+  - `≥ 0.8s` → fires heavy swing (HeavyAttackRequest with chargeTime)
+- **Interrupt on ragdoll**: if hit during charge (RagdollTrigger received),
+  charge is cancelled, VFX cleaned up, no attack fires
+
+#### Vulnerability during windup
+- The attacker is NOT invulnerable during charge — if ragdolled by another
+  player or NPC during the 0.8s windup, the charge is cancelled and the attack
+  is lost. This is the key risk/reward tradeoff of heavy swings.
+
+#### Light swing preserved
+- Quick click-and-release still fires a light swing exactly as before
+- The only behavioral change is the delay between press and release determines
+  attack type
+
+#### Character respawn cleanup
+- CharacterRemoving now also resets `IsCharging`, `ChargeReady`, and calls
+  `stopChargeVFX()` in addition to the existing ragdoll cleanup
+
+### SoundController.lua changes
+- **New sound IDs**: `heavyCharge` (rbxassetid://5206020985 — rising whoosh),
+  `heavySwing` (rbxassetid://3750598695 — bigger swoosh release),
+  `heavyHit` (rbxassetid://4801618977 — loud impact thud)
+- **New volumes**: heavyCharge=0.4, heavySwing=0.7, heavyHit=0.8
+- **New methods**: `PlayHeavyChargeSound()`, `PlayHeavySwingSound()`,
+  `PlayHeavyHitSound(parent?)` — all respect sfxEnabled setting
+
+### GameConfig.lua changes
+- **Extended CombatConfig type**: Added `heavySwingRange: number` and
+  `heavySwingArc: number` fields
+- **Added values**: `heavySwingRange = 10` (studs), `heavySwingArc = 90`
+  (degrees half-angle)
+
+### Acceptance criteria verification
+- [x] Heavy swing requires 0.8s hold before release (client tracks charge
+      duration, server validates chargeTime >= 0.7s with latency tolerance)
+- [x] 1.2s cooldown after heavy swing (server validates via LastAttackTime
+      with HEAVY_SWING_COOLDOWN)
+- [x] Player targets ragdoll for 2.5s with knockback (GameConfig.Ragdoll
+      .heavyHitDuration=2.5, heavyHitKnockback=40 studs/s via RagdollModule)
+- [x] 25% of held doubloons spill on hit (GameConfig.LootSpill.heavyHitPercent
+      =0.25, processed via GameConfig.calculateSpill)
+- [x] Attacker is vulnerable during windup (no invulnerability during charge;
+      RagdollTrigger cancels charge state and cleans up VFX)
+- [x] Wide arc and longer range than light swing (10 studs/90° vs 8 studs/70°)
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via StyLua
+  formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The heavy swing animation uses the same placeholder animation as light swing
+  but at 1x speed (vs 2x for light). Replace with a distinct heavy slash
+  animation when COMBAT-VFX-001 is implemented.
+- The charge VFX is a gold PointLight on the right hand that tweens brighter.
+  When COMBAT-VFX-001 is implemented, add particle effects (sparks, glow trail)
+  to make the charge-up more visually dramatic.
+- The heavy charge sound (rbxassetid://5206020985) and heavy swing sound
+  (rbxassetid://3750598695) should be verified in Roblox Studio. Replace with
+  custom audio from the Creator Store if they don't sound right.
+- The heavy swing uses the same `handleContainerHit()` as light swing (same gear
+  damage). If heavy swings should deal more container damage, add a damage
+  multiplier in the heavy handler.
+- The charge VFX has a 0.15s delay before showing to avoid flashing on quick
+  taps. Adjust this delay if it feels too long or too short.
+- `performHitDetection()` and `isInSwingArc()` are now parameterized with
+  range/arc, making it easy to add more attack types (lunge, spin) later.
+- When COMBAT-003 (block) is implemented:
+  - Block state check should be added to `validateAttack()` in CombatService
+  - Blocking during charge should cancel the charge in CombatController
+  - Blocked hits use `GameConfig.Ragdoll.blockedHitDuration` (0.5s) and
+    `blockedHitKnockback` (0)
+- Next highest-priority features: COMBAT-003 (block mechanic), COMBAT-004
+  (dash), UI-002 (ship hold indicator), SHIP-001 (ship dock system),
+  COMBAT-006 (combat cooldowns — mostly already implemented in COMBAT-001)
