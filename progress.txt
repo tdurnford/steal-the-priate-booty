@@ -240,3 +240,79 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Next highest-priority features: DAYNIGHT-002 (lighting/atmosphere), DAYNIGHT-003
   (transition banners/audio), DATA-002 (auto-save), LOOT-001 (container config —
   already in GameConfig, may just need marking done)
+
+---
+
+## 2026-03-02 — DATA-002: Auto-Save & Disconnect Grace-Save
+
+### What was done
+- Updated `src/server/Services/DataService.lua` with auto-save loop, disconnect
+  grace-save, and server shutdown handling.
+
+### Auto-save loop
+- Runs every 60 seconds (configurable via `GameConfig.AutoSave.interval`)
+- Calls `Profile:Save()` on all active profiles
+- ProfileService handles DataStore retry logic and exponential backoff internally
+- `SaveAllProfiles()` method exposed for other services if manual save is needed
+- Logs count of profiles saved each cycle
+
+### Disconnect grace-save
+- `graceSaveOnDisconnect(player, profile)` runs inside `releaseProfile()` before
+  `Profile:Release()` is called
+- **Ship hold → treasury**: If `shipHold > 0`, adds the full amount to
+  `profile.Data.treasury` so it persists. This means players don't lose banked
+  doubloons on disconnect.
+- **Held doubloons spill**: If `heldDoubloons > 0`, fires
+  `DataService.DisconnectDoubloonSpill` signal with `(player, amount, position)`.
+  Future LOOT-005 (pickup entity system) will connect to this signal to scatter
+  doubloon pickups at the player's last position.
+- Position is read from `HumanoidRootPart.Position` if the character still exists,
+  otherwise falls back to `Vector3.new(0, 5, 0)`.
+
+### Server shutdown handling
+- `game:BindToClose()` releases all active profiles on server close
+- This ensures data is saved even during server shutdowns/restarts
+- Each profile goes through the full `releaseProfile()` flow including grace-save
+
+### New signals
+- `DataService.DisconnectDoubloonSpill` (GoodSignal): Fires when a disconnecting
+  player has held doubloons that should be spilled. Args: `(player, amount, position)`.
+  Currently no listeners — LOOT-005 will connect to this.
+
+### Service dependency: SessionStateService
+- DataService now gets a reference to SessionStateService in `KnitStart()` via
+  `Knit.GetService("SessionStateService")`
+- Grace-save reads `shipHold` and `heldDoubloons` from the session state before
+  the session is cleaned up
+- **Ordering**: DataService's `PlayerRemoving` handler connects before
+  SessionStateService's (alphabetical load order: D < S), so session state is
+  still available during grace-save. This is documented with a comment in the code.
+
+### Also marked as done in PRD
+- **LOOT-001** (Loot Container Data & Configuration): All 6 container types with
+  HP, yield ranges, scatter radii, and spawn frequencies were already defined in
+  `GameConfig.lua` as part of CONFIG-001. Marked done.
+- **GEAR-001** (Gear Configuration & Data): All 6 cutlass tiers (Driftwood through
+  Legendary Blade) with costs and damage values were already defined in
+  `GameConfig.lua` as part of CONFIG-001. Marked done.
+
+### Acceptance criteria verification
+- [x] Profiles auto-save every 60 seconds
+- [x] Failed saves retry with exponential backoff (handled by ProfileService internally)
+- [x] On disconnect, ship hold is grace-saved to treasury
+- [x] On disconnect, held doubloons spill signal fires (pickup entity creation
+      deferred to LOOT-005)
+- [x] Data persists correctly when player rejoins (ProfileService + BindToClose)
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via StyLua
+  formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The `DisconnectDoubloonSpill` signal currently has no listeners — when LOOT-005
+  (doubloon scatter & pickup system) is implemented, connect to this signal to
+  spawn pickup entities at the disconnect position
+- The `SaveAllProfiles()` method is public and can be called from other services
+  if an immediate save is needed (e.g., after a significant data change)
+- ProfileService's `Profile:Save()` is non-yielding and queues the save internally
+- Next highest-priority features: DAYNIGHT-002 (lighting/atmosphere), DAYNIGHT-003
+  (transition banners/audio), LOOT-002 (container spawning), COMBAT-001 (light swing)

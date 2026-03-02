@@ -38,8 +38,16 @@ local ProfileStore = nil
 -- Cache of loaded profiles by player
 local Profiles: { [Player]: any } = {}
 
+-- Lazy-loaded service reference (set in KnitStart)
+local SessionStateService = nil
+
 -- Server-side signal fired when a player's data is loaded
 DataService.PlayerDataLoaded = Signal.new()
+
+-- Server-side signal fired when a disconnecting player has held doubloons to spill.
+-- Args: (player: Player, amount: number, position: Vector3)
+-- Future LOOT-005 will connect to this to spawn pickup entities.
+DataService.DisconnectDoubloonSpill = Signal.new()
 
 --------------------------------------------------------------------------------
 -- DATA ACCESSORS
@@ -327,6 +335,29 @@ function DataService:UpdateSetting(player: Player, settingKey: string, value: an
 end
 
 --------------------------------------------------------------------------------
+-- AUTO-SAVE
+--------------------------------------------------------------------------------
+
+--[[
+  Saves all active profiles. Called by the auto-save loop.
+  ProfileService handles DataStore retry logic internally,
+  so we just call :Save() on each active profile.
+]]
+function DataService:SaveAllProfiles()
+  local count = 0
+  for player, profile in Profiles do
+    if profile and player:IsDescendantOf(Players) then
+      profile.Data.lastPlayedAt = os.time()
+      profile:Save()
+      count = count + 1
+    end
+  end
+  if count > 0 then
+    print("[DataService] Auto-saved", count, "profile(s)")
+  end
+end
+
+--------------------------------------------------------------------------------
 -- CLIENT-EXPOSED METHODS
 --------------------------------------------------------------------------------
 
@@ -397,9 +428,54 @@ local function loadProfile(player: Player)
   print("[DataService] Profile loaded for", player.Name)
 end
 
+--[[
+  Performs disconnect grace-save before releasing a player's profile:
+  1. Moves ship_hold doubloons into permanent treasury.
+  2. Fires DisconnectDoubloonSpill for held_doubloons so a future pickup
+     system (LOOT-005) can scatter them at the player's last position.
+]]
+local function graceSaveOnDisconnect(player: Player, profile: any)
+  if not SessionStateService then
+    return
+  end
+
+  local state = SessionStateService:GetState(player)
+  if not state then
+    return
+  end
+
+  -- Grace-save ship hold → treasury
+  if state.shipHold > 0 then
+    profile.Data.treasury = profile.Data.treasury + state.shipHold
+    print(
+      "[DataService] Grace-saved",
+      state.shipHold,
+      "ship hold doubloons to treasury for",
+      player.Name
+    )
+  end
+
+  -- Spill held doubloons at last position
+  if state.heldDoubloons > 0 then
+    local character = player.Character
+    local position = if character and character:FindFirstChild("HumanoidRootPart")
+      then character.HumanoidRootPart.Position
+      else Vector3.new(0, 5, 0)
+
+    DataService.DisconnectDoubloonSpill:Fire(player, state.heldDoubloons, position)
+    print(
+      "[DataService] Spilling",
+      state.heldDoubloons,
+      "held doubloons for disconnecting player",
+      player.Name
+    )
+  end
+end
+
 local function releaseProfile(player: Player)
   local profile = Profiles[player]
   if profile then
+    graceSaveOnDisconnect(player, profile)
     profile.Data.lastPlayedAt = os.time()
     profile:Release()
     Profiles[player] = nil
@@ -417,10 +493,14 @@ function DataService:KnitInit()
 end
 
 function DataService:KnitStart()
+  SessionStateService = Knit.GetService("SessionStateService")
+
   Players.PlayerAdded:Connect(function(player)
     loadProfile(player)
   end)
 
+  -- NOTE: DataService connects before SessionStateService (alphabetical load order)
+  -- so the session state is still available during graceSaveOnDisconnect.
   Players.PlayerRemoving:Connect(function(player)
     releaseProfile(player)
   end)
@@ -430,7 +510,25 @@ function DataService:KnitStart()
     task.spawn(loadProfile, player)
   end
 
-  print("[DataService] Started")
+  -- Auto-save loop: save all active profiles every interval
+  local autoSaveInterval = GameConfig.AutoSave.interval
+  task.spawn(function()
+    while true do
+      task.wait(autoSaveInterval)
+      self:SaveAllProfiles()
+    end
+  end)
+
+  -- Graceful shutdown: release all profiles on server close.
+  -- BindToClose gives us up to 30 seconds to save before force-shutdown.
+  game:BindToClose(function()
+    print("[DataService] Server shutting down, releasing all profiles...")
+    for _, player in Players:GetPlayers() do
+      releaseProfile(player)
+    end
+  end)
+
+  print("[DataService] Started (auto-save every", autoSaveInterval, "seconds)")
 end
 
 return DataService
