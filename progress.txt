@@ -1851,3 +1851,62 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Next highest-priority features: SHIP-002 (deposit mechanic — deposit held
   doubloons to ship hold), SHIP-003 (lock mechanic — move hold to treasury),
   HARBOR-001 (safe zone — PvP disabled in harbor), UI-002 (ship hold HUD)
+
+---
+
+## 2026-03-02 — SHIP-002: Ship Deposit Mechanic
+
+### What was done
+- Added server-side `DepositAll` client-callable RPC to `ShipService.lua`
+- Created `ShipInteractionController.lua` — new client controller for ship interactions
+- Added deposit SFX to `SoundController.lua`
+
+### ShipService.lua changes
+- **New client signal**: `DepositCompleted` — fired to the depositing player with
+  (slotIndex, amountDeposited, newShipHold)
+- **New server signal**: `ShipService.DepositCompleted` — for inter-service use
+  (player, amountDeposited, newShipHold)
+- **New RPC**: `ShipService.Client:DepositAll(player)` — validates proximity (20 studs),
+  ownership, and held doubloons > 0. On success: sets held to 0, adds to ship hold,
+  reduces threat by `GameConfig.ShipSystem.depositThreatReduction` (25). Returns
+  (boolean, string?) for success/failure reporting.
+- **createShipModel** now accepts `ownerUserId` parameter and sets `OwnerUserId`
+  attribute on the Hull for client-side ship identification
+
+### ShipInteractionController.lua (NEW)
+- Client-side Knit controller for ship interaction prompts
+- Creates a **ProximityPrompt** on the local player's own ship's Hull (client-side
+  only, so only the owner sees "Deposit All" prompt)
+- Prompt settings: MaxActivationDistance=15, KeyCode=E, HoldDuration=0,
+  RequiresLineOfSight=false
+- On trigger: calls `ShipService:DepositAll()` RPC with 0.5s cooldown
+- Listens for `ShipSpawned` signal to set up prompt on own ship
+- Listens for `ShipDespawned` to clean up prompt
+- Listens for `ShipTierChanged` to recreate prompt on new model
+- Listens for `DepositCompleted` to play deposit SFX
+- Handles late-join: calls `ShipService:GetMyShip()` on start to set up
+  prompt if ship already spawned
+
+### SoundController.lua changes
+- Added `deposit` sound (`rbxassetid://5863456788`, volume 0.6)
+- Added `PlayDepositSound()` method (2D sound)
+
+### Architecture decisions
+- ProximityPrompt is created CLIENT-SIDE on the local player's ship, not
+  server-side. This means only the owner sees the deposit prompt. The server
+  validates everything via the RPC.
+- Distance validation on server uses 20 studs (generous to accommodate
+  network lag vs the 15-stud ProximityPrompt activation distance)
+- Ship visual updates for hold state (gold glow, coins on deck) are deferred
+  to SHIP-005 (Lock State Visual Indicators)
+
+### Notes for next developer
+- SHIP-003 (Lock Mechanic) should follow the same pattern: add a "Lock Ship"
+  ProximityPrompt in ShipInteractionController (when ship has hold > 0),
+  add `LockShip` RPC to ShipService
+- SHIP-004 (Raiding) will need ProximityPrompts on OTHER players' ships,
+  not just the local player's
+- The `OwnerUserId` attribute on the Hull enables client-side identification
+  of ship ownership for both deposit and future raid prompts
+- Next priorities: SHIP-003 (lock → treasury), HARBOR-001 (safe zone),
+  UI-002 (ship hold HUD)

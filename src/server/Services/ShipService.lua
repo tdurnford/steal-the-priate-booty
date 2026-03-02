@@ -9,7 +9,8 @@
     - 30-second delayed despawn after player leaves
     - Grace-save of ship hold doubloons before despawn
     - Ship tier upgrades/downgrades when treasury changes
-    - Client signals for ship spawn/despawn/tier change events
+    - Deposit mechanic: held doubloons → ship hold, threat reduction
+    - Client signals for ship spawn/despawn/tier change/deposit events
 
   Dock slots are defined as Parts in workspace.ShipDockPoints.
   Each dock slot Part should have:
@@ -44,6 +45,9 @@ local ShipService = Knit.CreateService({
     -- Fired to ALL players when a ship tier changes.
     -- Args: (slotIndex: number, ownerUserId: number, newShipTierId: string)
     ShipTierChanged = Knit.CreateSignal(),
+    -- Fired to the depositing player on successful deposit.
+    -- Args: (slotIndex: number, amountDeposited: number, newShipHold: number)
+    DepositCompleted = Knit.CreateSignal(),
   },
 })
 
@@ -51,6 +55,7 @@ local ShipService = Knit.CreateService({
 ShipService.ShipSpawned = Signal.new() -- (shipEntry)
 ShipService.ShipDespawned = Signal.new() -- (shipEntry)
 ShipService.ShipTierChanged = Signal.new() -- (shipEntry, oldTierId, newTierId)
+ShipService.DepositCompleted = Signal.new() -- (player, amountDeposited, newShipHold)
 
 -- Lazy-loaded service references (set in KnitStart)
 local DataService = nil
@@ -180,6 +185,7 @@ end
   @param shipTierDef The ship tier definition from GameConfig
   @param position World position of the dock point
   @param ownerName Display name of the ship owner
+  @param ownerUserId UserId of the ship owner
   @param slotIndex Dock slot number
   @return The created Model
 ]]
@@ -187,6 +193,7 @@ local function createShipModel(
   shipTierDef: GameConfig.ShipTierDef,
   position: Vector3,
   ownerName: string,
+  ownerUserId: number,
   slotIndex: number
 ): Model
   local appearance = SHIP_APPEARANCE[shipTierDef.id] or SHIP_APPEARANCE.rowboat
@@ -215,6 +222,7 @@ local function createShipModel(
   hull:SetAttribute("ShipTierId", shipTierDef.id)
   hull:SetAttribute("ShipTierName", shipTierDef.name)
   hull:SetAttribute("OwnerName", ownerName)
+  hull:SetAttribute("OwnerUserId", ownerUserId)
 
   -- Mast for ships above rowboat
   if shipTierDef.tier >= 2 then
@@ -309,7 +317,7 @@ local function spawnShip(player: Player): ShipEntry?
 
   -- Create ship model at dock position
   local position = dockPoint.Position
-  local model = createShipModel(shipTierDef, position, player.Name, slotIndex)
+  local model = createShipModel(shipTierDef, position, player.Name, player.UserId, slotIndex)
 
   -- Build ship entry
   local entry: ShipEntry = {
@@ -436,7 +444,8 @@ function ShipService:RecalculateShipTier(player: Player)
   end
 
   -- Create new model at same dock position
-  local newModel = createShipModel(newTierDef, entry.position, entry.ownerName, entry.slotIndex)
+  local newModel =
+    createShipModel(newTierDef, entry.position, entry.ownerName, entry.ownerUserId, entry.slotIndex)
 
   -- Update entry
   entry.shipTierId = newTierDef.id
@@ -589,6 +598,62 @@ function ShipService.Client:GetAllDockedShips(player: Player): {
   }
 }
   return self.Server:GetAllDockedShips()
+end
+
+--[[
+  Deposits all held doubloons into the player's ship hold.
+  Validates proximity, ownership, and doubloon balance.
+  Reduces threat by depositThreatReduction (25) on success.
+  @param player The calling player (injected by Knit)
+  @return (success: boolean, message: string?)
+]]
+function ShipService.Client:DepositAll(player: Player): (boolean, string?)
+  local entry = DockedShips[player]
+  if not entry then
+    return false, "No ship docked"
+  end
+
+  -- Validate proximity (generous 20 stud threshold for network lag)
+  local character = player.Character
+  local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+  if not rootPart then
+    return false, "No character"
+  end
+  local distance = (rootPart.Position - entry.position).Magnitude
+  if distance > 20 then
+    return false, "Too far from ship"
+  end
+
+  -- Check held doubloons
+  local heldDoubloons = SessionStateService:GetHeldDoubloons(player)
+  if heldDoubloons <= 0 then
+    return false, "No doubloons to deposit"
+  end
+
+  -- Process deposit: held → ship hold
+  SessionStateService:SetHeldDoubloons(player, 0)
+  SessionStateService:AddShipHold(player, heldDoubloons)
+
+  -- Reduce threat by deposit amount (min 0, handled by AddThreat clamping)
+  SessionStateService:AddThreat(player, -GameConfig.ShipSystem.depositThreatReduction)
+
+  local newShipHold = SessionStateService:GetShipHold(player)
+
+  -- Fire client signal to depositing player
+  self.DepositCompleted:Fire(player, entry.slotIndex, heldDoubloons, newShipHold)
+
+  -- Fire server-side signal for inter-service use
+  ShipService.DepositCompleted:Fire(player, heldDoubloons, newShipHold)
+
+  print(
+    "[ShipService]",
+    player.Name,
+    "deposited",
+    heldDoubloons,
+    "doubloons. Ship hold:",
+    newShipHold
+  )
+  return true, nil
 end
 
 --------------------------------------------------------------------------------

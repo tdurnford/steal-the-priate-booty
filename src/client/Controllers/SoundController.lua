@@ -52,6 +52,9 @@ local SOUNDS = {
 
   -- Doubloon pickup
   coinPickup = "rbxassetid://4612373815", -- coin collect chime
+
+  -- Ship deposit
+  deposit = "rbxassetid://5863456788", -- treasure deposit chime (coins into hold)
 }
 
 -- Volume settings per sound type
@@ -77,6 +80,7 @@ local VOLUMES = {
   blockImpact = 0.6,
   dashWhoosh = 0.5,
   coinPickup = 0.4,
+  deposit = 0.6,
 }
 
 -- References
@@ -211,6 +215,13 @@ end
 ]]
 function SoundController:PlayCoinPickupSound()
   play2DSound(SOUNDS.coinPickup, VOLUMES.coinPickup)
+end
+
+--[[
+	Plays the deposit sound when doubloons are deposited into ship hold.
+]]
+function SoundController:PlayDepositSound()
+  play2DSound(SOUNDS.deposit, VOLUMES.deposit)
 end
 
 --[[
