@@ -2335,3 +2335,56 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - All emoji icons are UTF-8 encoded as escape sequences for Luau compatibility.
 - Next priorities: SHIP-004 (ship raiding), NPC-001 (Cursed Skeleton base setup),
   THREAT-003/004 (threat tier effects), DAYNIGHT-004 (night loot modifiers)
+
+---
+
+## 2026-03-02 — SHIP-004: Ship Raiding System
+
+### What was done
+- Implemented server-authoritative ship raiding in `src/server/Services/ShipService.lua`
+- Added client-side raid interaction with progress bar in `src/client/Controllers/ShipInteractionController.lua`
+- Added raid sound effects in `src/client/Controllers/SoundController.lua`
+
+### ShipService.lua changes (server)
+- **New client signals**: `RaidCompleted` (raider gets stolen amount), `RaidAlert` (owner gets warning), `RaidInterrupted` (raider gets cancellation reason)
+- **New server signal**: `RaidCompleted` (for inter-service use)
+- **New RPCs**: `Client:StartRaid(targetSlotIndex)` — validates everything, starts 3s timer; `Client:CancelRaid()` — client-initiated cancel
+- **New API**: `CancelRaid(player, reason)` — cancel a raid (used by ragdoll interrupt, disconnect, movement); `IsRaiding(player)` — check if player is raiding
+- **Active raid tracking**: `ActiveRaids` table tracks per-raider state (target slot, owner, start position, timer thread)
+- **Validation chain**: Can't raid own ship, ship must be unlocked, ship hold > 0, 30s per-ship cooldown, not ragdolled, proximity check (20 studs)
+- **Completion logic**: Steals 25% of hold (math.ceil, min 1), adds to raider's heldDoubloons, records cooldown via SessionStateService
+- **Interrupt on ragdoll**: Listens to `SessionStateService.StateChanged` for `isRagdolling=true` to auto-cancel raids
+- **Interrupt on movement**: Heartbeat loop checks raider hasn't moved >10 studs from start position (safe table iteration with collect-then-cancel pattern)
+- **Disconnect cleanup**: `onPlayerRemoving` cancels any active raid
+- **BindToClose**: Cancels all active raids on server shutdown
+- **Race condition fix**: Raid entry registered in `ActiveRaids` BEFORE timer thread is created; thread assigned to entry after creation; `CancelRaid` handles nil thread gracefully
+
+### ShipInteractionController.lua changes (client)
+- **Raid prompts on OTHER players' ships**: Creates "Raid Ship" ProximityPrompt (R key) on every non-owned docked ship hull
+- **Raid prompt lifecycle**: Created on ShipSpawned, removed on ShipDespawned, recreated on ShipTierChanged, batch-created on late join via GetAllDockedShips
+- **Progress bar**: BillboardGui above player's head with red fill bar + "RAIDING..." label, updated every Heartbeat
+- **Raid flow**: Prompt triggers → server StartRaid RPC → on success, show progress bar + play start SFX → on complete, play complete SFX + show notification → on interrupt, play interrupt notification
+- **Raid alert**: When RaidAlert signal fires (someone raiding YOUR ship), shows red notification + alarm SFX
+- **Cleanup**: Progress bar GUI cleaned up on complete, interrupt, or cancel
+
+### SoundController.lua changes
+- **New sounds**: `raidStart` (tense interaction), `raidComplete` (loot stolen chime), `raidAlert` (urgent alarm horn)
+- **New methods**: `PlayRaidStartSound()`, `PlayRaidCompleteSound()`, `PlayRaidAlertSound()`
+- Sound asset IDs are placeholder (reusing existing Roblox IDs); proper raid-specific audio can be swapped in during AUDIO-001
+
+### Key design decisions
+- Server manages the 3s timer (not client) to prevent exploits
+- Raid prompts are client-created (like deposit/lock prompts) but server validates everything
+- Raiding IS allowed in Harbor (per spec: "No PvP in Harbor, but raiding IS allowed in Harbor")
+- The server does NOT check inHarbor for raid validation — only CombatService checks harbor for PvP
+- Movement interrupt threshold is 10 studs (generous — allows small adjustments but prevents walk-away exploits)
+- Heartbeat movement check uses collect-then-cancel pattern to avoid table modification during iteration
+
+### Notes for next developer
+- The raid system uses `SessionStateService:CanRaidShip()` / `RecordShipRaid()` which were already stubbed in DATA-003
+- `GameConfig.ShipSystem.raidDuration` (3s), `raidStealPercent` (0.25), `raidCooldownPerShip` (30s) are all configurable
+- The client progress bar is purely cosmetic — the server timer is authoritative
+- UI-007 (Bounty & Raid Alerts) will enhance the raid alert notification into a full HUD element
+- SHIP-005 (Lock State Visual Indicators) will add padlock/gold glow to help raiders identify targetable ships
+- Rojo/selene toolchain issues persist (aftman/rokit PATH conflict); StyLua formatting passes
+- Next priorities: NPC-001 (Cursed Skeleton), DAYNIGHT-004 (Night Loot Modifiers), THREAT-003/004 (Threat Effects)

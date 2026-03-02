@@ -11,7 +11,8 @@
     - Ship tier upgrades/downgrades when treasury changes
     - Deposit mechanic: held doubloons → ship hold, threat reduction
     - Lock mechanic: ship hold → treasury, threat reset, auto-unlock on Harbor exit
-    - Client signals for ship spawn/despawn/tier change/deposit/lock events
+    - Raid mechanic: 3s interaction to steal 25% of another player's ship hold
+    - Client signals for ship spawn/despawn/tier change/deposit/lock/raid events
 
   Dock slots are defined as Parts in workspace.ShipDockPoints.
   Each dock slot Part should have:
@@ -23,10 +24,12 @@
     - GetShipOwner(slotIndex) to find who owns a ship at a dock
     - RecalculateShipTier(player) when treasury changes
     - UnlockShip(player) when player exits Harbor zone (HARBOR-001)
+    - CancelRaid(player) to interrupt a raid in progress (e.g. ragdoll)
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local Packages = ReplicatedStorage:WaitForChild("Packages")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -56,6 +59,15 @@ local ShipService = Knit.CreateService({
     -- Fired to a player when their ship is unlocked (e.g. leaving Harbor).
     -- Args: (slotIndex: number)
     ShipUnlocked = Knit.CreateSignal(),
+    -- Fired to the raider when a raid successfully completes.
+    -- Args: (slotIndex: number, amountStolen: number)
+    RaidCompleted = Knit.CreateSignal(),
+    -- Fired to the ship owner when their ship is being raided.
+    -- Args: (raiderName: string, slotIndex: number)
+    RaidAlert = Knit.CreateSignal(),
+    -- Fired to the raider when their raid is interrupted.
+    -- Args: (reason: string)
+    RaidInterrupted = Knit.CreateSignal(),
   },
 })
 
@@ -66,6 +78,7 @@ ShipService.ShipTierChanged = Signal.new() -- (shipEntry, oldTierId, newTierId)
 ShipService.DepositCompleted = Signal.new() -- (player, amountDeposited, newShipHold)
 ShipService.LockCompleted = Signal.new() -- (player, amountLocked, newTreasury)
 ShipService.ShipUnlocked = Signal.new() -- (player)
+ShipService.RaidCompleted = Signal.new() -- (raider, owner, amountStolen)
 
 -- Lazy-loaded service references (set in KnitStart)
 local DataService = nil
@@ -138,6 +151,17 @@ local DockSlotOccupancy: { [number]: ShipEntry } = {}
 
 -- Pending despawn tasks for disconnected players: userId → thread
 local PendingDespawns: { [number]: thread } = {}
+
+-- Active raids: raider Player → { targetSlotIndex, startTime, thread }
+local ActiveRaids: {
+  [Player]: {
+    targetSlotIndex: number,
+    ownerUserId: number,
+    startPosition: Vector3,
+    thread: thread,
+  },
+} =
+  {}
 
 -- Folder in workspace for ship models
 local ShipsFolder: Folder = nil
@@ -767,6 +791,212 @@ function ShipService:UnlockShip(player: Player)
 end
 
 --------------------------------------------------------------------------------
+-- SHIP RAIDING
+--------------------------------------------------------------------------------
+
+--[[
+  Helper: get the HumanoidRootPart for a player.
+]]
+local function getHRP(player: Player): BasePart?
+  local character = player.Character
+  return character and character:FindFirstChild("HumanoidRootPart")
+end
+
+--[[
+  Cancels an active raid for a player (called on ragdoll, disconnect, etc.).
+  @param raider The raiding player
+  @param reason The reason for cancellation
+]]
+function ShipService:CancelRaid(raider: Player, reason: string?)
+  local raid = ActiveRaids[raider]
+  if not raid then
+    return
+  end
+
+  -- Cancel the timer thread (may be nil briefly during registration)
+  if raid.thread then
+    task.cancel(raid.thread)
+  end
+  ActiveRaids[raider] = nil
+
+  -- Notify the raider
+  local cancelReason = reason or "Interrupted"
+  self.Client.RaidInterrupted:Fire(raider, cancelReason)
+
+  print("[ShipService]", raider.Name, "raid cancelled:", cancelReason)
+end
+
+--[[
+  Checks if a player is currently raiding.
+  @param player The player to check
+  @return true if the player has an active raid
+]]
+function ShipService:IsRaiding(player: Player): boolean
+  return ActiveRaids[player] ~= nil
+end
+
+--[[
+  Client RPC: Start raiding a ship at the given dock slot.
+  Validates proximity, ownership, lock state, cooldown, and hold balance.
+  Starts a server-side 3s timer. On completion, steals 25% of hold.
+  @param player The raiding player (injected by Knit)
+  @param targetSlotIndex The dock slot index of the ship to raid
+  @return (success: boolean, message: string?)
+]]
+function ShipService.Client:StartRaid(player: Player, targetSlotIndex: number): (boolean, string?)
+  -- Validate: no double-raiding
+  if ActiveRaids[player] then
+    return false, "Already raiding"
+  end
+
+  -- Validate: target ship exists
+  local targetEntry = DockSlotOccupancy[targetSlotIndex]
+  if not targetEntry then
+    return false, "No ship at that dock"
+  end
+
+  -- Validate: can't raid your own ship
+  if targetEntry.ownerUserId == player.UserId then
+    return false, "Cannot raid your own ship"
+  end
+
+  -- Validate: ship must be unlocked
+  local owner = targetEntry.owner
+  if owner and SessionStateService:IsShipLocked(owner) then
+    return false, "Ship is locked"
+  end
+
+  -- Validate: ship must have loot in hold
+  local shipHold = 0
+  if owner then
+    shipHold = SessionStateService:GetShipHold(owner)
+  end
+  if shipHold <= 0 then
+    return false, "Ship hold is empty"
+  end
+
+  -- Validate: per-ship raid cooldown (30s)
+  if not SessionStateService:CanRaidShip(player, targetEntry.ownerUserId) then
+    return false, "Raid on cooldown"
+  end
+
+  -- Validate: raider is not ragdolling
+  if SessionStateService:IsRagdolling(player) then
+    return false, "Cannot raid while ragdolled"
+  end
+
+  -- Validate: proximity (20 studs generous threshold)
+  local raiderHRP = getHRP(player)
+  if not raiderHRP then
+    return false, "No character"
+  end
+  local distance = (raiderHRP.Position - targetEntry.position).Magnitude
+  if distance > 20 then
+    return false, "Too far from ship"
+  end
+
+  -- Record start position for movement interrupt check
+  local startPosition = raiderHRP.Position
+
+  -- Alert the ship owner immediately
+  if owner and owner.Parent then
+    ShipService.Client.RaidAlert:Fire(owner, player.Name, targetSlotIndex)
+  end
+
+  -- Register the active raid BEFORE starting the timer (prevents race condition)
+  local raidEntry = {
+    targetSlotIndex = targetSlotIndex,
+    ownerUserId = targetEntry.ownerUserId,
+    startPosition = startPosition,
+    thread = nil :: thread?, -- assigned below
+  }
+  ActiveRaids[player] = raidEntry
+
+  -- Start the server-side raid timer
+  raidEntry.thread = task.delay(GameConfig.ShipSystem.raidDuration, function()
+    -- Raid completed! Validate conditions are still met
+    if not ActiveRaids[player] then
+      return -- was cancelled
+    end
+    ActiveRaids[player] = nil
+
+    -- Re-check: raider still in game
+    if not player.Parent then
+      return
+    end
+
+    -- Re-check: target ship still exists
+    local entry = DockSlotOccupancy[targetSlotIndex]
+    if not entry then
+      return
+    end
+
+    -- Re-check: ship still unlocked and has loot
+    local currentOwner = entry.owner
+    if currentOwner and SessionStateService:IsShipLocked(currentOwner) then
+      ShipService.Client.RaidInterrupted:Fire(player, "Ship was locked")
+      return
+    end
+
+    local currentHold = 0
+    if currentOwner then
+      currentHold = SessionStateService:GetShipHold(currentOwner)
+    end
+    if currentHold <= 0 then
+      ShipService.Client.RaidInterrupted:Fire(player, "Hold is empty")
+      return
+    end
+
+    -- Calculate stolen amount: 25% of hold, rounded up, min 1
+    local stealAmount = math.max(1, math.ceil(currentHold * GameConfig.ShipSystem.raidStealPercent))
+
+    -- Remove from ship hold
+    if currentOwner then
+      SessionStateService:AddShipHold(currentOwner, -stealAmount)
+    end
+
+    -- Add to raider's held doubloons
+    SessionStateService:AddHeldDoubloons(player, stealAmount)
+
+    -- Record the raid for cooldown
+    SessionStateService:RecordShipRaid(player, entry.ownerUserId)
+
+    -- Fire client signals
+    ShipService.Client.RaidCompleted:Fire(player, targetSlotIndex, stealAmount)
+
+    -- Fire server-side signal
+    ShipService.RaidCompleted:Fire(player, currentOwner, stealAmount)
+
+    print(
+      "[ShipService]",
+      player.Name,
+      "raided",
+      entry.ownerName .. "'s",
+      "ship for",
+      stealAmount,
+      "doubloons"
+    )
+  end)
+
+  print(
+    "[ShipService]",
+    player.Name,
+    "started raiding",
+    targetEntry.ownerName .. "'s ship at slot",
+    targetSlotIndex
+  )
+  return true, nil
+end
+
+--[[
+  Client RPC: Cancel the calling player's active raid.
+  @param player The raiding player (injected by Knit)
+]]
+function ShipService.Client:CancelRaid(player: Player)
+  ShipService:CancelRaid(player, "Cancelled by player")
+end
+
+--------------------------------------------------------------------------------
 -- PLAYER JOIN / LEAVE
 --------------------------------------------------------------------------------
 
@@ -790,6 +1020,11 @@ local function onPlayerDataLoaded(player: Player, _data: any)
 end
 
 local function onPlayerRemoving(player: Player)
+  -- Cancel any active raid on disconnect
+  if ActiveRaids[player] then
+    ShipService:CancelRaid(player, "Disconnected")
+  end
+
   local entry = DockedShips[player]
   if not entry then
     return
@@ -847,8 +1082,44 @@ function ShipService:KnitStart()
     end
   end
 
+  -- Interrupt raids when raider becomes ragdolled
+  SessionStateService.StateChanged:Connect(
+    function(player: Player, fieldName: string, newValue: any)
+      if fieldName == "isRagdolling" and newValue == true then
+        if ActiveRaids[player] then
+          ShipService:CancelRaid(player, "Ragdolled")
+        end
+      end
+    end
+  )
+
+  -- Heartbeat: check active raids for movement interrupts (max 10 studs from start)
+  local RAID_MAX_MOVE_DISTANCE = 10
+  RunService.Heartbeat:Connect(function()
+    -- Collect raids to cancel first (can't modify table during iteration)
+    local toCancel: { { player: Player, reason: string } } = {}
+    for raider, raid in ActiveRaids do
+      local hrp = getHRP(raider)
+      if not hrp then
+        table.insert(toCancel, { player = raider, reason = "No character" })
+      else
+        local movedDistance = (hrp.Position - raid.startPosition).Magnitude
+        if movedDistance > RAID_MAX_MOVE_DISTANCE then
+          table.insert(toCancel, { player = raider, reason = "Moved too far" })
+        end
+      end
+    end
+    for _, entry in toCancel do
+      ShipService:CancelRaid(entry.player, entry.reason)
+    end
+  end)
+
   -- BindToClose: immediately despawn all ships on server shutdown
   game:BindToClose(function()
+    -- Cancel all active raids
+    for raider, _ in ActiveRaids do
+      ShipService:CancelRaid(raider, "Server shutting down")
+    end
     for _, entry in DockedShips do
       if entry.model and entry.model.Parent then
         entry.model:Destroy()

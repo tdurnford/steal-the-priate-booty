@@ -57,6 +57,11 @@ local SOUNDS = {
   deposit = "rbxassetid://5863456788", -- treasure deposit chime (coins into hold)
   lockShip = "rbxassetid://9114049951", -- satisfying lock/latch sound (bell/chime)
   unlockShip = "rbxassetid://6895079853", -- soft unlock click
+
+  -- Raid sounds
+  raidStart = "rbxassetid://4590657391", -- tense interaction start
+  raidComplete = "rbxassetid://4612373815", -- loot stolen chime (coin grab)
+  raidAlert = "rbxassetid://9114046944", -- urgent alarm horn (ship being raided)
 }
 
 -- Volume settings per sound type
@@ -85,6 +90,9 @@ local VOLUMES = {
   deposit = 0.6,
   lockShip = 0.7,
   unlockShip = 0.4,
+  raidStart = 0.5,
+  raidComplete = 0.6,
+  raidAlert = 0.8,
 }
 
 -- References
@@ -240,6 +248,27 @@ end
 ]]
 function SoundController:PlayUnlockSound()
   play2DSound(SOUNDS.unlockShip, VOLUMES.unlockShip)
+end
+
+--[[
+	Plays the raid start sound when the player begins raiding a ship.
+]]
+function SoundController:PlayRaidStartSound()
+  play2DSound(SOUNDS.raidStart, VOLUMES.raidStart)
+end
+
+--[[
+	Plays the raid complete sound when the player successfully steals loot.
+]]
+function SoundController:PlayRaidCompleteSound()
+  play2DSound(SOUNDS.raidComplete, VOLUMES.raidComplete)
+end
+
+--[[
+	Plays the raid alert sound when YOUR ship is being raided.
+]]
+function SoundController:PlayRaidAlertSound()
+  play2DSound(SOUNDS.raidAlert, VOLUMES.raidAlert)
 end
 
 --[[
