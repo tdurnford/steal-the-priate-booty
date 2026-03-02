@@ -10,7 +10,8 @@
     - Grace-save of ship hold doubloons before despawn
     - Ship tier upgrades/downgrades when treasury changes
     - Deposit mechanic: held doubloons → ship hold, threat reduction
-    - Client signals for ship spawn/despawn/tier change/deposit events
+    - Lock mechanic: ship hold → treasury, threat reset, auto-unlock on Harbor exit
+    - Client signals for ship spawn/despawn/tier change/deposit/lock events
 
   Dock slots are defined as Parts in workspace.ShipDockPoints.
   Each dock slot Part should have:
@@ -21,6 +22,7 @@
     - GetShipAtDock(slotIndex) to find which ship is at a dock
     - GetShipOwner(slotIndex) to find who owns a ship at a dock
     - RecalculateShipTier(player) when treasury changes
+    - UnlockShip(player) when player exits Harbor zone (HARBOR-001)
 ]]
 
 local Players = game:GetService("Players")
@@ -48,6 +50,12 @@ local ShipService = Knit.CreateService({
     -- Fired to the depositing player on successful deposit.
     -- Args: (slotIndex: number, amountDeposited: number, newShipHold: number)
     DepositCompleted = Knit.CreateSignal(),
+    -- Fired to the locking player on successful lock.
+    -- Args: (slotIndex: number, amountLocked: number, newTreasury: number)
+    LockCompleted = Knit.CreateSignal(),
+    -- Fired to a player when their ship is unlocked (e.g. leaving Harbor).
+    -- Args: (slotIndex: number)
+    ShipUnlocked = Knit.CreateSignal(),
   },
 })
 
@@ -56,6 +64,8 @@ ShipService.ShipSpawned = Signal.new() -- (shipEntry)
 ShipService.ShipDespawned = Signal.new() -- (shipEntry)
 ShipService.ShipTierChanged = Signal.new() -- (shipEntry, oldTierId, newTierId)
 ShipService.DepositCompleted = Signal.new() -- (player, amountDeposited, newShipHold)
+ShipService.LockCompleted = Signal.new() -- (player, amountLocked, newTreasury)
+ShipService.ShipUnlocked = Signal.new() -- (player)
 
 -- Lazy-loaded service references (set in KnitStart)
 local DataService = nil
@@ -654,6 +664,106 @@ function ShipService.Client:DepositAll(player: Player): (boolean, string?)
     newShipHold
   )
   return true, nil
+end
+
+--[[
+  Locks the player's ship: moves all ship hold doubloons to permanent treasury.
+  Resets threat to 0 and updates lastLockTime.
+  Recalculates ship tier since treasury changed.
+  @param player The calling player (injected by Knit)
+  @return (success: boolean, message: string?)
+]]
+function ShipService.Client:LockShip(player: Player): (boolean, string?)
+  local entry = DockedShips[player]
+  if not entry then
+    return false, "No ship docked"
+  end
+
+  -- Validate proximity (generous 20 stud threshold for network lag)
+  local character = player.Character
+  local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+  if not rootPart then
+    return false, "No character"
+  end
+  local distance = (rootPart.Position - entry.position).Magnitude
+  if distance > 20 then
+    return false, "Too far from ship"
+  end
+
+  -- Check if already locked
+  if SessionStateService:IsShipLocked(player) then
+    return false, "Ship is already locked"
+  end
+
+  -- Get current ship hold
+  local shipHold = SessionStateService:GetShipHold(player)
+
+  -- Move ship hold → treasury (even if hold is 0, locking is still valid)
+  if shipHold > 0 then
+    local success = DataService:UpdateTreasury(player, shipHold)
+    if not success then
+      return false, "Failed to update treasury"
+    end
+    SessionStateService:SetShipHold(player, 0)
+  end
+
+  -- Set ship as locked
+  SessionStateService:SetShipLocked(player, true)
+
+  -- Reset threat to 0
+  SessionStateService:SetThreatLevel(player, GameConfig.ShipSystem.lockThreatReset)
+
+  -- Get updated treasury for client display
+  local newTreasury = DataService:GetTreasury(player)
+
+  -- Recalculate ship tier since treasury may have changed
+  ShipService:RecalculateShipTier(player)
+
+  -- Fire client signal to locking player
+  self.LockCompleted:Fire(player, entry.slotIndex, shipHold, newTreasury)
+
+  -- Fire server-side signal for inter-service use
+  ShipService.LockCompleted:Fire(player, shipHold, newTreasury)
+
+  print(
+    "[ShipService]",
+    player.Name,
+    "locked ship. Moved",
+    shipHold,
+    "doubloons to treasury. New treasury:",
+    newTreasury
+  )
+  return true, nil
+end
+
+--------------------------------------------------------------------------------
+-- SHIP UNLOCK (called when player exits Harbor zone — HARBOR-001)
+--------------------------------------------------------------------------------
+
+--[[
+  Unlocks a player's ship. Called by HARBOR-001 when the player exits
+  the Harbor safe zone.
+  @param player The player whose ship to unlock
+]]
+function ShipService:UnlockShip(player: Player)
+  if not SessionStateService:IsShipLocked(player) then
+    return
+  end
+
+  local entry = DockedShips[player]
+  if not entry then
+    return
+  end
+
+  SessionStateService:SetShipLocked(player, false)
+
+  -- Fire client signal
+  self.Client.ShipUnlocked:Fire(player, entry.slotIndex)
+
+  -- Fire server-side signal
+  ShipService.ShipUnlocked:Fire(player)
+
+  print("[ShipService]", player.Name, "ship auto-unlocked (left Harbor)")
 end
 
 --------------------------------------------------------------------------------

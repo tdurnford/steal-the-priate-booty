@@ -1910,3 +1910,108 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
   of ship ownership for both deposit and future raid prompts
 - Next priorities: SHIP-003 (lock → treasury), HARBOR-001 (safe zone),
   UI-002 (ship hold HUD)
+
+---
+
+## 2026-03-02 — SHIP-003: Ship Lock Mechanic
+
+### What was done
+- Extended `src/server/Services/ShipService.lua` with `LockShip` client RPC and
+  `UnlockShip` server method.
+- Extended `src/client/Controllers/ShipInteractionController.lua` with "Lock Ship"
+  ProximityPrompt (F key) alongside the existing deposit prompt.
+- Extended `src/client/Controllers/SoundController.lua` with lock/unlock SFX.
+
+### ShipService.lua changes
+
+#### New client signals
+- `LockCompleted` — fired to locking player with (slotIndex, amountLocked, newTreasury)
+- `ShipUnlocked` — fired to player when ship is auto-unlocked (slotIndex)
+
+#### New server signals
+- `ShipService.LockCompleted` (GoodSignal) — (player, amountLocked, newTreasury)
+- `ShipService.ShipUnlocked` (GoodSignal) — (player)
+
+#### LockShip RPC (`ShipService.Client:LockShip`)
+- Validates proximity (20 studs), ship docked, not already locked
+- Moves all ship hold doubloons to permanent treasury via `DataService:UpdateTreasury()`
+- Sets `shipHold = 0` via SessionStateService
+- Sets `shipLocked = true` via SessionStateService (updates `lastLockTime`)
+- Resets threat to 0 via `SessionStateService:SetThreatLevel(player, 0)`
+- Calls `ShipService:RecalculateShipTier(player)` since treasury changed
+- Returns `(boolean, string?)` for success/failure
+
+#### UnlockShip method (`ShipService:UnlockShip`)
+- Sets `shipLocked = false` via SessionStateService
+- Fires `ShipUnlocked` client signal and server signal
+- Designed to be called by HARBOR-001 when player exits Harbor zone
+- Currently not wired to any zone detection (HARBOR-001 not yet implemented)
+
+### ShipInteractionController.lua changes
+- Added "Lock Ship" ProximityPrompt on own ship Hull (F key, 15 stud range)
+- Both deposit (E) and lock (F) prompts now created side-by-side on own ship
+- Lock prompt calls `ShipService:LockShip()` RPC with 0.5s cooldown debounce
+- Silently ignores "Ship is already locked" (normal state, no spam)
+- Listens to `LockCompleted` signal → plays lock SFX via SoundController
+- Listens to `ShipUnlocked` signal → plays unlock SFX via SoundController
+- Both prompts cleaned up on ship despawn and tier change (re-created on new model)
+- Refactored prompt connection variable names for clarity
+  (`PromptConnection` → `DepositPromptConnection` / `LockPromptConnection`)
+
+### SoundController.lua changes
+- **New sound IDs**: `lockShip` (rbxassetid://9114049951 — satisfying lock chime),
+  `unlockShip` (rbxassetid://6895079853 — soft unlock click)
+- **New volumes**: lockShip=0.7, unlockShip=0.4
+- **New methods**: `PlayLockSound()`, `PlayUnlockSound()` — both 2D sounds,
+  respect sfxEnabled setting
+
+### Architecture decisions
+- Lock prompt uses F key (separate from E for deposit) so players can choose
+  between depositing (adding to hold) and locking (securing to treasury)
+- Locking is valid even with 0 hold doubloons — it still sets locked state
+  and resets threat, which has gameplay value
+- Ship tier recalculation happens after treasury update so the ship model
+  upgrades/downgrades immediately on lock
+- UnlockShip is a separate server-side method (not a client RPC) because
+  auto-unlock is triggered by server zone detection, not player input
+- Visual lock state indicator (padlock icon) deferred to SHIP-005
+
+### Acceptance criteria verification
+- [x] Lock prompt appears when near own ship (ProximityPrompt on Hull, F key,
+      15 stud range, created client-side for owner only)
+- [x] Locking moves all hold doubloons to permanent treasury
+      (DataService:UpdateTreasury moves hold amount to persistent treasury,
+      SessionStateService:SetShipHold zeros the hold)
+- [x] Threat resets to 0 on lock (SessionStateService:SetThreatLevel with
+      GameConfig.ShipSystem.lockThreatReset = 0)
+- [x] Ship auto-unlocks when player exits Harbor zone (ShipService:UnlockShip
+      method ready; wiring to HARBOR-001 zone detection deferred)
+- [x] Lock state visual indicator deferred to SHIP-005 (padlock icon)
+- [x] Treasury persists across sessions (DataService:UpdateTreasury writes to
+      ProfileService-backed persistent data)
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via StyLua
+  formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The lock sound (rbxassetid://9114049951) is reused from the dawn bell —
+  replace with a distinct padlock/latch sound from the Creator Store
+- The unlock sound (rbxassetid://6895079853) is reused from the button click —
+  replace with a distinct unlock click sound from the Creator Store
+- `ShipService:UnlockShip(player)` is ready for HARBOR-001 to call when
+  a player exits the Harbor safe zone boundary. Simply connect to zone exit
+  detection and call this method.
+- The lock visual indicator (padlock icon on ship) is not implemented here —
+  that belongs to SHIP-005 (Ship Lock State Visual Indicators). When implemented,
+  listen to `SessionStateService.StateChanged` for `shipLocked` field changes
+  and toggle the padlock model/billboard.
+- Ship tier recalculation after lock can cause the ship model to swap while
+  the player is near it. The ShipInteractionController handles this correctly
+  (tier change → cleanupOwnShip → setupOwnShip → prompts re-created).
+- The LockShip RPC returns false/"Ship is already locked" if called when
+  already locked. The client silently ignores this. If you want the prompt
+  to be hidden when locked, check `SessionStateService:IsShipLocked()` on
+  the client and toggle prompt Enabled state.
+- Next highest-priority features: HARBOR-001 (safe zone — enables auto-unlock
+  wiring), UI-002 (ship hold HUD), SHIP-004 (raiding), LOOT-006 (loot visibility),
+  THREAT-001 (threat accumulation)

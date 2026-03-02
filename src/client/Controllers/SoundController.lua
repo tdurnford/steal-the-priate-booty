@@ -53,8 +53,10 @@ local SOUNDS = {
   -- Doubloon pickup
   coinPickup = "rbxassetid://4612373815", -- coin collect chime
 
-  -- Ship deposit
+  -- Ship interactions
   deposit = "rbxassetid://5863456788", -- treasure deposit chime (coins into hold)
+  lockShip = "rbxassetid://9114049951", -- satisfying lock/latch sound (bell/chime)
+  unlockShip = "rbxassetid://6895079853", -- soft unlock click
 }
 
 -- Volume settings per sound type
@@ -81,6 +83,8 @@ local VOLUMES = {
   dashWhoosh = 0.5,
   coinPickup = 0.4,
   deposit = 0.6,
+  lockShip = 0.7,
+  unlockShip = 0.4,
 }
 
 -- References
@@ -222,6 +226,20 @@ end
 ]]
 function SoundController:PlayDepositSound()
   play2DSound(SOUNDS.deposit, VOLUMES.deposit)
+end
+
+--[[
+	Plays the lock sound when the ship is locked (hold → treasury).
+]]
+function SoundController:PlayLockSound()
+  play2DSound(SOUNDS.lockShip, VOLUMES.lockShip)
+end
+
+--[[
+	Plays the unlock sound when the ship is auto-unlocked (leaving Harbor).
+]]
+function SoundController:PlayUnlockSound()
+  play2DSound(SOUNDS.unlockShip, VOLUMES.unlockShip)
 end
 
 --[[
