@@ -1,17 +1,19 @@
 --[[
   CombatController.lua
-  Client-side combat input handler for light and heavy swing attacks.
+  Client-side combat input handler for light swing, heavy swing, and block.
 
   Handles:
-    - Detecting primary click (Mouse1 / Touch tap) for combat
+    - Detecting primary click (Mouse1 / Touch tap) for attack
     - Tap / quick release → light swing (fast, 0.4s cooldown)
     - Hold 0.8s then release → heavy swing (charge, 1.2s cooldown, vulnerable)
-    - Sending attack intent to CombatService
+    - Detecting secondary click (Mouse2) for block
+    - Hold Mouse2 → block stance (50% speed, reduced ragdoll/spill on hit)
+    - Sending attack/block intent to CombatService
     - Client-side cooldown display (to prevent spamming the server)
-    - Playing swing/charge animations and SFX on attack
-    - Receiving hit confirmation and ragdoll triggers from server
+    - Playing swing/charge/block animations and SFX
+    - Receiving hit confirmation, ragdoll triggers, and block impacts from server
     - Physics-based ragdoll via RagdollModule (joint disabling, knockback, tumble)
-    - Character respawn cleanup for ragdoll state
+    - Character respawn cleanup for ragdoll/block state
 
   The server performs all validation and hit detection.
   This controller is purely for input and visual feedback.
@@ -49,6 +51,10 @@ local ChargeStartTime = 0
 local ChargeReady = false -- true when charge threshold is met
 local ChargeVFXPart: BasePart? = nil
 local ChargeTween: Tween? = nil
+
+-- Block state
+local IsBlocking = false
+local BlockAnimTrack: AnimationTrack? = nil
 
 -- Tracks the active ragdoll cleanup task so overlapping ragdolls cancel the old one
 local RagdollCleanupThread: thread? = nil
@@ -195,12 +201,77 @@ local function stopChargeVFX()
 end
 
 --[[
+  Plays a block stance animation (looping) on the local character.
+  Returns the AnimationTrack for later stopping.
+]]
+local function playBlockAnimation(): AnimationTrack?
+  local humanoid = getLocalHumanoid()
+  if not humanoid then
+    return nil
+  end
+
+  local animator = humanoid:FindFirstChildOfClass("Animator")
+  if not animator then
+    return nil
+  end
+
+  local animation = Instance.new("Animation")
+  animation.AnimationId = "rbxassetid://522635514" -- placeholder (defensive stance)
+  local track = animator:LoadAnimation(animation)
+  track.Priority = Enum.AnimationPriority.Action2
+  track.Looped = true
+  track:Play(0.1, 1, 0.5) -- slow speed for held stance feel
+  animation:Destroy()
+  return track
+end
+
+--[[
+  Stops the block stance animation.
+]]
+local function stopBlockAnimation()
+  if BlockAnimTrack then
+    BlockAnimTrack:Stop(0.15)
+    BlockAnimTrack = nil
+  end
+end
+
+--[[
+  Sends block state change to the server and manages local state.
+  @param blocking Whether to start or stop blocking
+]]
+local function setBlockState(blocking: boolean)
+  if IsBlocking == blocking then
+    return
+  end
+
+  IsBlocking = blocking
+
+  if blocking then
+    BlockAnimTrack = playBlockAnimation()
+    if SoundController then
+      SoundController:PlayBlockRaiseSound()
+    end
+  else
+    stopBlockAnimation()
+  end
+
+  -- Notify server
+  if CombatService then
+    CombatService.BlockStateChanged:Fire(blocking)
+  end
+end
+
+--[[
   Checks if the client-side cooldown has elapsed for a given cooldown duration.
   @param cooldown The cooldown time to check against
   @return true if the player can swing
 ]]
 local function canSwing(cooldown: number): boolean
   if IsRagdolled then
+    return false
+  end
+
+  if IsBlocking then
     return false
   end
 
@@ -217,6 +288,11 @@ end
   Begins charging for a potential heavy swing.
 ]]
 local function onPrimaryDown()
+  -- Cannot start an attack while blocking — must release block first
+  if IsBlocking then
+    return
+  end
+
   -- Must be able to at least light swing to start charging
   if not canSwing(LIGHT_SWING_COOLDOWN) then
     return
@@ -340,6 +416,11 @@ local function onRagdollTrigger(
     stopChargeVFX()
   end
 
+  -- If blocking, cancel the block (ragdolled out of block stance)
+  if IsBlocking then
+    setBlockState(false)
+  end
+
   IsRagdolled = true
   RagdollEndTime = os.clock() + ragdollDuration
 
@@ -370,6 +451,45 @@ local function onRagdollTrigger(
   end)
 end
 
+--[[
+  Called when the server confirms this player blocked an incoming hit.
+  Plays block impact SFX.
+  @param attackerName string Name of the player who hit us
+  @param ragdollDuration number Brief block-stagger duration
+]]
+local function onBlockImpact(attackerName: string, ragdollDuration: number)
+  if SoundController then
+    SoundController:PlayBlockImpactSound()
+  end
+end
+
+--[[
+  Called on secondary button press (Mouse2 down).
+  Starts blocking.
+]]
+local function onSecondaryDown()
+  if IsRagdolled then
+    return
+  end
+
+  -- Cannot block while charging a heavy swing
+  if IsCharging then
+    return
+  end
+
+  setBlockState(true)
+end
+
+--[[
+  Called on secondary button release (Mouse2 up).
+  Stops blocking.
+]]
+local function onSecondaryUp()
+  if IsBlocking then
+    setBlockState(false)
+  end
+end
+
 --------------------------------------------------------------------------------
 -- LIFECYCLE
 --------------------------------------------------------------------------------
@@ -386,14 +506,17 @@ function CombatController:KnitStart()
   -- Listen for server events
   CombatService.SwingResult:Connect(onSwingResult)
   CombatService.RagdollTrigger:Connect(onRagdollTrigger)
+  CombatService.BlockImpact:Connect(onBlockImpact)
 
-  -- Clean up ragdoll state on character removal (death/respawn)
+  -- Clean up ragdoll and block state on character removal (death/respawn)
   LocalPlayer.CharacterRemoving:Connect(function(character: Model)
     RagdollModule.cleanup(character)
     IsRagdolled = false
     IsCharging = false
     ChargeReady = false
+    IsBlocking = false
     stopChargeVFX()
+    stopBlockAnimation()
     if RagdollCleanupThread then
       task.cancel(RagdollCleanupThread)
       RagdollCleanupThread = nil
@@ -424,7 +547,25 @@ function CombatController:KnitStart()
     end
   end)
 
-  print("[CombatController] Started — click to light swing, hold to charge heavy swing")
+  -- Listen for secondary button down (start block)
+  UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+    if gameProcessed then
+      return
+    end
+
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+      onSecondaryDown()
+    end
+  end)
+
+  -- Listen for secondary button up (stop block)
+  UserInputService.InputEnded:Connect(function(input: InputObject)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+      onSecondaryUp()
+    end
+  end)
+
+  print("[CombatController] Started — click to swing, hold to charge, right-click to block")
 end
 
 return CombatController

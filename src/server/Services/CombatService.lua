@@ -1,18 +1,20 @@
 --[[
   CombatService.lua
-  Server-authoritative combat service for light and heavy swing attacks.
+  Server-authoritative combat service for light swing, heavy swing, and block.
 
   Handles:
     - Validating client attack inputs (cooldowns, state checks)
     - Server-side hit detection (forward arc, short/medium range)
     - Light swing: fast 0.4s cooldown, 8 stud range, 70° arc
     - Heavy swing: 0.8s charge, 1.2s cooldown, 10 stud range, 90° arc
+    - Block: secondary click hold, 50% speed, reduced ragdoll/spill on hit
     - Damage to containers (gear containerDamage value)
-    - Damage to players (ragdoll + loot spill)
+    - Damage to players (ragdoll + loot spill, reduced when blocking)
     - Per-target hit cooldown enforcement (2s)
     - Rate-limiting attack inputs to prevent exploit spam
 
   Client sends attack intent via AttackRequest (light) or HeavyAttackRequest (heavy).
+  Client sends block state via BlockStateChanged.
   Server validates, performs hit detection, and fires results back.
 ]]
 
@@ -36,6 +38,10 @@ local CombatService = Knit.CreateService({
     -- Args: (chargeTime: number) — how long the client held the button
     HeavyAttackRequest = Knit.CreateSignal(),
 
+    -- Client fires this to notify the server of block state changes.
+    -- Args: (blocking: boolean)
+    BlockStateChanged = Knit.CreateSignal(),
+
     -- Fired to the attacker when their swing connects.
     -- Args: (hitType: string, targetName: string?, attackType: string?)
     --   hitType: "player" | "container" | "npc" | "miss"
@@ -45,6 +51,10 @@ local CombatService = Knit.CreateService({
     -- Fired to a player when they are hit and should ragdoll.
     -- Args: (attackerName: string, ragdollDuration: number, knockbackVelocity: Vector3)
     RagdollTrigger = Knit.CreateSignal(),
+
+    -- Fired to a player when they successfully block an incoming hit.
+    -- Args: (attackerName: string, ragdollDuration: number)
+    BlockImpact = Knit.CreateSignal(),
 
     -- Fired to all players near a loot spill for VFX.
     -- Args: (targetPosition: Vector3, spillAmount: number)
@@ -75,6 +85,12 @@ local HEAVY_SWING_RANGE = GameConfig.Combat.heavySwingRange -- 10 studs
 local HEAVY_SWING_ARC = math.rad(GameConfig.Combat.heavySwingArc) -- 90 degree half-angle cone
 local HEAVY_SWING_COOLDOWN = GameConfig.Combat.heavySwingCooldown -- 1.2s
 local HEAVY_SWING_CHARGE_TIME = GameConfig.Combat.heavySwingChargeTime -- 0.8s
+
+-- Block parameters
+local BLOCK_SPEED_MULTIPLIER = GameConfig.Combat.blockSpeedMultiplier -- 0.5
+
+-- Per-player default walk speed (stored on first block for restoration)
+local PlayerDefaultWalkSpeed: { [Player]: number } = {}
 
 --------------------------------------------------------------------------------
 -- INTERNAL HELPERS
@@ -118,6 +134,10 @@ local function validateAttack(player: Player, cooldown: number): (boolean, strin
 
   if SessionStateService:IsInRecovery(player) then
     return false, "Cannot attack during recovery"
+  end
+
+  if SessionStateService:IsBlocking(player) then
+    return false, "Cannot attack while blocking"
   end
 
   -- Rate limiting: enforce minimum cooldown between attacks
@@ -263,17 +283,35 @@ local function handlePlayerHit(attacker: Player, target: Player, attackType: str
   -- Record the hit for per-target cooldown
   SessionStateService:RecordHitTarget(attacker, target.UserId)
 
-  -- Select ragdoll/knockback/spill values based on attack type
-  local isHeavy = attackType == "heavy"
-  local ragdollDuration = if isHeavy
-    then GameConfig.Ragdoll.heavyHitDuration
-    else GameConfig.Ragdoll.lightHitDuration
-  local knockbackForce = if isHeavy
-    then GameConfig.Ragdoll.heavyHitKnockback
-    else GameConfig.Ragdoll.lightHitKnockback
-  local spillPercent = if isHeavy
-    then GameConfig.LootSpill.heavyHitPercent
-    else GameConfig.LootSpill.lightHitPercent
+  -- Check if the target is blocking
+  local targetIsBlocking = SessionStateService:IsBlocking(target)
+
+  -- Select ragdoll/knockback/spill values based on attack type and block state
+  local ragdollDuration, knockbackForce, spillPercent
+  if targetIsBlocking then
+    -- Blocked hit: reduced ragdoll, no knockback, 5% spill
+    ragdollDuration = GameConfig.Ragdoll.blockedHitDuration
+    knockbackForce = GameConfig.Ragdoll.blockedHitKnockback
+    spillPercent = GameConfig.LootSpill.blockedHitPercent
+    -- End block state since player is ragdolled
+    SessionStateService:SetBlocking(target, false)
+    -- Restore walk speed on the target since block is ending via ragdoll
+    local targetHumanoid = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+    if targetHumanoid and PlayerDefaultWalkSpeed[target] then
+      targetHumanoid.WalkSpeed = PlayerDefaultWalkSpeed[target]
+    end
+  else
+    local isHeavy = attackType == "heavy"
+    ragdollDuration = if isHeavy
+      then GameConfig.Ragdoll.heavyHitDuration
+      else GameConfig.Ragdoll.lightHitDuration
+    knockbackForce = if isHeavy
+      then GameConfig.Ragdoll.heavyHitKnockback
+      else GameConfig.Ragdoll.lightHitKnockback
+    spillPercent = if isHeavy
+      then GameConfig.LootSpill.heavyHitPercent
+      else GameConfig.LootSpill.lightHitPercent
+  end
 
   SessionStateService:StartRagdoll(target, ragdollDuration)
 
@@ -281,7 +319,7 @@ local function handlePlayerHit(attacker: Player, target: Player, attackType: str
   local attackerHRP = getHRP(attacker)
   local targetHRP = getHRP(target)
   local knockbackVelocity = Vector3.zero
-  if attackerHRP and targetHRP then
+  if knockbackForce > 0 and attackerHRP and targetHRP then
     local knockbackDir = (targetHRP.Position - attackerHRP.Position)
     -- Use XZ direction only, normalize
     knockbackDir = Vector3.new(knockbackDir.X, 0, knockbackDir.Z)
@@ -293,6 +331,11 @@ local function handlePlayerHit(attacker: Player, target: Player, attackType: str
       knockbackDir = Vector3.new(knockbackDir.X, 0, knockbackDir.Z).Unit
     end
     knockbackVelocity = knockbackDir * knockbackForce
+  end
+
+  if targetIsBlocking then
+    -- Send block impact to the target (different visual than full ragdoll)
+    CombatService.Client.BlockImpact:Fire(target, attacker.Name, ragdollDuration)
   end
 
   -- Notify the target to ragdoll visually (with knockback)
@@ -317,6 +360,7 @@ local function handlePlayerHit(attacker: Player, target: Player, attackType: str
     local spillPos = if spillHRP then spillHRP.Position else Vector3.new(0, 5, 0)
 
     if DoubloonService then
+      local isHeavy = attackType == "heavy"
       DoubloonService:ScatterDoubloons(spillPos, spillAmount, if isHeavy then 6 else 4)
     end
 
@@ -327,11 +371,12 @@ local function handlePlayerHit(attacker: Player, target: Player, attackType: str
   -- Fire server-side signal
   CombatService.PlayerHitPlayer:Fire(attacker, target, spillAmount)
 
+  local hitLabel = if targetIsBlocking then "blocked" else attackType
   print(
     string.format(
       "[CombatService] %s %s-hit %s — ragdoll %.1fs, spilled %d doubloons",
       attacker.Name,
-      attackType,
+      hitLabel,
       target.Name,
       ragdollDuration,
       spillAmount
@@ -460,9 +505,52 @@ function CombatService:KnitStart()
     onHeavyAttackRequest(player, chargeTime)
   end)
 
+  -- Listen for block state changes from client
+  self.Client.BlockStateChanged:Connect(function(player: Player, blocking: any)
+    -- Sanity check the value is boolean
+    if type(blocking) ~= "boolean" then
+      return
+    end
+
+    if not SessionStateService or not SessionStateService:IsInitialized(player) then
+      return
+    end
+
+    -- Cannot block while ragdolled or in recovery
+    if blocking then
+      if SessionStateService:IsRagdolling(player) then
+        return
+      end
+      if SessionStateService:IsInRecovery(player) then
+        return
+      end
+    end
+
+    SessionStateService:SetBlocking(player, blocking)
+
+    -- Apply or restore movement speed
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+      if blocking then
+        -- Store default walk speed if not already stored
+        if not PlayerDefaultWalkSpeed[player] then
+          PlayerDefaultWalkSpeed[player] = humanoid.WalkSpeed
+        end
+        humanoid.WalkSpeed = PlayerDefaultWalkSpeed[player] * BLOCK_SPEED_MULTIPLIER
+      else
+        -- Restore default walk speed
+        if PlayerDefaultWalkSpeed[player] then
+          humanoid.WalkSpeed = PlayerDefaultWalkSpeed[player]
+        end
+      end
+    end
+  end)
+
   -- Clean up rate limiting data on player leave
   Players.PlayerRemoving:Connect(function(player: Player)
     LastAttackTime[player] = nil
+    PlayerDefaultWalkSpeed[player] = nil
   end)
 
   print("[CombatService] Started")

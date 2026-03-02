@@ -43,6 +43,10 @@ local SOUNDS = {
   containerBreak = "rbxassetid://5743416168", -- satisfying explosion/shatter
   containerBreakVault = "rbxassetid://5743416168", -- louder variant for Captain's Vault
 
+  -- Block sounds
+  blockRaise = "rbxassetid://3932505093", -- metallic guard raise
+  blockImpact = "rbxassetid://4801618977", -- clank/impact on blocked hit
+
   -- Doubloon pickup
   coinPickup = "rbxassetid://4612373815", -- coin collect chime
 }
@@ -66,6 +70,8 @@ local VOLUMES = {
   containerHitLoud = 0.8,
   containerBreak = 0.7,
   containerBreakVault = 1.0,
+  blockRaise = 0.3,
+  blockImpact = 0.6,
   coinPickup = 0.4,
 }
 
@@ -173,6 +179,20 @@ end
 ]]
 function SoundController:PlayButtonClickSound()
   play2DSound(SOUNDS.buttonClick, VOLUMES.buttonClick)
+end
+
+--[[
+	Plays the block raise sound (when player enters block stance).
+]]
+function SoundController:PlayBlockRaiseSound()
+  play2DSound(SOUNDS.blockRaise, VOLUMES.blockRaise)
+end
+
+--[[
+	Plays the block impact sound (when a blocked hit connects).
+]]
+function SoundController:PlayBlockImpactSound()
+  play2DSound(SOUNDS.blockImpact, VOLUMES.blockImpact)
 end
 
 --[[

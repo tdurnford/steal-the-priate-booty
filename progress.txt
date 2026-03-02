@@ -1462,3 +1462,145 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Next highest-priority features: COMBAT-003 (block mechanic), COMBAT-004
   (dash), UI-002 (ship hold indicator), SHIP-001 (ship dock system),
   COMBAT-006 (combat cooldowns — mostly already implemented in COMBAT-001)
+
+---
+
+## 2026-03-02 — COMBAT-003: Block Mechanic
+
+### What was done
+- Extended `src/server/Services/CombatService.lua` with block state handling:
+  new `BlockStateChanged` client signal, `BlockImpact` client signal,
+  server-side block state management with movement speed reduction.
+- Extended `src/client/Controllers/CombatController.lua` with secondary click
+  (Mouse2) block input: hold to block, release to unblock, block stance
+  animation, block impact SFX, state cancellation on ragdoll/respawn.
+- Extended `src/server/Services/SessionStateService.lua` with `IsBlocking()`
+  and `SetBlocking()` methods.
+- Extended `src/shared/Types.lua` with `isBlocking` field on SessionState.
+- Extended `src/client/Controllers/SoundController.lua` with block raise
+  and block impact sounds.
+
+### CombatService.lua changes
+
+#### New client signals
+- `BlockStateChanged` — client fires `(blocking: boolean)` to notify server
+  when player starts/stops blocking
+- `BlockImpact` — server fires `(attackerName, ragdollDuration)` to the
+  blocking player when they are hit while blocking (for SFX feedback)
+
+#### Block state validation
+- On `BlockStateChanged`: validates `blocking` is boolean, session is
+  initialized, player is not ragdolled or in recovery before accepting
+- On block start: stores player's default WalkSpeed, sets WalkSpeed to
+  50% (GameConfig.Combat.blockSpeedMultiplier)
+- On block end: restores original WalkSpeed from stored value
+- Cleanup: `PlayerDefaultWalkSpeed[player] = nil` on PlayerRemoving
+
+#### Attack validation updated
+- `validateAttack()` now checks `SessionStateService:IsBlocking(player)` —
+  returns false with "Cannot attack while blocking" if active
+
+#### Blocked hit handling in handlePlayerHit
+- Checks `SessionStateService:IsBlocking(target)` before selecting hit values
+- If target is blocking:
+  - Uses `GameConfig.Ragdoll.blockedHitDuration` (0.5s) for ragdoll
+  - Uses `GameConfig.Ragdoll.blockedHitKnockback` (0) for no knockback
+  - Uses `GameConfig.LootSpill.blockedHitPercent` (5%) for loot spill
+  - Ends block state (SetBlocking false) since player is ragdolled
+  - Restores walk speed to default
+  - Fires `BlockImpact` signal to the target client
+- If target is NOT blocking: uses normal light/heavy hit values (unchanged)
+
+### SessionStateService.lua changes
+- **New methods**: `IsBlocking(player)`, `SetBlocking(player, blocking)`
+- `SetBlocking` fires `notifyChange` so the StateChanged signal propagates
+
+### Types.lua changes
+- **New field** on `SessionState`: `isBlocking: boolean`
+- Added to `DEFAULT_SESSION_STATE` (default: `false`)
+- Added to `createSessionState()` factory (default: `false`)
+
+### CombatController.lua changes
+
+#### Block state tracking
+- New local variables: `IsBlocking`, `BlockAnimTrack`
+- `setBlockState(blocking)` manages local state, plays/stops animation,
+  plays block raise SFX, sends `BlockStateChanged` to server
+
+#### Block animation
+- `playBlockAnimation()` plays a looping placeholder animation at Action2
+  priority and 0.5x speed for a held defensive stance feel
+- `stopBlockAnimation()` stops the track with 0.15s fade-out
+
+#### Input handling
+- Mouse2 down → `onSecondaryDown()` → starts blocking (if not ragdolled,
+  not charging)
+- Mouse2 up → `onSecondaryUp()` → stops blocking
+- Primary click (Mouse1) is rejected while blocking (`canSwing` returns
+  false, `onPrimaryDown` returns early if IsBlocking)
+- Ragdoll trigger cancels block state (calls `setBlockState(false)`)
+- CharacterRemoving cleans up block state and animation
+
+#### Block impact
+- `onBlockImpact(attackerName, ragdollDuration)` listener plays
+  `PlayBlockImpactSound()` via SoundController
+
+### SoundController.lua changes
+- **New sound IDs**: `blockRaise` (rbxassetid://3932505093 — metallic
+  guard raise), `blockImpact` (rbxassetid://4801618977 — clank/impact)
+- **New volumes**: blockRaise=0.3, blockImpact=0.6
+- **New methods**: `PlayBlockRaiseSound()`, `PlayBlockImpactSound()`
+
+### Also marked as done in PRD
+- **COMBAT-006** (Combat Cooldowns & Anti-Spam): All acceptance criteria
+  were already met by COMBAT-001 implementation — per-target 2s cooldown
+  (SessionStateService:CanHitTarget), server-side rate limiting
+  (LastAttackTime), ragdoll chain prevention (can't hit ragdolled targets).
+  Marked done.
+- **COMBAT-007** (PvP Loot Spill Calculation): All acceptance criteria
+  were already met across COMBAT-001, COMBAT-002, and now COMBAT-003 —
+  10%/25%/5% spill for light/heavy/blocked, min 1 doubloon, spill-all
+  threshold, bounty 2x multiplier, deduction and scatter. Marked done.
+
+### Acceptance criteria verification
+- [x] Holding secondary click activates block (Mouse2 down sends
+      BlockStateChanged(true) to server, server sets isBlocking=true)
+- [x] Blocked hits: 0.5s ragdoll, 5% loot spill, no knockback
+      (GameConfig.Ragdoll.blockedHitDuration=0.5, blockedHitKnockback=0,
+      LootSpill.blockedHitPercent=0.05)
+- [x] 50% movement speed while blocking (server sets Humanoid.WalkSpeed
+      to default * 0.5 via GameConfig.Combat.blockSpeedMultiplier)
+- [x] Cannot attack while blocking (validateAttack checks IsBlocking,
+      canSwing returns false, onPrimaryDown returns early)
+- [x] Block state is replicated visually (block animation plays on
+      client via Animator, block stance is visible to other players
+      through character animation replication)
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via
+  StyLua formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The block animation (rbxassetid://522635514) is the same placeholder as
+  the swing — replace with a proper defensive stance animation when
+  COMBAT-VFX-001 is implemented
+- The block raise sound (rbxassetid://3932505093) and block impact sound
+  (rbxassetid://4801618977) should be verified in Roblox Studio. Replace
+  with custom metallic clank/shield sounds from the Creator Store if they
+  don't sound right.
+- Block auto-cancels on ragdoll (both client and server side). The server
+  ends the block state in handlePlayerHit when the target is blocking,
+  and the client cancels in onRagdollTrigger.
+- The server stores default WalkSpeed per player in `PlayerDefaultWalkSpeed`
+  table. This is set on first block and cleaned up on PlayerRemoving. If
+  a player's base speed changes (e.g., rank speed bonus), the stored value
+  should be updated.
+- The block stance uses a looping animation at Action2 priority. If other
+  looping animations conflict, adjust the priority level.
+- When COMBAT-004 (dash) is implemented:
+  - Dash should cancel block state (add IsBlocking check in dash handler)
+  - Dash while blocking could be a potential mechanic to consider
+- The `BlockImpact` signal fires to the blocking player only (not all
+  clients). If you want block impact VFX visible to other players, add
+  a FireAll signal similar to LootSpillVFX.
+- Next highest-priority features: COMBAT-004 (dash), UI-002 (ship hold
+  indicator), SHIP-001 (ship dock system), LOOT-006 (loot visibility)

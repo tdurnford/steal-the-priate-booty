@@ -263,6 +263,28 @@ function SessionStateService:EndRagdoll(player: Player)
   end
 end
 
+--------------------------------------------------------------------------------
+-- BLOCK STATE
+--------------------------------------------------------------------------------
+
+function SessionStateService:IsBlocking(player: Player): boolean
+  local state = SessionStates[player]
+  return if state then state.isBlocking else false
+end
+
+function SessionStateService:SetBlocking(player: Player, blocking: boolean)
+  local state = SessionStates[player]
+  if not state then
+    return
+  end
+  state.isBlocking = blocking
+  notifyChange(player, "isBlocking", blocking)
+end
+
+--------------------------------------------------------------------------------
+-- DASH COOLDOWN
+--------------------------------------------------------------------------------
+
 function SessionStateService:IsDashOnCooldown(player: Player): boolean
   local state = SessionStates[player]
   if not state then
