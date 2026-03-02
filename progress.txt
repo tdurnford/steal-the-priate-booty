@@ -1722,3 +1722,132 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Next highest-priority features: SHIP-001 (ship dock system — foundation
   for the ship economy loop), UI-002 (ship hold indicator), LOOT-006
   (loot visibility), HARBOR-001 (safe zone)
+
+---
+
+## 2026-03-02 — SHIP-001: Ship Dock & Spawn System
+
+### What was done
+- Created `src/server/Services/ShipService.lua` — server-authoritative ship
+  dock and spawn system that manages player ships at harbor dock slots.
+
+### ShipService.lua — complete system
+
+#### Dock slot management
+- Dock slots defined as Parts in `workspace.ShipDockPoints` with `SlotIndex`
+  attribute (1-24).
+- `getDockPoints()` fetches all dock point Parts, sorted by SlotIndex.
+- `getAvailableDockSlot()` returns first unoccupied slot.
+- `DockSlotOccupancy: { [number]: ShipEntry }` tracks slot → ship mapping.
+- `DockedShips: { [Player]: ShipEntry }` tracks player → ship mapping.
+- Max 24 simultaneous docked ships per the GameConfig.ShipSystem.maxDockSlots.
+
+#### Ship spawning
+- Triggers on `DataService.PlayerDataLoaded` signal (not PlayerAdded), because
+  ship tier requires treasury balance from persistent data.
+- `spawnShip(player)` calculates tier via `GameConfig.getShipTierForTreasury()`,
+  finds available dock slot, creates placeholder model, registers in both
+  DockedShips and DockSlotOccupancy registries.
+- Handles studio edge case (players already in game when Knit starts).
+
+#### Ship model creation (placeholder)
+- 7 ship tier appearances defined in `SHIP_APPEARANCE` table (rowboat through
+  ghost_ship) with size, color, and material per tier.
+- Hull part with metadata attributes: ShipSlotIndex, ShipTierId, ShipTierName,
+  OwnerName.
+- Mast part for tiers >= 2 (Sloop and above).
+- Ghost Ship (tier 7) gets spectral PointLight and ParticleEmitter glow.
+- BillboardGui with owner name and ship tier name label (visible from 60 studs).
+- Ships parent to `workspace.DockedShips` folder.
+
+#### Ship despawning
+- On PlayerRemoving: removes from DockedShips but keeps in DockSlotOccupancy,
+  starts 30-second delayed despawn via `task.delay`.
+- `PendingDespawns: { [number]: thread }` tracks userId → despawn thread.
+- If player rejoins before timer expires, pending despawn is cancelled and old
+  ship is cleaned up so a fresh one spawns.
+- `BindToClose` immediately destroys all ship models and cancels pending
+  despawns on server shutdown.
+
+#### Ship tier recalculation
+- `RecalculateShipTier(player)` checks treasury against
+  `GameConfig.getShipTierForTreasury()`, and if tier changed: destroys old model,
+  creates new model at same dock position, fires tier change signals.
+- Called by future SHIP-002/003 when treasury changes (deposit+lock, gear
+  purchase, cosmetic purchase).
+
+#### Server-side API
+- `GetDockedShip(player)` — full ShipEntry for a player
+- `GetShipAtDock(slotIndex)` — ShipEntry at a dock slot
+- `GetShipOwnerUserId(slotIndex)` — owner UserId at a slot
+- `GetShipModel(player)` — the workspace Model
+- `GetShipPosition(player)` — dock position Vector3
+- `GetDockSlot(player)` — dock slot number
+- `GetAllDockedShips()` — summary array of all docked ships
+
+#### Client-callable methods (Knit RPCs)
+- `Client:GetMyShip(player)` → slotIndex, shipTierId, position
+- `Client:GetAllDockedShips(player)` → array of ship summaries
+
+#### Client signals (Knit RemoteSignals)
+- `ShipSpawned` — FireAll(slotIndex, ownerUserId, ownerName, shipTierId, position)
+- `ShipDespawned` — FireAll(slotIndex, ownerUserId)
+- `ShipTierChanged` — FireAll(slotIndex, ownerUserId, newShipTierId)
+
+#### Server-side signals (GoodSignal)
+- `ShipSpawned` — (shipEntry)
+- `ShipDespawned` — (shipEntry)
+- `ShipTierChanged` — (shipEntry, oldTierId, newTierId)
+
+### ShipEntry type
+```
+{
+  slotIndex: number,
+  owner: Player,
+  ownerUserId: number,
+  ownerName: string,
+  shipTierId: string,
+  shipTierNumber: number,
+  model: Model,
+  position: Vector3,
+  dockPoint: Part,
+  createdAt: number,
+}
+```
+
+### Acceptance criteria verification
+1. ✅ Player's ship spawns at a dock slot on join — triggers on
+   DataService.PlayerDataLoaded, finds available slot, creates model.
+2. ✅ Ship model matches the player's treasury-based tier —
+   `GameConfig.getShipTierForTreasury()` determines tier, appearance scales.
+3. ✅ Ship despawns 30s after player leaves — `scheduleDespawn()` uses
+   `task.delay(GameConfig.ShipSystem.despawnDelay, ...)`.
+4. ✅ Hold doubloons are grace-saved on despawn — grace-save already handled
+   by DataService's `graceSaveOnDisconnect()` (moves shipHold → treasury),
+   which fires before ShipService processes the disconnect.
+5. ✅ 24 dock slots available for max server capacity — enforced by
+   `getAvailableDockSlot()` checking `DockSlotOccupancy` against available
+   dock point Parts.
+
+### Notes for next developer
+- **Dock points setup required**: Place Part instances in a Folder named
+  `ShipDockPoints` in workspace. Each Part needs a `SlotIndex` (number)
+  attribute (1 through 24). Position them along the harbor waterfront.
+  The service warns if the folder is missing but doesn't crash.
+- Roblox Studio MCP was not available for in-game testing; verified via
+  StyLua formatting check across all src files.
+- Selene linting skipped due to pre-existing rokit PATH issue.
+- Ship models are placeholder colored boxes — MODEL-001 will replace them
+  with proper pirate ship meshes.
+- The grace-save for ship hold doubloons is handled by DataService's
+  existing `graceSaveOnDisconnect()` which already moves `state.shipHold`
+  to `profile.Data.treasury`. ShipService doesn't need to duplicate this.
+- `RecalculateShipTier(player)` is exposed for SHIP-002 (deposit), SHIP-003
+  (lock), GEAR-002 (purchase), and COSMETIC-002 (purchase) to call when
+  treasury changes.
+- The rejoin flow (cancel pending despawn → destroy old ship → spawn fresh)
+  handles edge cases where a player disconnects and reconnects within the
+  30-second despawn window.
+- Next highest-priority features: SHIP-002 (deposit mechanic — deposit held
+  doubloons to ship hold), SHIP-003 (lock mechanic — move hold to treasury),
+  HARBOR-001 (safe zone — PvP disabled in harbor), UI-002 (ship hold HUD)
