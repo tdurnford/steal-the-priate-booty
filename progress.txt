@@ -1090,3 +1090,119 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Next highest-priority features: UI-002 (ship hold indicator), UI-010
   (gear shop UI), COMBAT-005 (ragdoll physics), COMBAT-002 (heavy swing),
   COMBAT-003 (block mechanic)
+
+---
+
+## 2026-03-02 — UI-010: Gear Shop UI
+
+### What was done
+- Created `src/client/UI/GearShopPanel.lua` — a Fusion 0.3 component that renders
+  the gear shop panel with all 5 purchasable cutlass tiers.
+- Created `src/client/Controllers/GearShopController.lua` — a Knit controller that
+  manages shop open/close, data fetching, and purchase/equip routing.
+
+### GearShopPanel.lua — Fusion 0.3 component
+
+#### Visual design
+- Centered modal panel (360px wide) with UITheme-consistent dark background,
+  rounded corners, and stroke border
+- Header: "GEAR SHOP" title with red close button (X)
+- 5 gear item rows (Rusty → Legendary), each showing:
+  - Gear name (FredokaOne primary font, white text with stroke)
+  - Damage badge (colored by tier: grey → white → gold → orange)
+  - "OWNED" label for purchased items
+  - Cost display with coin emoji (gold for affordable, red for unaffordable,
+    green "FREE" for Rusty Cutlass)
+  - Action button: BUY (green), EQUIP (cyan), or EQUIPPED (disabled grey)
+- Footer: treasury balance display with coin icon
+- Driftwood is excluded from the shop listing (tutorial-only weapon)
+
+#### Animations & interactions
+- Panel fade in/out with scale bounce (UITheme.Animation.Bouncy)
+- Row background highlights on hover (SurfaceHover)
+- Equipped row has distinct SurfaceSelected background
+- Button colors tween on hover (green hover for buy, cyan hover for equip)
+- Action button debounce (0.5s) prevents double-click exploits
+- Buy button is disabled (grey) when treasury is insufficient
+
+#### API
+- `GearShopPanel.create(scope, isVisible, catalog, treasury, onAction, onClose)`
+  returns the panel Frame instance
+
+### GearShopController.lua — Knit controller
+
+#### Shop lifecycle
+- Creates ScreenGui at DisplayOrder=50 (above HUD=10, below alerts)
+- Opens/closes via G keybind (`Enum.KeyCode.G`)
+- Toggle behavior: pressing G while open closes the shop
+- Plays button click SFX on open/close via SoundController
+
+#### Data flow
+- On open: fetches fresh gear catalog from `GearService:GetGearCatalog()`
+  and treasury balance from `DataService:GetTreasury()`
+- Catalog contains per-item ownership and equip status from the server
+- Treasury balance stored as Fusion.Value for reactive affordability checks
+- Panel rebuilds with fresh data on each open and after any gear change
+
+#### Purchase/equip routing
+- Buy: calls `GearController:PurchaseGear(gearId)` → server validates and
+  processes → on success refreshes treasury + catalog → panel rebuilds
+- Equip: calls `GearController:EquipGear(gearId)` → server validates →
+  on success refreshes catalog → panel rebuilds
+- Failed purchase plays purchaseFail SFX
+- GearController.GearChanged signal triggers auto-refresh while shop is open
+
+#### DataService integration
+- Listens to `DataService.DataChanged` for "treasury" field changes
+  so the treasury display updates live (e.g., if doubloons are deposited
+  while the shop is open)
+- Loads initial treasury from `DataService:GetData()` on KnitStart
+
+### How it integrates with existing systems
+- **GearService**: All server-side purchase/equip logic was already built
+  in GEAR-002. GearShopController calls through GearController which calls
+  GearService RPCs. No server changes needed.
+- **GearController**: Already had PurchaseGear, EquipGear, GetGearCatalog
+  methods. GearShopController uses them as-is.
+- **DataService**: Treasury query and DataChanged signal were already
+  implemented. No changes needed.
+- **SoundController**: Purchase success/fail sounds and button click sounds
+  were already implemented. No changes needed.
+- **UITheme**: All colors, fonts, corner radii, and animation presets come
+  from UITheme for design consistency with other panels.
+
+### Acceptance criteria verification
+- [x] All 5 cutlass tiers displayed with correct info (name, cost, damage
+      from GameConfig via GearService:GetGearCatalog)
+- [x] Buy/Equip/Equipped states shown correctly per item (server-provided
+      ownership and equip status)
+- [x] Buy disabled if insufficient treasury (reactive CanAfford computed
+      from Fusion treasury Value vs entry cost)
+- [x] Purchases deduct treasury and update UI (refreshTreasury +
+      refreshCatalog + panel rebuild on success)
+- [x] Equipping changes the active gear (EquipGear → GearChanged signal
+      → catalog refresh → panel rebuild with new equipped state)
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via
+  StyLua formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The shop is currently opened via G keybind only. When MAP-001 (Harbor
+  Zone Layout) and HARBOR-001 (Harbor Safe Zone) are implemented, add a
+  proximity trigger or NPC interaction to open the shop. The public API
+  `GearShopController:Open()` is ready for this.
+- The panel rebuilds entirely on catalog refresh (destroys and recreates
+  the Fusion tree). This is simple and correct for 5 items. If item count
+  grows, consider ForValues/ForPairs reactive lists instead.
+- The controller tracks a single FusionScope for the shop lifetime. The
+  ScreenGui and scope persist across open/close cycles — only the panel
+  Frame is rebuilt.
+- GearShopController:IsOpen() can be checked by CombatController to block
+  attacks while shopping (not yet integrated — COMBAT-001 currently doesn't
+  check for open UI panels).
+- To add the cosmetic shop (UI-011): follow the same pattern — create a
+  CosmeticShopPanel Fusion component and CosmeticShopController Knit
+  controller, using CosmeticService RPCs.
+- Next highest-priority features: UI-002 (ship hold indicator), COMBAT-005
+  (ragdoll physics), COMBAT-002 (heavy swing), COMBAT-003 (block mechanic),
+  UI-011 (cosmetic shop UI)
