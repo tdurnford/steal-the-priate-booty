@@ -75,6 +75,7 @@ local CombatService = Knit.CreateService({
 -- Server-side signals for inter-service communication
 CombatService.PlayerHitPlayer = Signal.new() -- (attacker, target, spillAmount)
 CombatService.PlayerHitContainer = Signal.new() -- (attacker, containerId, destroyed)
+CombatService.PlayerHitNPC = Signal.new() -- (attacker, npcId, killed)
 
 -- Lazy-loaded service references (set in KnitStart)
 local SessionStateService = nil
@@ -82,6 +83,7 @@ local DataService = nil
 local ContainerService = nil
 local DoubloonService = nil
 local HarborService = nil
+local NPCService = nil
 
 -- Per-player last attack timestamp for rate limiting
 local LastAttackTime: { [Player]: number } = {}
@@ -213,13 +215,14 @@ end
 
 --[[
   Performs server-side hit detection for a swing attack.
-  Checks for player targets and container targets in the attacker's forward arc.
+  Checks for player targets, NPC targets, and container targets in the attacker's forward arc.
+  Priority: players > NPCs > containers.
   @param attacker The attacking player
   @param range The max range in studs
   @param arc The max half-angle in radians
   @return (hitType: string, target: any?)
-    hitType: "player" | "container" | "miss"
-    target: Player (for player hits) or container entry table (for container hits)
+    hitType: "player" | "npc" | "container" | "miss"
+    target: Player (for player hits), NPC entry (for NPC hits), or container entry (for container hits)
 ]]
 local function performHitDetection(attacker: Player, range: number, arc: number): (string, any?)
   local attackerHRP = getHRP(attacker)
@@ -267,6 +270,37 @@ local function performHitDetection(attacker: Player, range: number, arc: number)
 
   if closestPlayer then
     return "player", closestPlayer
+  end
+
+  -- Check NPC targets (priority over containers)
+  local closestNPCDist = math.huge
+  local closestNPCEntry = nil
+
+  if NPCService then
+    local npcsFolder = workspace:FindFirstChild("NPCs")
+    if npcsFolder then
+      for _, child in npcsFolder:GetChildren() do
+        if child:IsA("Model") then
+          local rootPart = child:FindFirstChild("HumanoidRootPart") or child:FindFirstChild("Torso")
+          if rootPart and rootPart:IsA("BasePart") then
+            if isInSwingArc(attackerCFrame, rootPart.Position, range, arc) then
+              local dist = (rootPart.Position - attackerCFrame.Position).Magnitude
+              if dist < closestNPCDist then
+                local npcEntry = NPCService:GetNPCByPart(rootPart)
+                if npcEntry and npcEntry.alive then
+                  closestNPCDist = dist
+                  closestNPCEntry = npcEntry
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  if closestNPCEntry then
+    return "npc", closestNPCEntry
   end
 
   -- Check container targets
@@ -439,6 +473,30 @@ local function handleContainerHit(attacker: Player, containerEntry: any)
   end
 end
 
+--[[
+  Handles a player hitting an NPC.
+  Applies gear damage to the NPC via NPCService.
+]]
+local function handleNPCHit(attacker: Player, npcEntry: any)
+  local damage = getGearDamage(attacker)
+  local killed, _hpFraction = NPCService:DamageNPC(npcEntry.id, damage, attacker)
+
+  -- Fire server-side signal
+  CombatService.PlayerHitNPC:Fire(attacker, npcEntry.id, killed)
+
+  if killed then
+    print(
+      string.format(
+        "[CombatService] %s killed %s #%d with %d damage",
+        attacker.Name,
+        npcEntry.npcType,
+        npcEntry.id,
+        damage
+      )
+    )
+  end
+end
+
 --------------------------------------------------------------------------------
 -- CLIENT REQUEST HANDLERS
 --------------------------------------------------------------------------------
@@ -463,6 +521,9 @@ local function onAttackRequest(player: Player)
   if hitType == "player" and target then
     handlePlayerHit(player, target :: Player, "light")
     CombatService.Client.SwingResult:Fire(player, "player", (target :: Player).Name, "light")
+  elseif hitType == "npc" and target then
+    handleNPCHit(player, target)
+    CombatService.Client.SwingResult:Fire(player, "npc", target.npcType, "light")
   elseif hitType == "container" and target then
     handleContainerHit(player, target)
     CombatService.Client.SwingResult:Fire(player, "container", nil, "light")
@@ -503,6 +564,9 @@ local function onHeavyAttackRequest(player: Player, chargeTime: number)
   if hitType == "player" and target then
     handlePlayerHit(player, target :: Player, "heavy")
     CombatService.Client.SwingResult:Fire(player, "player", (target :: Player).Name, "heavy")
+  elseif hitType == "npc" and target then
+    handleNPCHit(player, target)
+    CombatService.Client.SwingResult:Fire(player, "npc", target.npcType, "heavy")
   elseif hitType == "container" and target then
     -- Heavy swing deals 2x gear damage to containers
     handleContainerHit(player, target)
@@ -527,6 +591,7 @@ function CombatService:KnitStart()
   ContainerService = Knit.GetService("ContainerService")
   DoubloonService = Knit.GetService("DoubloonService")
   HarborService = Knit.GetService("HarborService")
+  NPCService = Knit.GetService("NPCService")
 
   -- Listen for client attack requests
   self.Client.AttackRequest:Connect(function(player: Player)

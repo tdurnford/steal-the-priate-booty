@@ -2388,3 +2388,121 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - SHIP-005 (Lock State Visual Indicators) will add padlock/gold glow to help raiders identify targetable ships
 - Rojo/selene toolchain issues persist (aftman/rokit PATH conflict); StyLua formatting passes
 - Next priorities: NPC-001 (Cursed Skeleton), DAYNIGHT-004 (Night Loot Modifiers), THREAT-003/004 (Threat Effects)
+
+---
+
+## 2026-03-02 — NPC-001: Cursed Skeleton NPC Base Setup
+
+### What was done
+- Created `src/server/Services/NPCService.lua` — a complete server-authoritative NPC
+  management service for Cursed Skeleton entities.
+- Extended `src/server/Services/CombatService.lua` to detect and damage NPCs via the
+  existing swing hit detection system.
+
+### NPCService.lua — full feature set
+
+**NPC Entity Creation**:
+- Placeholder Cursed Skeleton model with Humanoid, body parts (torso, head, arms, legs),
+  cutlass weapon, and eerie green eye glow (PointLight)
+- Humanoid configured: 20 HP, 0.9x player walk speed, health bar always visible at 30 studs
+- All body parts have `NPCId` and `NPCType` attributes for hit detection lookup
+- Models created in `workspace.NPCs` folder
+
+**AI State Machine**:
+- States: `idle`, `patrol`, `chase`, `attack_slash`, `attack_lunge`, `flinch`, `dead`
+- **Patrol**: Wanders within 15 studs of spawn position, picks random points every 5s
+- **Chase**: Activates when player enters aggro range (40 studs), follows via
+  `Humanoid:MoveTo()`. Re-evaluates target if a closer player appears.
+  Respects leash distance (80 studs from spawn) and Harbor safe zone.
+  Drops chase if target leaves 1.5x aggro range (hysteresis).
+- **Attack selection**: Prefers lunge when target is 3-8 studs away and lunge is off cooldown.
+  Falls back to slash attack otherwise.
+
+**Slash Attack**:
+- 0.8s windup (NPC frozen, facing target)
+- Hit check at end of windup against target player
+- 2s cooldown between slashes
+- On hit: 2.0s ragdoll, 20% loot spill (uses `GameConfig.calculateSpill`)
+- Respects block (reduced to 0.5s ragdoll, 5% spill, no knockback)
+- Knockback velocity calculated from NPC→target direction
+
+**Lunge Attack**:
+- 0.5s crouch telegraph (NPC frozen)
+- 0.3s dash forward toward target position
+- Hit check at end of dash
+- 5s cooldown between lunges
+- Same hit effects as slash (ragdoll + spill)
+
+**NPC Hit Reception**:
+- `DamageNPC(npcId, damage, attackingPlayer)` — applies gear damage
+- 0.2s flinch on hit (pauses AI, then resumes chase/patrol)
+- Health bar updates via Humanoid.Health
+
+**Death & Loot Drop**:
+- On death: scatters `carriedDoubloons + random(30-80)` bonus doubloons
+- Calls `ThreatService:OnNPCKilled(player)` for +3 threat
+- Sends client signals for death VFX
+- 2s delay before model removal (allows death VFX to play)
+
+**Respawn System**:
+- 90-second respawn timer per NPC
+- Respawns at original spawn position in same zone
+- Respawn queue processed on Heartbeat
+
+**Night Modifiers**:
+- Speed bonus: +25% walk speed during night (via `GameConfig.NPCBehavior.nightSpeedBonus`)
+- Aggro range bonus: +30% during night (via `GameConfig.NPCBehavior.nightAggroRangeBonus`)
+- Updated per-frame via Heartbeat
+
+**Spawn System**:
+- Reads `workspace.NPCSpawnPoints` folder for spawn point Parts
+- Each Part can have `Zone` (string) and `NPCType` (string, default "skeleton") attributes
+- Falls back to spawning 3 test skeletons near origin if no spawn points exist
+
+**Client Signals**:
+- `NPCSpawned(npcId, npcType, position)` — for all players
+- `NPCDamaged(npcId, hpFraction)` — for VFX feedback
+- `NPCDied(npcId, npcType, position)` — for death VFX
+- `NPCAttack(npcId, attackType, targetPosition)` — for attack SFX/VFX
+- `NPCFlinch(npcId)` — for flinch VFX
+
+**Server Signals**:
+- `NPCService.NPCDied(npcEntry, killedByPlayer)` — for inter-service hooks
+- `NPCService.NPCDamaged(npcEntry, damage, attackingPlayer)` — for tracking
+
+### CombatService.lua changes
+- **Extended `performHitDetection()`**: Now checks NPC targets in the attacker's
+  forward arc, with priority: players > NPCs > containers
+- **Added `handleNPCHit()`**: Applies gear damage via `NPCService:DamageNPC()`,
+  fires `CombatService.PlayerHitNPC` server signal
+- **Added NPC dispatch**: Both light swing and heavy swing handlers now route
+  "npc" hitType results through `handleNPCHit()`
+- **New server signal**: `CombatService.PlayerHitNPC` (attacker, npcId, killed)
+- **New service reference**: NPCService loaded in `KnitStart()`
+- **SwingResult updated**: Now sends `"npc"` hitType to client with npcType as targetName
+
+### Acceptance criteria verification
+- [x] Skeleton has 20 HP and takes damage from player gear
+- [x] Movement speed is 0.9x player speed (with night bonus)
+- [x] Slash attack: 0.8s windup, 8 stud range, 2s cooldown, causes 2.0s ragdoll + 20% spill
+- [x] Lunge attack: 0.5s telegraph, 6 stud dash + slash, 5s cooldown
+- [x] Flinch on hit (0.2s pause) but no ragdoll
+- [x] Drops all carried doubloons + 30-80 bonus on death
+- [x] Respawns in same zone after 90s
+
+### Notes for next developer
+- NPC-001 uses `Humanoid:MoveTo()` for basic movement. NPC-003/004 will replace
+  this with SimplePath for proper pathfinding.
+- NPC-002 (loot pickup behavior) can hook into `DoubloonService` to have NPCs
+  pick up loose doubloons — the `carriedDoubloons` field is already tracked.
+- NPC-006 (spawn manager) will replace the simple spawn-point-based system with
+  dynamic budget management (6-10 day, +50% night).
+- The model is a placeholder (colored Parts). MODEL-002 (NPC models) will replace
+  with proper skeletal meshes and animations.
+- Client VFX controllers for NPC attacks/flinch/death are not yet implemented —
+  the signals are in place for future controllers to consume.
+- Night speed/aggro bonuses are applied. NPC-009 (pack behavior) is separate.
+- ThreatService hook works: killing a skeleton adds +3 threat (×1.5 at night).
+- Rojo/selene toolchain issues persist; StyLua formatting passes.
+- Next priorities: NPC-003 (SimplePath patrol), NPC-004 (SimplePath chase),
+  NPC-006 (spawn manager), or DAYNIGHT-004 (night loot modifiers)
