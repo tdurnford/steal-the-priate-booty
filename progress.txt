@@ -316,3 +316,73 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - ProfileService's `Profile:Save()` is non-yielding and queues the save internally
 - Next highest-priority features: DAYNIGHT-002 (lighting/atmosphere), DAYNIGHT-003
   (transition banners/audio), LOOT-002 (container spawning), COMBAT-001 (light swing)
+
+---
+
+## 2026-03-02 — DAYNIGHT-002: Day/Night Lighting & Atmosphere
+
+### What was done
+- Created `src/client/Controllers/DayNightLightingController.lua` — a Knit controller
+  that tweens Lighting, Atmosphere, and ColorCorrectionEffect properties to match
+  each day/night phase. Listens to `DayNightController.PhaseChanged`.
+
+### DayNightLightingController.lua — complete implementation
+
+#### Lighting presets (4 phases)
+- **Day**: ClockTime=14, Brightness=2, bright tropical ambient, no fog (FogEnd=10000),
+  warm neutral Atmosphere, subtle ColorCorrection saturation boost
+- **Dawn**: ClockTime=6.5, golden warm tones, Atmosphere haze=1, warm peach
+  ColorCorrection tint, moderate fog (FogEnd=2000)
+- **Dusk**: ClockTime=17.5, orange/red tones, Atmosphere haze=1.5, warm pink
+  ColorCorrection tint, fog closing in (FogEnd=1500)
+- **Night**: ClockTime=0, Brightness=0.2, dark blue/purple ambient, heavy fog
+  (FogEnd=60 studs per GameConfig.DayNight.nightViewRadius), dense Atmosphere
+  haze=2.5, cool blue ColorCorrection tint, slight desaturation
+
+#### Transition system
+- Dawn and Dusk use full phase-length tweens (30 seconds each) via TweenService
+  with Sine InOut easing for smooth gradual transitions
+- Day and Night use 3-second quick snaps after the transition phase completes
+- Active tweens are tracked and cancelled on new phase to prevent conflicts
+- Initial sync applies preset instantly (no tween) so players joining mid-cycle
+  see correct lighting immediately
+
+#### Post-processing effects
+- **Atmosphere**: Creates if missing; tweens Density, Offset, Color, Decay, Glare, Haze
+- **ColorCorrectionEffect** ("DayNightCC"): Creates if missing; tweens Brightness,
+  Contrast, Saturation, TintColor
+- All Lighting properties tweened: ClockTime, Brightness, Ambient, OutdoorAmbient,
+  FogEnd, FogColor
+
+#### Torch/lantern management
+- Toggles PointLight, SpotLight, Fire, and ParticleEmitter instances under
+  `workspace.Torches` folder
+- Torches light up during Dusk and Night, turn off at Dawn and Day
+- Gracefully handles missing Torches folder (no error)
+
+#### Public API
+- `GetPreset(phase)` — returns the preset table for a given phase
+
+### Acceptance criteria verification
+- [x] Day is bright and tropical, night is dark blue/purple with moonlight
+- [x] Transitions at Dawn/Dusk are smooth 30-second tweens
+- [x] Night visibility is reduced to ~60 studs via fog (FogEnd = GameConfig.DayNight.nightViewRadius)
+- [x] Torches and lanterns light up at night (workspace.Torches folder)
+- [x] Lighting uses Roblox Lighting service with tweened properties
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via StyLua
+  formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The controller automatically creates Atmosphere and ColorCorrectionEffect if they
+  don't exist in the place — no manual Lighting setup needed
+- Harbor experiences the same visual night (lighting is global), but the safe zone
+  mechanic (HARBOR-001) will prevent night gameplay effects in the Harbor
+- To adjust lighting values for any phase, edit the PRESETS table at the top of
+  the file — all values are in one place
+- The transition durations match GameConfig.DayNight (dawnDuration=30s, duskDuration=30s);
+  Day and Night transitions are 3s quick snaps
+- Torches require a `workspace.Torches` folder with light/fire/particle descendants —
+  map builders should place torch models there
+- Next highest-priority features: DAYNIGHT-003 (transition banners/audio), LOOT-002
+  (container spawning), COMBAT-001 (light swing), KNIT-001 (service scaffolding)
