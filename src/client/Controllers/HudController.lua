@@ -4,7 +4,7 @@
   Displays:
     - Held doubloons counter (UI-001)
     - Ship hold indicator with lock state and treasury (UI-002)
-  Future HUD elements (threat, day/night, minimap) will be added here.
+    - Threat level indicator with color-coded tier icon (UI-003)
 ]]
 
 local Players = game:GetService("Players")
@@ -14,9 +14,13 @@ local Packages = ReplicatedStorage:WaitForChild("Packages")
 local Knit = require(Packages:WaitForChild("Knit"))
 local Fusion = require(Packages:WaitForChild("Fusion"))
 
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local GameConfig = require(Shared:WaitForChild("GameConfig"))
+
 local UIFolder = script.Parent.Parent:WaitForChild("UI")
 local HudDoubloonsCounter = require(UIFolder:WaitForChild("HudDoubloonsCounter"))
 local ShipHoldIndicator = require(UIFolder:WaitForChild("ShipHoldIndicator"))
+local ThreatLevelIndicator = require(UIFolder:WaitForChild("ThreatLevelIndicator"))
 
 local HudController = Knit.CreateController({
   Name = "HudController",
@@ -35,11 +39,13 @@ local HeldDoubloons = nil -- Fusion.Value<number>
 local ShipHold = nil -- Fusion.Value<number>
 local ShipLocked = nil -- Fusion.Value<boolean>
 local Treasury = nil -- Fusion.Value<number>
+local ThreatLevel = nil -- Fusion.Value<number>
 
 -- UI references
 local ScreenGui = nil
 local DoubloonsPulseFn = nil -- function to trigger doubloons pulse animation
 local ShipHoldPulseFn = nil -- function to trigger ship hold pulse animation
+local ThreatPulseFn = nil -- function to trigger threat tier change pulse animation
 
 -- Local player
 local LocalPlayer = Players.LocalPlayer
@@ -53,6 +59,7 @@ local function createHud()
   ShipHold = FusionScope:Value(0)
   ShipLocked = FusionScope:Value(true)
   Treasury = FusionScope:Value(0)
+  ThreatLevel = FusionScope:Value(0)
 
   ScreenGui = Instance.new("ScreenGui")
   ScreenGui.Name = "HudGui"
@@ -71,6 +78,11 @@ local function createHud()
     ShipHoldIndicator.create(FusionScope, ShipHold, ShipLocked, Treasury)
   shipIndicator.Parent = ScreenGui
   ShipHoldPulseFn = triggerShipPulse
+
+  -- Create the threat level indicator (UI-003)
+  local threatIndicator, triggerThreatPulse = ThreatLevelIndicator.create(FusionScope, ThreatLevel)
+  threatIndicator.Parent = ScreenGui
+  ThreatPulseFn = triggerThreatPulse
 end
 
 --[[
@@ -130,6 +142,24 @@ local function updateTreasury(newValue: number)
 end
 
 --[[
+  Updates the threat level display and triggers pulse on tier change.
+  @param newValue The new threat level (0-100)
+]]
+local function updateThreatLevel(newValue: number)
+  if ThreatLevel then
+    local oldValue = Fusion.peek(ThreatLevel)
+    ThreatLevel:set(newValue)
+
+    -- Pulse on tier change (not every number change)
+    local oldTier = GameConfig.getThreatTier(oldValue)
+    local newTier = GameConfig.getThreatTier(newValue)
+    if oldTier.id ~= newTier.id and ThreatPulseFn then
+      ThreatPulseFn()
+    end
+  end
+end
+
+--[[
   Called when Knit initializes. Creates the HUD GUI.
 ]]
 function HudController:KnitInit()
@@ -160,6 +190,9 @@ function HudController:KnitStart()
         if snapshot.shipLocked ~= nil then
           updateShipLocked(snapshot.shipLocked)
         end
+        if snapshot.threatLevel then
+          updateThreatLevel(snapshot.threatLevel)
+        end
       end
     end)
     :catch(function(err)
@@ -177,7 +210,7 @@ function HudController:KnitStart()
       warn("[HudController] Failed to get treasury:", err)
     end)
 
-  -- Listen for session state changes (held doubloons, ship hold, ship locked)
+  -- Listen for session state changes (held doubloons, ship hold, ship locked, threat)
   SessionStateService.SessionStateChanged:Connect(function(fieldName: string, value: any)
     if fieldName == "heldDoubloons" and type(value) == "number" then
       updateDoubloons(value)
@@ -185,6 +218,8 @@ function HudController:KnitStart()
       updateShipHold(value)
     elseif fieldName == "shipLocked" and type(value) == "boolean" then
       updateShipLocked(value)
+    elseif fieldName == "threatLevel" and type(value) == "number" then
+      updateThreatLevel(value)
     end
   end)
 
