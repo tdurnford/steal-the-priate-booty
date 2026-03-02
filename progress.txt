@@ -2129,3 +2129,67 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - They can both use `HarborService:IsInHarbor(player)` or `SessionStateService:IsInHarbor(player)` for checks
 - The HarborZone Part must exist in workspace for detection to work — without it, all harbor features are disabled
 - Next priorities: UI-002 (ship hold HUD), SHIP-004 (raiding), NPC-001 (Cursed Skeleton)
+
+---
+
+## 2026-03-02 — UI-002: HUD — Ship Hold Indicator
+
+### What was done
+- Created `src/client/UI/ShipHoldIndicator.lua` — a Fusion 0.3 HUD component that
+  displays the player's ship hold doubloons and treasury with lock/unlock state.
+- Updated `src/client/Controllers/HudController.lua` to integrate the new component,
+  adding Fusion state values for shipHold, shipLocked, and treasury, and connecting
+  to SessionStateService and DataService signals for live updates.
+
+### ShipHoldIndicator.lua — Fusion 0.3 component
+- **Two-row layout**: Top row shows ship hold (⚓ HOLD count 🔒/🔓), bottom row
+  shows banked treasury (💰 BANKED count)
+- **Lock/unlock icon**: Shows 🔒 (green) when ship is locked (safe), 🔓 (gold)
+  when unlocked (vulnerable). Animated color transition on state change.
+- **Animated count transitions**: Both hold and treasury use Fusion Tween with
+  0.3s Quad easing for smooth number counting animations
+- **Color feedback**: Hold text is gold when holding doubloons, muted when empty.
+  Treasury text is green when has balance, muted when 0.
+- **Pulse animation**: 1.12x scale pulse with Back easing on deposit/lock events
+- **Reusable row builder**: `createRow()` helper builds icon+label+count rows with
+  optional lock icon, reducing code duplication
+- **Styled to match**: Uses UITheme tokens (DarkBackground, StrokeLight, CornerRadius.Medium),
+  consistent with HudDoubloonsCounter visual style
+- **Positioned at**: Top-right, 8px below the held doubloons counter (UDim2 1,-16, 0,68)
+
+### HudController.lua — changes
+- **New Fusion state values**: `ShipHold` (number), `ShipLocked` (boolean), `Treasury` (number)
+- **New service references**: `DataService`, `ShipService` (added alongside existing
+  SessionStateService, DoubloonService, SoundController)
+- **Initial data loading**: Gets shipHold and shipLocked from `SessionStateService:GetSessionSnapshot()`,
+  gets treasury from `DataService:GetTreasury()`
+- **SessionStateChanged listener**: Now also handles `shipHold` and `shipLocked` field changes
+  (in addition to existing `heldDoubloons` handler)
+- **DataChanged listener**: Listens to `DataService.DataChanged` for `treasury` field changes
+  (fires on lock, gear purchase, etc.)
+- **Pulse triggers**: Ship hold indicator pulses on both hold count changes and treasury changes
+- **Module requires**: Added `ShipHoldIndicator` require via UIFolder reference
+
+### Data flow
+- Ship hold value: SessionStateService snapshot → SessionStateChanged("shipHold")
+- Ship locked state: SessionStateService snapshot → SessionStateChanged("shipLocked")
+- Treasury value: DataService:GetTreasury() → DataService.DataChanged("treasury")
+- All updates are reactive via Fusion Values — no polling
+
+### Acceptance criteria verification
+- [x] Ship hold counter visible on HUD (two-row indicator below doubloons counter)
+- [x] Lock/unlock icon reflects current ship lock state (🔒 green / 🔓 gold)
+- [x] Updates on deposit (SessionStateChanged shipHold), lock (shipLocked + treasury),
+      and auto-unlock events (shipLocked from HarborService exit)
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via StyLua
+  formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The indicator automatically starts with default values (hold=0, locked=true, treasury=0)
+  and updates once the session snapshot and treasury data arrive
+- Emoji icons (⚓🔒🔓💰) are UTF-8 encoded as escape sequences for Luau compatibility
+- Treasury updates come from DataService.DataChanged, which fires on any treasury
+  mutation (lock, gear purchase, etc.) — so the HUD stays in sync with all treasury changes
+- To add more HUD rows to the ship indicator, use the `createRow()` helper
+- Next priorities: UI-003 (threat level icon), UI-004 (day/night indicator), SHIP-004 (raiding), NPC-001 (Cursed Skeleton)
