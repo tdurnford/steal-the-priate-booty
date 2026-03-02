@@ -995,3 +995,98 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Next highest-priority features: LOOT-004 (detailed sound escalation),
   COMBAT-005 (ragdoll physics), COMBAT-002 (heavy swing), UI-010 (gear shop UI),
   UI-001 (HUD doubloons counter)
+
+---
+
+## 2026-03-02 — UI-001: HUD Held Doubloons Counter
+
+### What was done
+- Created `src/client/UI/HudDoubloonsCounter.lua` — a Fusion 0.3 component that
+  displays the player's held (unbanked) doubloons in the top-right corner.
+- Created `src/client/Controllers/HudController.lua` — a Knit controller that
+  manages the HUD ScreenGui and connects to server data for live updates.
+- Extended `src/client/Controllers/SoundController.lua` with a coin pickup chime.
+
+### HudDoubloonsCounter.lua — Fusion 0.3 component
+
+#### Visual design
+- Semi-transparent dark panel (UITheme.Colors.DarkBackground at 0.15 transparency)
+  with gold border stroke (UITheme.Colors.GoldDark) and medium corner radius
+- Horizontal layout: "HELD" label (muted text) + coin emoji icon (gold) + count
+  number with text stroke for readability
+- Positioned top-right (AnchorPoint 1,0, Position 1,-16, 0,16)
+- AutomaticSize.X so the counter grows with large numbers
+- FredokaOne primary font for the count, GothamBold secondary for the "HELD" label
+
+#### Animated features
+- **Count transitions**: Tween-based smooth interpolation (0.3s Quad Out) when the
+  value changes, so numbers visually count up/down instead of snapping
+- **Pulse animation**: UIScale bounces to 1.15 then back to 1 on any value change
+  (0.25s Back Out easing) for satisfying pickup/loss feedback
+- **Color transition**: Text color smoothly transitions between Gold (when holding
+  doubloons) and TextMuted (when at zero)
+- **Number formatting**: Comma-separated display (e.g., "1,234") for readability
+
+#### API
+- `HudDoubloonsCounter.create(scope, currentValue)` returns `(Frame, triggerPulse)`
+- The controller owns the Fusion scope and Value, passing them into the component
+- `triggerPulse()` function returned for the controller to call on value changes
+
+### HudController.lua — Knit controller
+
+#### Data flow
+- On KnitStart: gets `SessionStateService` and `DoubloonService` via Knit
+- Calls `SessionStateService:GetSessionSnapshot()` for initial held doubloons value
+- Listens to `SessionStateService.SessionStateChanged` for real-time updates
+  when heldDoubloons changes (from pickups, spills, deposits, etc.)
+- Listens to `DoubloonService.DoubloonCollected` for coin pickup SFX feedback
+
+#### HUD management
+- Creates a ScreenGui at DisplayOrder=10 (below notifications/banners), with
+  IgnoreGuiInset=true and ResetOnSpawn=false for persistent display
+- Manages Fusion scope lifecycle — scope created in KnitInit, cleaned up on destroy
+- The HUD is designed to be the single entry point for future HUD elements
+  (ship hold indicator, threat icon, day/night indicator, minimap)
+
+### SoundController.lua changes
+- **New sound ID**: `coinPickup` (rbxassetid://4612373815 — coin collect chime)
+- **New volume**: coinPickup = 0.4
+- **New method**: `PlayCoinPickupSound()` — plays the 2D coin chime
+- Respects sfxEnabled player setting via existing isSfxEnabled() check
+
+### Also marked as done in PRD
+- **LOOT-004** (Container Break Sound Escalation): All acceptance criteria were
+  already met by the LOOT-003 implementation — 3-tier escalating hit sounds
+  (quiet/medium/loud), Captain's Vault louder break variant, distinct break
+  sound on destruction. Marked done.
+
+### Acceptance criteria verification
+- [x] Held doubloons counter visible at top of screen (top-right, always visible)
+- [x] Updates in real-time on pickup, spill, and deposit (SessionStateChanged)
+- [x] Has a coin icon (🪙 emoji in gold color)
+- [x] Visually distinct from ship hold counter (gold-bordered dark panel with
+      "HELD" label, positioned top-right; ship hold counter will be separate
+      with different styling when UI-002 is implemented)
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via StyLua
+  formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The coin pickup audio asset (rbxassetid://4612373815) should be verified in
+  Roblox Studio. Replace with a custom coin chime from the Creator Store if
+  it doesn't sound right.
+- The HudController is designed as the single HUD entry point. When implementing
+  UI-002 (Ship Hold Indicator), UI-003 (Threat Icon), or UI-004 (Day/Night
+  Indicator), add them as additional Fusion components mounted to the same
+  ScreenGui in HudController.
+- The counter uses AutomaticSize.X, so it grows to fit large numbers. The
+  minimum width is 140px.
+- The Fusion scope is shared between HudController and all HUD components.
+  When adding new components, use the same FusionScope for consistent cleanup.
+- To consume the held doubloons value from another controller:
+  `HudController:GetHeldDoubloons()` returns the current number.
+- The DoubloonCollected signal plays coin SFX independently of the counter
+  update — they fire in the same frame but are separate concerns (sound vs UI).
+- Next highest-priority features: UI-002 (ship hold indicator), UI-010
+  (gear shop UI), COMBAT-005 (ragdoll physics), COMBAT-002 (heavy swing),
+  COMBAT-003 (block mechanic)

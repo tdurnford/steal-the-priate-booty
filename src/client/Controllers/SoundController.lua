@@ -39,6 +39,9 @@ local SOUNDS = {
   -- Container break sound
   containerBreak = "rbxassetid://5743416168", -- satisfying explosion/shatter
   containerBreakVault = "rbxassetid://5743416168", -- louder variant for Captain's Vault
+
+  -- Doubloon pickup
+  coinPickup = "rbxassetid://4612373815", -- coin collect chime
 }
 
 -- Volume settings per sound type
@@ -57,6 +60,7 @@ local VOLUMES = {
   containerHitLoud = 0.8,
   containerBreak = 0.7,
   containerBreakVault = 1.0,
+  coinPickup = 0.4,
 }
 
 -- References
@@ -163,6 +167,13 @@ end
 ]]
 function SoundController:PlayButtonClickSound()
   play2DSound(SOUNDS.buttonClick, VOLUMES.buttonClick)
+end
+
+--[[
+	Plays the coin pickup chime sound.
+]]
+function SoundController:PlayCoinPickupSound()
+  play2DSound(SOUNDS.coinPickup, VOLUMES.coinPickup)
 end
 
 --[[
