@@ -2015,3 +2015,69 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Next highest-priority features: HARBOR-001 (safe zone — enables auto-unlock
   wiring), UI-002 (ship hold HUD), SHIP-004 (raiding), LOOT-006 (loot visibility),
   THREAT-001 (threat accumulation)
+
+---
+
+## 2026-03-02 — THREAT-001: Threat Level Tracking & Accumulation
+
+### What was done
+- Created `src/server/Services/ThreatService.lua` — server-authoritative threat
+  accumulation service that drives the PvPvE tension mechanic.
+
+### ThreatService.lua — complete implementation
+- **Time-based accumulation**: +5 per minute since last lock, computed per-second
+  from `GameConfig.Threat.timeRate / 60`. Uses per-player `TimeAccumulators` that
+  accumulate delta-time and fire every 1 second.
+- **Held doubloons check**: Every 30 seconds (configurable via
+  `GameConfig.Threat.heldDoubloonsInterval`), calculates
+  `floor(heldDoubloons / 50) * 1` threat. Per-player `HeldDoubloonTimers` track
+  the interval.
+- **Container break hook**: Subscribes to `ContainerService.ContainerBroken` signal.
+  Adds +2 threat (from `GameConfig.Threat.containerBreakGain`) to the breaking
+  player.
+- **NPC kill hook**: `OnNPCKilled(player)` method exposed for future NPC services.
+  Adds +3 threat (from `GameConfig.Threat.npcKillGain`).
+- **Danger zone check**: `IsInDangerZone(player)` returns false (placeholder until
+  ZONE-001). When implemented, +3/min in danger zones via `DangerZoneAccumulators`.
+- **Night multiplier**: All threat gains multiplied by 1.5x during Night phase
+  via `getNightMultiplier()` using `DayNightService:IsNight()`.
+- **Harbor pause**: `IsInHarbor(player)` checks for a workspace `HarborZone` Part
+  using AABB bounding box detection. All periodic and event-driven threat gains
+  skip players inside the Harbor. When HARBOR-001 places a `HarborZone` part in
+  workspace, the pause activates automatically.
+- **Central `AddThreatWithMultiplier` method**: All threat sources route through
+  this, which applies night multiplier and harbor check before delegating to
+  `SessionStateService:AddThreat()`.
+
+### Integration with existing services
+- **ContainerService**: Already fires `ContainerBroken(containerEntry, attackingPlayer)`
+  signal — ThreatService subscribes to it. No changes to ContainerService needed.
+- **ShipService**: Already handles threat reduction:
+  - `DepositAll`: calls `SessionStateService:AddThreat(player, -25)`
+  - `LockShip`: calls `SessionStateService:SetThreatLevel(player, 0)`
+  No changes to ShipService needed.
+- **SessionStateService**: Already has full threat API (`AddThreat`, `SetThreatLevel`,
+  `GetThreatLevel`, `ResetThreat`, `GetLastLockTime`) and replicates `threatLevel`
+  to the client via `SessionStateChanged` signal. No changes needed.
+- **DayNightService**: Used for night multiplier check. No changes needed.
+- **Auto-discovery**: Server `Main.server.lua` auto-loads all services in the
+  Services folder. ThreatService is picked up automatically.
+
+### Cleanup
+- Per-player timer tables (`HeldDoubloonTimers`, `TimeAccumulators`,
+  `DangerZoneAccumulators`) are cleaned up on `Players.PlayerRemoving`.
+- Heartbeat tick runs every 1 second to keep CPU overhead minimal while providing
+  responsive threat updates.
+
+### Notes for next developer
+- THREAT-002 (reset/reduction) is already mostly implemented in ShipService. The
+  remaining piece is "despawn threat-spawned NPCs on reset" which needs NPC services.
+- To add Harbor zone pause: place a Part named "HarborZone" in workspace. The
+  AABB check will automatically enable. HARBOR-001 should create this part.
+- To add danger zones: implement `ThreatService:IsInDangerZone(player)` to check
+  zone occupancy when ZONE-001 is built.
+- NPC services should call `ThreatService:OnNPCKilled(player)` when a player kills
+  an NPC.
+- StyLua formatting passes. No Roblox Studio MCP available for in-game testing.
+- Next highest-priority features: HARBOR-001 (safe zone), UI-002 (ship hold HUD),
+  SHIP-004 (raiding), THREAT-003/004 (tier effects)
