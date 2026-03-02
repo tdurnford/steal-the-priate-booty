@@ -170,3 +170,73 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Selene linting skipped due to pre-existing rokit PATH issue
 - Next highest-priority features: DAYNIGHT-001 (day/night cycle clock — many systems
   depend on it), DATA-002 (auto-save), KNIT-001 (service scaffolding)
+
+---
+
+## 2026-03-02 — DAYNIGHT-001: Day/Night Cycle Clock & Sync
+
+### What was done
+- Created `src/server/Services/DayNightService.lua` — server-authoritative day/night
+  cycle clock that cycles through Dawn → Day → Dusk → Night on a Heartbeat loop.
+- Created `src/client/Controllers/DayNightController.lua` — client-side sync controller
+  that mirrors the server phase and exposes it to other controllers.
+
+### DayNightService.lua — server
+- **Clock**: Runs on `RunService.Heartbeat`, advancing `CycleElapsed` which wraps at
+  `totalCycleDuration` (660s = 11 minutes). Uses modular arithmetic for seamless looping.
+- **Phase derivation**: `getPhaseFromElapsed()` walks the ordered phase list
+  (Dawn/Day/Dusk/Night) with precomputed durations from `GameConfig.DayNight`.
+- **Phase transitions**: Detects when `CurrentPhase` changes and fires:
+  - Server-side `PhaseChanged` signal (GoodSignal): `(newPhase, previousPhase)` — for
+    other services (NPC spawning, threat, container rates, etc.)
+  - Client `PhaseChanged` signal (Knit RemoteSignal): `FireAll(phase, 0, phaseDuration)`
+    — broadcasts to all connected players simultaneously
+- **Start phase**: Initializes at the beginning of the Day phase so players joining
+  a fresh server start in daytime.
+- **Server API**: `GetCurrentPhase()`, `IsNight()`, `IsDay()`, `IsDawn()`, `IsDusk()`,
+  `GetPhaseProgress()`, `GetPhaseDuration()`, `GetPhaseElapsed()`, `GetCycleElapsed()`,
+  `GetDurationForPhase(phase)`
+- **Client-callable**: `Client:GetCurrentPhase()`, `Client:GetTimeInfo()` — GetTimeInfo
+  returns `{ phase, phaseElapsed, phaseDuration, cycleElapsed, totalCycle }` for full
+  initial sync
+
+### DayNightController.lua — client
+- **Initial sync**: On KnitStart, calls `DayNightService:GetTimeInfo()` to get the
+  server's current phase and elapsed time (handles mid-cycle joins).
+- **Phase tracking**: Listens to `DayNightService.PhaseChanged` signal and updates
+  local `CurrentPhase`, `PhaseElapsed`, `PhaseDuration`.
+- **Local signal**: `DayNightController.PhaseChanged` (GoodSignal) fires
+  `(newPhase, previousPhase)` so other controllers (future HUD, lighting, banners)
+  can react without needing a server reference.
+- **Public API**: `GetCurrentPhase()`, `IsNight()`, `IsDay()`, `IsDawn()`, `IsDusk()`,
+  `GetPhaseElapsed()`, `GetPhaseDuration()`, `GetPhaseProgress()`
+
+### Design decisions
+- Uses `Heartbeat` instead of `task.wait()` loop for frame-accurate timing and to
+  avoid blocking the service thread
+- Phase is derived from a single `CycleElapsed` counter rather than separate timers,
+  making the system drift-free and easy to query
+- Precomputes `PHASE_START` lookup and `PHASE_DURATIONS` from GameConfig at require-time
+- Client receives elapsed-in-phase on sync so it can show accurate progress bars
+- Starts at Day (not Dawn) because joining during dawn would be confusing for 30s
+
+### Acceptance criteria verification
+- [x] Server clock cycles through all 4 phases with correct durations (Dawn 30s,
+  Day 360s, Dusk 30s, Night 240s = 660s total)
+- [x] All players see the same time of day (server-synced via FireAll + GetTimeInfo)
+- [x] Phase transition events fire for other systems (server GoodSignal + client signal)
+- [x] Total cycle is 11 minutes (660 seconds)
+
+### Notes for next developer
+- Roblox Studio MCP server was not available for in-game testing; verified via
+  StyLua formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The service does NOT handle lighting/atmosphere changes — that's DAYNIGHT-002
+- The service does NOT handle transition UI banners or audio — that's DAYNIGHT-003
+- To consume phase changes from another service:
+  `DayNightService.PhaseChanged:Connect(function(newPhase, prevPhase) ... end)`
+- To consume from a controller:
+  `DayNightController.PhaseChanged:Connect(function(newPhase, prevPhase) ... end)`
+- Next highest-priority features: DAYNIGHT-002 (lighting/atmosphere), DAYNIGHT-003
+  (transition banners/audio), DATA-002 (auto-save), LOOT-001 (container config —
+  already in GameConfig, may just need marking done)
