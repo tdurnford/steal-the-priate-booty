@@ -5,10 +5,12 @@
     - Held doubloons counter (UI-001)
     - Ship hold indicator with lock state and treasury (UI-002)
     - Threat level indicator with color-coded tier icon (UI-003)
+    - Day/night phase indicator with progress bar (UI-004)
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local Packages = ReplicatedStorage:WaitForChild("Packages")
 local Knit = require(Packages:WaitForChild("Knit"))
@@ -21,6 +23,7 @@ local UIFolder = script.Parent.Parent:WaitForChild("UI")
 local HudDoubloonsCounter = require(UIFolder:WaitForChild("HudDoubloonsCounter"))
 local ShipHoldIndicator = require(UIFolder:WaitForChild("ShipHoldIndicator"))
 local ThreatLevelIndicator = require(UIFolder:WaitForChild("ThreatLevelIndicator"))
+local DayNightIndicator = require(UIFolder:WaitForChild("DayNightIndicator"))
 
 local HudController = Knit.CreateController({
   Name = "HudController",
@@ -32,6 +35,7 @@ local DataService = nil
 local DoubloonService = nil
 local ShipService = nil
 local SoundController = nil
+local DayNightController = nil
 
 -- Fusion state
 local FusionScope = nil
@@ -40,12 +44,16 @@ local ShipHold = nil -- Fusion.Value<number>
 local ShipLocked = nil -- Fusion.Value<boolean>
 local Treasury = nil -- Fusion.Value<number>
 local ThreatLevel = nil -- Fusion.Value<number>
+local DayNightPhase = nil -- Fusion.Value<string>
+local DayNightProgress = nil -- Fusion.Value<number>
 
 -- UI references
 local ScreenGui = nil
 local DoubloonsPulseFn = nil -- function to trigger doubloons pulse animation
 local ShipHoldPulseFn = nil -- function to trigger ship hold pulse animation
 local ThreatPulseFn = nil -- function to trigger threat tier change pulse animation
+local DayNightPulseFn = nil -- function to trigger day/night phase change pulse animation
+local ProgressConnection = nil -- Heartbeat connection for progress bar updates
 
 -- Local player
 local LocalPlayer = Players.LocalPlayer
@@ -60,6 +68,8 @@ local function createHud()
   ShipLocked = FusionScope:Value(true)
   Treasury = FusionScope:Value(0)
   ThreatLevel = FusionScope:Value(0)
+  DayNightPhase = FusionScope:Value("Day")
+  DayNightProgress = FusionScope:Value(0)
 
   ScreenGui = Instance.new("ScreenGui")
   ScreenGui.Name = "HudGui"
@@ -83,6 +93,12 @@ local function createHud()
   local threatIndicator, triggerThreatPulse = ThreatLevelIndicator.create(FusionScope, ThreatLevel)
   threatIndicator.Parent = ScreenGui
   ThreatPulseFn = triggerThreatPulse
+
+  -- Create the day/night indicator (UI-004)
+  local dayNightIndicator, triggerDayNightPulse =
+    DayNightIndicator.create(FusionScope, DayNightPhase, DayNightProgress)
+  dayNightIndicator.Parent = ScreenGui
+  DayNightPulseFn = triggerDayNightPulse
 end
 
 --[[
@@ -176,6 +192,7 @@ function HudController:KnitStart()
   DoubloonService = Knit.GetService("DoubloonService")
   ShipService = Knit.GetService("ShipService")
   SoundController = Knit.GetController("SoundController")
+  DayNightController = Knit.GetController("DayNightController")
 
   -- Get initial values from session snapshot
   SessionStateService:GetSessionSnapshot()
@@ -238,6 +255,39 @@ function HudController:KnitStart()
       SoundController:PlayCoinPickupSound()
     end
   end)
+
+  -- Set initial day/night phase from DayNightController
+  if DayNightController then
+    local phase = DayNightController:GetCurrentPhase()
+    if DayNightPhase then
+      DayNightPhase:set(phase)
+    end
+    if DayNightProgress then
+      DayNightProgress:set(DayNightController:GetPhaseProgress())
+    end
+
+    -- Listen for phase transitions
+    DayNightController.PhaseChanged:Connect(function(newPhase: string, _previousPhase: string)
+      if DayNightPhase then
+        DayNightPhase:set(newPhase)
+      end
+      -- Reset progress bar on phase change
+      if DayNightProgress then
+        DayNightProgress:set(0)
+      end
+      -- Pulse animation on phase change
+      if DayNightPulseFn then
+        DayNightPulseFn()
+      end
+    end)
+
+    -- Update progress bar on Heartbeat
+    ProgressConnection = RunService.Heartbeat:Connect(function()
+      if DayNightProgress and DayNightController then
+        DayNightProgress:set(DayNightController:GetPhaseProgress())
+      end
+    end)
+  end
 
   print("[HudController] Started")
 end

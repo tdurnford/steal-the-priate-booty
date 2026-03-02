@@ -2252,3 +2252,86 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - The pulse only fires on tier boundary changes (e.g. 19→20 triggers, 20→21 doesn't)
   to avoid constant pulsing from gradual threat accumulation
 - Next priorities: UI-004 (day/night indicator), SHIP-004 (raiding), NPC-001 (Cursed Skeleton), THREAT-003/004 (tier effects)
+
+---
+
+## 2026-03-02 — UI-004: Day/Night Phase Indicator
+
+### What was done
+- Created `src/client/UI/DayNightIndicator.lua` — a Fusion 0.3 component that
+  displays the current day/night phase as a color-coded icon with a progress bar
+  showing time remaining in the current phase.
+- Updated `src/client/Controllers/HudController.lua` to mount the indicator,
+  connect to DayNightController, and update progress via Heartbeat.
+
+### DayNightIndicator.lua — Fusion 0.3 component
+
+#### Visual design
+- 52x52 semi-transparent dark panel (UITheme.Colors.DarkBackground at 0.15)
+  with animated color border stroke and medium corner radius
+- Vertical layout: phase icon on top, phase name label below, progress bar at bottom
+- Positioned at `UDim2.new(1, -16, 0, 214)` — below the threat level indicator
+  in the top-right HUD column
+
+#### Phase visuals
+- **Dawn**: warm orange-gold ☀ icon, "DAWN" label
+- **Day**: bright sunny yellow ☀ icon, "DAY" label
+- **Dusk**: amber-red 🌅 icon, "DUSK" label
+- **Night**: cool moonlight blue 🌙 icon, "NIGHT" label
+
+#### Animated features
+- **Color transitions**: Border stroke and icon/label colors tween smoothly (0.5s Quad)
+  between phase colors on transition
+- **Progress bar**: Fills left-to-right showing how far through the current phase we are,
+  with smooth tween (0.3s Quad), resets to 0 on phase change
+- **Pulse animation**: UIScale bounces to 1.2 on phase change (0.25s Back Out)
+- Progress bar background is inset 6px from edges with pill-shaped corner radius
+
+#### API
+- `DayNightIndicator.create(scope, phaseValue, progressValue)` returns `(Frame, triggerPulse)`
+- `phaseValue` is Fusion.Value<string> ("Dawn"|"Day"|"Dusk"|"Night")
+- `progressValue` is Fusion.Value<number> [0, 1] — fraction through current phase
+
+### HudController.lua changes
+- Added `RunService` import for Heartbeat connection
+- Added `DayNightController` reference (Knit.GetController)
+- Added `DayNightPhase` Fusion.Value<string> and `DayNightProgress` Fusion.Value<number> state
+- Added `DayNightPulseFn` and `ProgressConnection` references
+- Creates DayNightIndicator in `createHud()` with phase and progress values
+- On KnitStart: sets initial phase and progress from DayNightController API
+- Listens to `DayNightController.PhaseChanged` for phase transitions — updates
+  phase value, resets progress to 0, fires pulse animation
+- Runs `RunService.Heartbeat` connection to update progress bar every frame
+  using `DayNightController:GetPhaseProgress()`
+
+### How it integrates with existing systems
+- **DayNightController**: Already implemented in DAYNIGHT-001. Provides
+  `GetCurrentPhase()`, `GetPhaseProgress()`, and `PhaseChanged` signal.
+  No changes needed.
+- **DayNightService**: Server-side clock already running. Client syncs via
+  DayNightController. No changes needed.
+- **HudController**: Extended with new state values and connections, following
+  the same pattern as UI-001/002/003.
+- **UITheme**: All colors, fonts, corner radii from UITheme.
+
+### Acceptance criteria verification
+- [x] Correct icon shows for each phase (Dawn ☀, Day ☀, Dusk 🌅, Night 🌙
+      — distinct colors differentiate Dawn/Day even though same glyph)
+- [x] Progress bar shows time until next transition (fills 0→1 over phase duration)
+- [x] Synced with server day/night clock (via DayNightController which mirrors
+      DayNightService server state)
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via StyLua
+  formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The Heartbeat progress update runs every frame. If performance is a concern,
+  throttle to every 0.5s — the progress bar tween will smooth over the gaps.
+- Dawn and Day use the same ☀ glyph but with distinct colors (orange-gold vs
+  bright yellow). If the glyphs need to be more distinct, replace Dawn's icon
+  with a custom string or different emoji.
+- The progress bar uses a Tween on the UDim2 Size, which creates a smooth
+  fill animation even though the underlying value updates every frame.
+- All emoji icons are UTF-8 encoded as escape sequences for Luau compatibility.
+- Next priorities: SHIP-004 (ship raiding), NPC-001 (Cursed Skeleton base setup),
+  THREAT-003/004 (threat tier effects), DAYNIGHT-004 (night loot modifiers)
