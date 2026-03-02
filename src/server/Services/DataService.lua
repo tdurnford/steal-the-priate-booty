@@ -1,7 +1,8 @@
 --[[
-	DataService.lua
-	Handles player data persistence using ProfileService.
-	Manages profile loading on join and release on leave.
+  DataService.lua
+  Handles player data persistence using ProfileService.
+  Manages profile loading on join and release on leave.
+  Exposes getter/setter API for other services to read/write player data.
 ]]
 
 local Players = game:GetService("Players")
@@ -16,6 +17,7 @@ local Knit = require(Packages:WaitForChild("Knit"))
 local Signal = require(Packages:WaitForChild("GoodSignal"))
 local ProfileService = require(ServerPackages:WaitForChild("ProfileService"))
 local Types = require(Shared:WaitForChild("Types"))
+local GameConfig = require(Shared:WaitForChild("GameConfig"))
 
 local PROFILE_STORE_NAME = "PlayerData_v1"
 local PROFILE_KEY_PREFIX = "Player_"
@@ -39,20 +41,14 @@ local Profiles: { [Player]: any } = {}
 -- Server-side signal fired when a player's data is loaded
 DataService.PlayerDataLoaded = Signal.new()
 
---[[
-  Gets the profile for a player.
-  @param player The player to get profile for
-  @return Profile object or nil if not loaded
-]]
+--------------------------------------------------------------------------------
+-- DATA ACCESSORS
+--------------------------------------------------------------------------------
+
 function DataService:GetProfile(player: Player)
   return Profiles[player]
 end
 
---[[
-  Gets the player data for a player.
-  @param player The player to get data for
-  @return PlayerData table or nil if not loaded
-]]
 function DataService:GetData(player: Player): Types.PlayerData?
   local profile = Profiles[player]
   if profile then
@@ -61,76 +57,303 @@ function DataService:GetData(player: Player): Types.PlayerData?
   return nil
 end
 
---[[
-  Checks if a player's data is loaded and ready.
-  @param player The player to check
-  @return True if data is loaded
-]]
 function DataService:IsDataLoaded(player: Player): boolean
   return Profiles[player] ~= nil
 end
 
---[[
-  Updates the player's money balance.
-  @param player The player to update
-  @param amount Amount to add (positive) or subtract (negative)
-  @return True if successful, false if insufficient funds or data not loaded
-]]
-function DataService:UpdateMoney(player: Player, amount: number): boolean
-  local profile = Profiles[player]
-  if not profile then
+--------------------------------------------------------------------------------
+-- TREASURY
+--------------------------------------------------------------------------------
+
+function DataService:GetTreasury(player: Player): number
+  local data = self:GetData(player)
+  return if data then data.treasury else 0
+end
+
+function DataService:UpdateTreasury(player: Player, amount: number): boolean
+  local data = self:GetData(player)
+  if not data then
     return false
   end
 
-  local newBalance = profile.Data.money + amount
+  local newBalance = data.treasury + amount
   if newBalance < 0 then
     return false
   end
 
-  profile.Data.money = newBalance
-  self.Client.DataChanged:Fire(player, "money", newBalance)
+  data.treasury = newBalance
+  self.Client.DataChanged:Fire(player, "treasury", newBalance)
   return true
 end
 
---[[
-  Updates a player setting.
-  @param player The player to update
-  @param settingKey The setting key to update
-  @param value The new value
-  @return True if successful
-]]
+--------------------------------------------------------------------------------
+-- GEAR
+--------------------------------------------------------------------------------
+
+function DataService:GetEquippedGear(player: Player): string?
+  local data = self:GetData(player)
+  return if data then data.equippedGear else nil
+end
+
+function DataService:OwnsGear(player: Player, gearId: string): boolean
+  local data = self:GetData(player)
+  if not data then
+    return false
+  end
+  for _, id in data.ownedGear do
+    if id == gearId then
+      return true
+    end
+  end
+  return false
+end
+
+function DataService:PurchaseGear(player: Player, gearId: string): (boolean, string?)
+  local data = self:GetData(player)
+  if not data then
+    return false, "Data not loaded"
+  end
+
+  -- Check gear exists in config
+  local gearDef = GameConfig.GearById[gearId]
+  if not gearDef then
+    return false, "Invalid gear ID"
+  end
+
+  -- Check not already owned
+  if self:OwnsGear(player, gearId) then
+    return false, "Already owned"
+  end
+
+  -- Check can afford
+  if data.treasury < gearDef.cost then
+    return false, "Insufficient treasury"
+  end
+
+  -- Deduct cost and add to owned
+  data.treasury = data.treasury - gearDef.cost
+  table.insert(data.ownedGear, gearId)
+
+  self.Client.DataChanged:Fire(player, "treasury", data.treasury)
+  self.Client.DataChanged:Fire(player, "ownedGear", data.ownedGear)
+  return true, nil
+end
+
+function DataService:EquipGear(player: Player, gearId: string): (boolean, string?)
+  local data = self:GetData(player)
+  if not data then
+    return false, "Data not loaded"
+  end
+
+  if not self:OwnsGear(player, gearId) then
+    return false, "Gear not owned"
+  end
+
+  data.equippedGear = gearId
+  self.Client.DataChanged:Fire(player, "equippedGear", gearId)
+  return true, nil
+end
+
+--------------------------------------------------------------------------------
+-- NOTORIETY / RANK
+--------------------------------------------------------------------------------
+
+function DataService:GetNotorietyXP(player: Player): number
+  local data = self:GetData(player)
+  return if data then data.notorietyXP else 0
+end
+
+function DataService:AddNotorietyXP(player: Player, amount: number): boolean
+  local data = self:GetData(player)
+  if not data then
+    return false
+  end
+
+  local oldRank = GameConfig.getRankForXP(data.notorietyXP)
+  data.notorietyXP = data.notorietyXP + amount
+  local newRank = GameConfig.getRankForXP(data.notorietyXP)
+
+  self.Client.DataChanged:Fire(player, "notorietyXP", data.notorietyXP)
+
+  -- Notify if rank changed
+  if newRank.rank ~= oldRank.rank then
+    self.Client.DataChanged:Fire(player, "notorietyRank", newRank)
+  end
+
+  return true
+end
+
+--------------------------------------------------------------------------------
+-- TUTORIAL
+--------------------------------------------------------------------------------
+
+function DataService:IsTutorialCompleted(player: Player): boolean
+  local data = self:GetData(player)
+  return if data then data.tutorialCompleted else false
+end
+
+function DataService:CompleteTutorial(player: Player): boolean
+  local data = self:GetData(player)
+  if not data then
+    return false
+  end
+
+  data.tutorialCompleted = true
+  self.Client.DataChanged:Fire(player, "tutorialCompleted", true)
+  return true
+end
+
+--------------------------------------------------------------------------------
+-- COSMETICS
+--------------------------------------------------------------------------------
+
+function DataService:OwnsCosmetic(player: Player, cosmeticId: string): boolean
+  local data = self:GetData(player)
+  if not data then
+    return false
+  end
+  for _, id in data.ownedCosmetics do
+    if id == cosmeticId then
+      return true
+    end
+  end
+  return false
+end
+
+function DataService:AddOwnedCosmetic(player: Player, cosmeticId: string): boolean
+  local data = self:GetData(player)
+  if not data then
+    return false
+  end
+
+  if self:OwnsCosmetic(player, cosmeticId) then
+    return false
+  end
+
+  table.insert(data.ownedCosmetics, cosmeticId)
+  self.Client.DataChanged:Fire(player, "ownedCosmetics", data.ownedCosmetics)
+  return true
+end
+
+function DataService:EquipCosmetic(
+  player: Player,
+  slot: string,
+  cosmeticId: string?
+): (boolean, string?)
+  local data = self:GetData(player)
+  if not data then
+    return false, "Data not loaded"
+  end
+
+  -- Validate slot exists
+  if data.equippedCosmetics[slot] == nil and cosmeticId ~= nil then
+    -- Check if it's a valid slot name
+    local validSlots = {
+      cutlass_skin = true,
+      hat = true,
+      outfit = true,
+      pet = true,
+      emote_1 = true,
+      emote_2 = true,
+      ship_sail = true,
+      ship_hull = true,
+      ship_flag = true,
+    }
+    if not validSlots[slot] then
+      return false, "Invalid cosmetic slot"
+    end
+  end
+
+  -- If equipping (not unequipping), validate ownership
+  if cosmeticId ~= nil and not self:OwnsCosmetic(player, cosmeticId) then
+    return false, "Cosmetic not owned"
+  end
+
+  data.equippedCosmetics[slot] = cosmeticId
+  self.Client.DataChanged:Fire(player, "equippedCosmetics", data.equippedCosmetics)
+  return true, nil
+end
+
+--------------------------------------------------------------------------------
+-- STATS
+--------------------------------------------------------------------------------
+
+function DataService:IncrementStat(player: Player, statKey: string, amount: number): boolean
+  local data = self:GetData(player)
+  if not data then
+    return false
+  end
+
+  if data.stats[statKey] == nil then
+    return false
+  end
+
+  data.stats[statKey] = data.stats[statKey] + amount
+  self.Client.DataChanged:Fire(player, "stats", data.stats)
+  return true
+end
+
+function DataService:UpdateBiggestHaul(player: Player, haul: number): boolean
+  local data = self:GetData(player)
+  if not data then
+    return false
+  end
+
+  if haul > data.stats.biggestHaul then
+    data.stats.biggestHaul = haul
+    self.Client.DataChanged:Fire(player, "stats", data.stats)
+    return true
+  end
+  return false
+end
+
+--------------------------------------------------------------------------------
+-- SETTINGS
+--------------------------------------------------------------------------------
+
 function DataService:UpdateSetting(player: Player, settingKey: string, value: any): boolean
-  local profile = Profiles[player]
-  if not profile then
+  local data = self:GetData(player)
+  if not data then
     return false
   end
 
-  if profile.Data.settings[settingKey] == nil then
+  if data.settings[settingKey] == nil then
     return false
   end
 
-  profile.Data.settings[settingKey] = value
+  data.settings[settingKey] = value
   self.Client.DataChanged:Fire(player, "settings", settingKey)
   return true
 end
 
--- Client-exposed methods
+--------------------------------------------------------------------------------
+-- CLIENT-EXPOSED METHODS
+--------------------------------------------------------------------------------
+
 function DataService.Client:GetData(player: Player)
-  return DataService:GetData(player)
+  local data = DataService:GetData(player)
+  if data then
+    return Types.deepCopyPlayerData(data)
+  end
+  return nil
 end
 
-function DataService.Client:GetMoney(player: Player)
-  local data = DataService:GetData(player)
-  return if data then data.money else 0
+function DataService.Client:GetTreasury(player: Player)
+  return DataService:GetTreasury(player)
+end
+
+function DataService.Client:GetEquippedGear(player: Player)
+  return DataService:GetEquippedGear(player)
 end
 
 function DataService.Client:UpdateSetting(player: Player, settingKey: string, value: any)
   return DataService:UpdateSetting(player, settingKey, value)
 end
 
---[[
-  Loads a player's profile from ProfileService.
-]]
+--------------------------------------------------------------------------------
+-- PROFILE LOADING
+--------------------------------------------------------------------------------
+
 local function loadProfile(player: Player)
   local profileKey = PROFILE_KEY_PREFIX .. player.UserId
   local profile = ProfileStore:LoadProfileAsync(profileKey)
@@ -155,29 +378,38 @@ local function loadProfile(player: Player)
     return
   end
 
-  -- Apply deep copy to ensure data integrity
+  -- Apply deep copy for migration safety
   profile.Data = Types.deepCopyPlayerData(profile.Data)
+
+  -- Update timestamps
+  if profile.Data.joinedAt == 0 then
+    profile.Data.joinedAt = os.time()
+  end
+  profile.Data.lastPlayedAt = os.time()
 
   -- Store profile
   Profiles[player] = profile
 
   -- Notify client and server
-  DataService.Client.DataLoaded:Fire(player, profile.Data)
+  local clientCopy = Types.deepCopyPlayerData(profile.Data)
+  DataService.Client.DataLoaded:Fire(player, clientCopy)
   DataService.PlayerDataLoaded:Fire(player, profile.Data)
   print("[DataService] Profile loaded for", player.Name)
 end
 
---[[
-  Releases a player's profile when they leave.
-]]
 local function releaseProfile(player: Player)
   local profile = Profiles[player]
   if profile then
+    profile.Data.lastPlayedAt = os.time()
     profile:Release()
     Profiles[player] = nil
     print("[DataService] Profile released for", player.Name)
   end
 end
+
+--------------------------------------------------------------------------------
+-- KNIT LIFECYCLE
+--------------------------------------------------------------------------------
 
 function DataService:KnitInit()
   ProfileStore = ProfileService.GetProfileStore(PROFILE_STORE_NAME, Types.DEFAULT_PLAYER_DATA)
@@ -185,12 +417,10 @@ function DataService:KnitInit()
 end
 
 function DataService:KnitStart()
-  -- Load profiles for players who join
   Players.PlayerAdded:Connect(function(player)
     loadProfile(player)
   end)
 
-  -- Release profiles when players leave
   Players.PlayerRemoving:Connect(function(player)
     releaseProfile(player)
   end)

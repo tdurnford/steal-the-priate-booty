@@ -1,65 +1,197 @@
 --[[
-	Types.lua
-	Central type definitions for the game template.
-	Contains shared types for player data and settings.
+  Types.lua
+  Central type definitions for the pirate game.
+  Contains the persistent PlayerData schema, defaults, and deep copy migration.
 ]]
 
---[[
-	Player settings and preferences.
-	- musicEnabled: Whether background music is on
-	- sfxEnabled: Whether sound effects are on
-	- showOtherPlayers: Whether to render other players
-]]
+--------------------------------------------------------------------------------
+-- SETTINGS
+--------------------------------------------------------------------------------
+
 export type Settings = {
   musicEnabled: boolean,
   sfxEnabled: boolean,
   showOtherPlayers: boolean,
 }
 
---[[
-	Main player data schema for ProfileService persistence.
-	- money: Currency balance
-	- settings: Player preferences
-	- joinedAt: First join timestamp
-	- lastPlayedAt: Most recent session timestamp
-]]
+--------------------------------------------------------------------------------
+-- EQUIPPED COSMETICS
+--------------------------------------------------------------------------------
+
+export type EquippedCosmetics = {
+  cutlass_skin: string?,
+  hat: string?,
+  outfit: string?,
+  pet: string?,
+  emote_1: string?,
+  emote_2: string?,
+  ship_sail: string?,
+  ship_hull: string?,
+  ship_flag: string?,
+}
+
+--------------------------------------------------------------------------------
+-- PLAYER STATS
+--------------------------------------------------------------------------------
+
+export type PlayerStats = {
+  totalEarned: number,
+  totalStolen: number,
+  totalRaided: number,
+  biggestHaul: number,
+}
+
+--------------------------------------------------------------------------------
+-- PLAYER DATA (persistent, saved to DataStore)
+--------------------------------------------------------------------------------
+
 export type PlayerData = {
-  money: number,
+  -- Currency
+  treasury: number,
+
+  -- Gear
+  equippedGear: string,
+  ownedGear: { string },
+
+  -- Notoriety / Rank
+  notorietyXP: number,
+
+  -- Tutorial
+  tutorialCompleted: boolean,
+
+  -- Cosmetics
+  ownedCosmetics: { string },
+  equippedCosmetics: EquippedCosmetics,
+
+  -- Lifetime stats
+  stats: PlayerStats,
+
+  -- Settings
   settings: Settings,
+
+  -- Timestamps
   joinedAt: number,
   lastPlayedAt: number,
 }
 
 local Types = {}
 
--- Default data template for new players
+-- Default data template for new players (used by ProfileService)
 Types.DEFAULT_PLAYER_DATA = {
-  money = 0,
+  -- Currency
+  treasury = 0,
+
+  -- Gear (new players start with rusty_cutlass after tutorial)
+  equippedGear = "rusty_cutlass",
+  ownedGear = { "rusty_cutlass" },
+
+  -- Notoriety / Rank (starts at Deckhand, 0 XP)
+  notorietyXP = 0,
+
+  -- Tutorial
+  tutorialCompleted = false,
+
+  -- Cosmetics
+  ownedCosmetics = {},
+  equippedCosmetics = {
+    cutlass_skin = nil,
+    hat = nil,
+    outfit = nil,
+    pet = nil,
+    emote_1 = nil,
+    emote_2 = nil,
+    ship_sail = nil,
+    ship_hull = nil,
+    ship_flag = nil,
+  },
+
+  -- Lifetime stats
+  stats = {
+    totalEarned = 0,
+    totalStolen = 0,
+    totalRaided = 0,
+    biggestHaul = 0,
+  },
+
+  -- Settings
   settings = {
     musicEnabled = true,
     sfxEnabled = true,
     showOtherPlayers = true,
   },
+
+  -- Timestamps
   joinedAt = 0,
   lastPlayedAt = 0,
 }
 
 --[[
-	Deep copies player data for safe manipulation.
-	@param data Source player data
-	@return Deep copy of the data
+  Deep copies player data for safe manipulation.
+  Also handles migration from older schema versions.
+  @param data Source player data (may have missing fields from older saves)
+  @return Deep copy of the data
 ]]
 function Types.deepCopyPlayerData(data: PlayerData): PlayerData
-  return {
-    money = data.money,
-    settings = {
-      musicEnabled = data.settings.musicEnabled,
-      sfxEnabled = data.settings.sfxEnabled,
-      showOtherPlayers = data.settings.showOtherPlayers,
+  -- Migration fallbacks for each field
+  local sourceTreasury = data.treasury or data.money or 0
+  local sourceEquippedGear = data.equippedGear or "rusty_cutlass"
+  local sourceOwnedGear = data.ownedGear or { "rusty_cutlass" }
+  local sourceNotorietyXP = data.notorietyXP or 0
+  local sourceTutorialCompleted = if data.tutorialCompleted ~= nil
+    then data.tutorialCompleted
+    else false
+  local sourceOwnedCosmetics = data.ownedCosmetics or {}
+  local sourceEquippedCosmetics = data.equippedCosmetics or {}
+  local sourceStats = data.stats or {}
+  local sourceSettings = data.settings or {}
+
+  local copy: PlayerData = {
+    treasury = sourceTreasury,
+    equippedGear = sourceEquippedGear,
+    ownedGear = {},
+    notorietyXP = sourceNotorietyXP,
+    tutorialCompleted = sourceTutorialCompleted,
+    ownedCosmetics = {},
+    equippedCosmetics = {
+      cutlass_skin = sourceEquippedCosmetics.cutlass_skin,
+      hat = sourceEquippedCosmetics.hat,
+      outfit = sourceEquippedCosmetics.outfit,
+      pet = sourceEquippedCosmetics.pet,
+      emote_1 = sourceEquippedCosmetics.emote_1,
+      emote_2 = sourceEquippedCosmetics.emote_2,
+      ship_sail = sourceEquippedCosmetics.ship_sail,
+      ship_hull = sourceEquippedCosmetics.ship_hull,
+      ship_flag = sourceEquippedCosmetics.ship_flag,
     },
-    joinedAt = data.joinedAt,
-    lastPlayedAt = data.lastPlayedAt,
+    stats = {
+      totalEarned = sourceStats.totalEarned or 0,
+      totalStolen = sourceStats.totalStolen or 0,
+      totalRaided = sourceStats.totalRaided or 0,
+      biggestHaul = sourceStats.biggestHaul or 0,
+    },
+    settings = {
+      musicEnabled = if sourceSettings.musicEnabled ~= nil
+        then sourceSettings.musicEnabled
+        else true,
+      sfxEnabled = if sourceSettings.sfxEnabled ~= nil then sourceSettings.sfxEnabled else true,
+      showOtherPlayers = if sourceSettings.showOtherPlayers ~= nil
+        then sourceSettings.showOtherPlayers
+        else true,
+    },
+    joinedAt = data.joinedAt or 0,
+    lastPlayedAt = data.lastPlayedAt or 0,
   }
+
+  -- Copy array fields
+  for _, gearId in sourceOwnedGear do
+    table.insert(copy.ownedGear, gearId)
+  end
+
+  for _, cosmeticId in sourceOwnedCosmetics do
+    table.insert(copy.ownedCosmetics, cosmeticId)
+  end
+
+  return copy
 end
 
 return Types

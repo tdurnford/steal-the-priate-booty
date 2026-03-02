@@ -42,3 +42,60 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Follows the project's config module pattern (see .claude/skills/game-config/)
 - Local toolchain (selene/rojo via aftman/rokit shims) has pre-existing issues — StyLua works via ~/.rokit/bin/stylua but selene and rojo fail with "No such file or directory" errors
 - Next highest-priority features to consider: TYPES-001 (expand shared types), DATA-001 (player data schema), KNIT-001 (service scaffolding)
+
+---
+
+## 2026-03-02 — DATA-001: Player Data Schema & ProfileService Setup
+
+### What was done
+- Replaced the generic template `PlayerData` schema in `src/shared/Types.lua` with the
+  full pirate game persistent data model.
+- Expanded `src/server/Services/DataService.lua` with a complete getter/setter API for
+  all new data fields.
+
+### Types.lua changes
+- **New export types**: `EquippedCosmetics`, `PlayerStats`, updated `PlayerData`
+- **PlayerData fields**: `treasury`, `equippedGear`, `ownedGear`, `notorietyXP`,
+  `tutorialCompleted`, `ownedCosmetics`, `equippedCosmetics`, `stats`, `settings`,
+  `joinedAt`, `lastPlayedAt`
+- **DEFAULT_PLAYER_DATA**: New players start with `rusty_cutlass` equipped and owned,
+  `treasury = 0`, `notorietyXP = 0`, `tutorialCompleted = false`, empty cosmetics/stats
+- **deepCopyPlayerData migration**: Handles old `money` → `treasury` migration, all
+  fields use `or` fallbacks for existing saves, arrays are copied element-by-element,
+  booleans use `~= nil` checks to preserve `false` values
+
+### DataService.lua changes
+- **Removed**: `UpdateMoney()`, `Client:GetMoney()` (replaced by treasury API)
+- **Added treasury API**: `GetTreasury()`, `UpdateTreasury()`
+- **Added gear API**: `GetEquippedGear()`, `OwnsGear()`, `PurchaseGear()`, `EquipGear()`
+  — PurchaseGear validates GameConfig, ownership, and treasury balance
+- **Added notoriety API**: `GetNotorietyXP()`, `AddNotorietyXP()` — fires rank change
+  event when rank tier changes using `GameConfig.getRankForXP()`
+- **Added tutorial API**: `IsTutorialCompleted()`, `CompleteTutorial()`
+- **Added cosmetics API**: `OwnsCosmetic()`, `AddOwnedCosmetic()`, `EquipCosmetic()`
+  — EquipCosmetic validates slot names and ownership, supports unequip (nil)
+- **Added stats API**: `IncrementStat()`, `UpdateBiggestHaul()` — biggestHaul only
+  updates if new haul exceeds previous record
+- **Profile loading**: Now sets `joinedAt` on first join, updates `lastPlayedAt` on
+  both load and release, sends deep copy to client
+- **Client methods**: `GetData()` now returns deep copy, added `GetTreasury()`,
+  `GetEquippedGear()`
+- **New dependency**: Requires `GameConfig` for gear validation and rank calculation
+
+### Backward compatibility
+- Old profiles with `money` field are migrated to `treasury` via deepCopyPlayerData
+- ProfileService's `Reconcile()` fills in all new fields from DEFAULT_PLAYER_DATA
+- Existing client code (SettingsPanel, SoundController) is unchanged — they use
+  `GetData()`, `UpdateSetting()`, and `DataChanged` which all still work
+
+### Notes for next developer
+- All persistent data fields from the spec are now defined. Session-only state
+  (held_doubloons, ship_hold, threat_level, etc.) is NOT in PlayerData — that
+  belongs in a future SessionState module (DATA-003).
+- To add a new persistent field: update the type, add to DEFAULT_PLAYER_DATA,
+  add migration in deepCopyPlayerData, add DataService method if needed.
+- `PurchaseGear` uses GameConfig.GearById — if gear config changes, purchases
+  still validate correctly.
+- Toolchain: luau-lsp not available (not in rokit.toml), StyLua formatting passes.
+- Next highest-priority features to consider: DATA-003 (session state), KNIT-001
+  (service scaffolding), DATA-002 (auto-save), TYPES-001 (expand shared types)
