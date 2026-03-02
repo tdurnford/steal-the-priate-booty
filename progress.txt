@@ -552,3 +552,104 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
   a Y threshold
 - Next highest-priority features: LOOT-002 (container spawning), COMBAT-001
   (light swing), LOOT-003 (container breaking), GEAR-002 (gear purchase)
+
+---
+
+## 2026-03-02 — LOOT-002: Container Spawning System
+
+### What was done
+- Created `src/server/Services/ContainerService.lua` — a server-authoritative Knit
+  service that manages container spawning, tracking, damage, and breaking.
+
+### ContainerService.lua — complete implementation
+
+#### Spawn point system
+- Containers spawn at pre-placed Parts in `workspace.ContainerSpawnPoints`
+- Each spawn point Part can have a `Zone` attribute (string) for zone-based filtering
+  (e.g., "beach", "jungle", "danger" — Cursed Chests only spawn at "danger" points)
+- Occupied spawn points are tracked and never double-spawned
+- Folder is auto-created with a warning if not found (map builders need to add Parts)
+
+#### Weighted random container type selection
+- Spawn frequency strings from GameConfig map to numeric weights:
+  very_common=40, common=25, uncommon=15, rare=10, very_rare=5
+- Night-only containers (cursed_chest) are excluded from the normal spawn pool
+- Weighted selection table built at require-time for O(n) selection
+
+#### Rolling timer spawn system
+- Uses `RunService.Heartbeat` with an 8-second base spawn interval
+- At night, interval is divided by `nightSpawnRateMultiplier` (1.5x → ~5.3s)
+- Each tick attempts to spawn one container if below the 20-container cap
+- 5 containers pre-spawned on server start so the map isn't empty
+
+#### Night cycle integration
+- Listens to `DayNightService.PhaseChanged` signal
+- On Night start: spawns 2–3 Cursed Chests at random danger zone spawn points
+  (shuffled selection, respects 20-container cap)
+- On Dawn: despawns all remaining un-broken Cursed Chests (no loot drop)
+- Containers spawned during night are flagged (`isNightSpawn = true`) for
+  the 2x yield multiplier applied at break time
+
+#### Container model creation (placeholder)
+- Each container type has a distinct colored box model with appropriate size
+- Cursed Chest: purple PointLight (range=30, visible through fog) + purple
+  ParticleEmitter for eerie effect
+- Captain's Vault: gold PointLight glow
+- Container body Part stores attributes: ContainerId, ContainerType, MaxHP, CurrentHP
+- Models placed under `workspace.Containers` folder
+
+#### Damage & break system (for LOOT-003 integration)
+- `DamageContainer(containerId, damage, player)` — deals damage, returns
+  (destroyed: boolean, hpFraction: number?)
+- `BreakContainer(containerId, player)` — calculates yield (with 2x night multiplier),
+  calls `DoubloonService:ScatterDoubloons()`, fires client/server signals
+- `RemoveContainer(containerId)` — frees spawn point, destroys model, updates count
+- `GetContainerByPart(part)` — looks up container from a hit Part via ContainerId
+  attribute (useful for raycast-based hit detection in COMBAT-001)
+
+#### Client signals
+- `ContainerSpawned` — fires to all players with (containerId, containerType, position)
+- `ContainerDamaged` — fires to all players with (containerId, hpFraction) for VFX states
+- `ContainerBroken` — fires to all players with (containerId, containerType, position)
+
+#### Server signals
+- `ContainerService.ContainerSpawned` — fires (containerEntry) for inter-service use
+- `ContainerService.ContainerBroken` — fires (containerEntry, player) for stat tracking,
+  threat accumulation, notoriety XP, etc.
+
+#### Public API
+- `DamageContainer(containerId, damage, player)` — deal damage to a container
+- `BreakContainer(containerId, player)` — force-break a container
+- `RemoveContainer(containerId)` — silently remove a container
+- `GetContainer(containerId)` — get container entry by ID
+- `GetContainerByPart(part)` — find container from a workspace Part
+- `GetActiveContainerCount()` — current active count
+- `SpawnContainerAt(containerTypeId, position)` — manual spawn for events/testing
+
+### Acceptance criteria verification
+- [x] Containers spawn at fixed map points on timers (8s base interval, rolling timer)
+- [x] Never more than 20 active containers at once (cap enforced before every spawn)
+- [x] Spawn rate increases 1.5x during night (interval divided by nightSpawnRateMultiplier)
+- [x] Cursed Chests only spawn at night in danger zones (2-3 per night, via PhaseChanged)
+- [x] Spawn points don't double-spawn while occupied (OccupiedSpawnPoints tracking)
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via StyLua
+  formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- Map builders need to add Parts to `workspace.ContainerSpawnPoints` folder with
+  optional `Zone` attribute ("danger" for Cursed Chest spawn points)
+- Container models are placeholder colored boxes — replace with proper 3D models
+  when MODEL-001 is implemented (swap out `createContainerModel()`)
+- The `BASE_SPAWN_INTERVAL` (8s) is a local constant, not in GameConfig. Move it
+  there if it needs to be tunable from a central location.
+- The break system is already integrated with DoubloonService — when COMBAT-001
+  (light swing) is implemented, just call `ContainerService:DamageContainer()`
+  with the gear damage value
+- `GetContainerByPart(part)` reads the `ContainerId` attribute from the Part,
+  making it easy to identify containers from raycast results
+- Night yield multiplier (2x) is applied at break time based on the `isNightSpawn`
+  flag, not the current phase — so a container spawned at night but broken at dawn
+  still gives 2x loot
+- Next highest-priority features: COMBAT-001 (light swing — enables container
+  breaking and PvP), LOOT-003 (container breaking VFX), GEAR-002 (gear purchase)
