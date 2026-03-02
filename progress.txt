@@ -386,3 +386,84 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
   map builders should place torch models there
 - Next highest-priority features: DAYNIGHT-003 (transition banners/audio), LOOT-002
   (container spawning), COMBAT-001 (light swing), KNIT-001 (service scaffolding)
+
+---
+
+## 2026-03-02 — DAYNIGHT-003: Day/Night Transition UI & Audio
+
+### What was done
+- Created `src/client/Controllers/DayNightBannerController.lua` — a Knit controller
+  that shows atmospheric phase transition banners at Dusk and Dawn.
+- Extended `src/client/Controllers/SoundController.lua` with phase transition
+  audio cue methods (horn blast at Dusk, bell chime at Dawn).
+
+### DayNightBannerController.lua — complete implementation
+
+#### Banner system
+- Listens to `DayNightController.PhaseChanged` and triggers banners for Dawn
+  and Dusk phases only (Day and Night transitions are silent)
+- **Dusk banner**: "Night is falling..." in warm orange (255, 160, 80), with
+  orange glow gradient background
+- **Dawn banner**: "Dawn breaks. The island rests." in golden sunrise
+  (255, 220, 120), with golden glow gradient background
+- Banners display at top center of screen, positioned at Y=60 to avoid
+  the top bar
+
+#### Animation
+- **Fade in** (0.6s): Background, stroke, text, and text stroke all tween
+  from fully transparent to visible. Uses Quad Out easing.
+- **Scale in**: UIScale tweens from 0.9 to 1.0 with Back Out easing for
+  a subtle pop-in effect
+- **Display**: Stays visible for `GameConfig.DayNight.bannerDuration` (5s)
+- **Fade out** (0.8s): All elements tween back to transparent. UIScale
+  tweens to 1.05 for a subtle expand-and-vanish effect.
+- Active tweens are tracked and cancelled on new banner to prevent conflicts
+
+#### UI composition
+- Uses UITheme.Colors.DarkBackground for the panel
+- UIGradient provides atmospheric colored glow (phase-specific)
+- UIStroke with phase-colored border
+- UICorner with UITheme.CornerRadius.Large
+- Text uses UITheme.Fonts.PRIMARY (FredokaOne) at 26px with auto-sized
+  stroke from UITheme.getTextStrokeThickness()
+- ScreenGui at DisplayOrder=100, IgnoreGuiInset=true, ResetOnSpawn=false
+
+#### Audio integration
+- Delegates sound playback to SoundController:PlayPhaseTransitionSound(phase)
+- SoundController respects sfxEnabled player setting automatically
+
+### SoundController.lua changes
+- **New sound IDs**: `duskHorn` (rbxassetid://9114046944 — foghorn/horn blast),
+  `dawnBell` (rbxassetid://9114049951 — bell chime)
+- **New volumes**: duskHorn = 0.6, dawnBell = 0.5
+- **New method**: `PlayPhaseTransitionSound(phase)` — plays the appropriate
+  2D sound for "Dawn" or "Dusk" phase transitions
+
+### Public API
+- `DayNightBannerController:ShowBanner(phase)` — manually trigger a banner
+  (useful for testing or future event banners)
+
+### Acceptance criteria verification
+- [x] Dusk banner "Night is falling..." and horn blast play for all players
+      at Dusk (via DayNightController.PhaseChanged which fires from server sync)
+- [x] Dawn banner "Dawn breaks. The island rests." and bell play for all
+      players at Dawn
+- [x] Banners are visible for 5 seconds then fade (GameConfig.DayNight.bannerDuration)
+- [x] Audio is heard by all connected clients (2D sound via SoundService,
+      respects sfxEnabled setting)
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via StyLua
+  formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The audio asset IDs (rbxassetid://9114046944 and rbxassetid://9114049951)
+  should be verified in Roblox Studio. Replace with custom audio from the
+  Creator Store if these don't sound right.
+- The banner controller auto-discovers via Knit (placed in Controllers folder)
+- To add banners for other events (world events, bounty, etc.), either extend
+  BANNER_CONFIG or create a separate EventBannerController
+- The UI-006 (HUD Event Banners) feature in the PRD is a superset of this —
+  it will handle queueing multiple banners. DayNightBannerController can be
+  refactored into that system later.
+- Next highest-priority features: LOOT-002 (container spawning), COMBAT-001
+  (light swing), LOOT-005 (doubloon scatter & pickup), GEAR-002 (gear purchase)

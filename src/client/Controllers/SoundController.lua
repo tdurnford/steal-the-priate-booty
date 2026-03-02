@@ -20,6 +20,10 @@ local SOUNDS = {
   purchase = "rbxassetid://5863456788",
   purchaseFail = "rbxassetid://4590657391",
   buttonClick = "rbxassetid://6895079853",
+
+  -- Day/night phase transition audio cues
+  duskHorn = "rbxassetid://9114046944", -- deep foghorn/horn blast for nightfall
+  dawnBell = "rbxassetid://9114049951", -- bell chime / rooster crow for dawn
 }
 
 -- Volume settings per sound type
@@ -27,6 +31,8 @@ local VOLUMES = {
   purchase = 0.5,
   purchaseFail = 0.4,
   buttonClick = 0.3,
+  duskHorn = 0.6,
+  dawnBell = 0.5,
 }
 
 -- References
@@ -133,6 +139,19 @@ end
 ]]
 function SoundController:PlayButtonClickSound()
   play2DSound(SOUNDS.buttonClick, VOLUMES.buttonClick)
+end
+
+--[[
+	Plays the phase transition sound for a day/night phase.
+	Called by DayNightBannerController on Dawn and Dusk transitions.
+	@param phase "Dawn" | "Dusk"
+]]
+function SoundController:PlayPhaseTransitionSound(phase: string)
+  if phase == "Dusk" then
+    play2DSound(SOUNDS.duskHorn, VOLUMES.duskHorn)
+  elseif phase == "Dawn" then
+    play2DSound(SOUNDS.dawnBell, VOLUMES.dawnBell)
+  end
 end
 
 --[[
