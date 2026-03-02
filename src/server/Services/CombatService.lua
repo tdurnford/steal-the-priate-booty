@@ -81,6 +81,7 @@ local SessionStateService = nil
 local DataService = nil
 local ContainerService = nil
 local DoubloonService = nil
+local HarborService = nil
 
 -- Per-player last attack timestamp for rate limiting
 local LastAttackTime: { [Player]: number } = {}
@@ -229,25 +230,33 @@ local function performHitDetection(attacker: Player, range: number, arc: number)
   local attackerCFrame = attackerHRP.CFrame
 
   -- Check player targets first (PvP priority)
+  -- Harbor safe zone: skip PvP if attacker is in harbor
+  local attackerInHarbor = SessionStateService and SessionStateService:IsInHarbor(attacker)
   local closestPlayerDist = math.huge
   local closestPlayer: Player? = nil
 
-  for _, otherPlayer in Players:GetPlayers() do
-    if otherPlayer ~= attacker then
-      local otherHRP = getHRP(otherPlayer)
-      if otherHRP then
-        if isInSwingArc(attackerCFrame, otherHRP.Position, range, arc) then
-          -- Check per-target cooldown
-          if SessionStateService:CanHitTarget(attacker, otherPlayer.UserId) then
-            -- Check target is not already ragdolling or dashing (i-frames)
-            if
-              not SessionStateService:IsRagdolling(otherPlayer)
-              and not SessionStateService:IsDashing(otherPlayer)
-            then
-              local dist = (otherHRP.Position - attackerCFrame.Position).Magnitude
-              if dist < closestPlayerDist then
-                closestPlayerDist = dist
-                closestPlayer = otherPlayer
+  if not attackerInHarbor then
+    for _, otherPlayer in Players:GetPlayers() do
+      if otherPlayer ~= attacker then
+        -- Skip targets that are in the Harbor safe zone
+        if SessionStateService:IsInHarbor(otherPlayer) then
+          continue
+        end
+        local otherHRP = getHRP(otherPlayer)
+        if otherHRP then
+          if isInSwingArc(attackerCFrame, otherHRP.Position, range, arc) then
+            -- Check per-target cooldown
+            if SessionStateService:CanHitTarget(attacker, otherPlayer.UserId) then
+              -- Check target is not already ragdolling or dashing (i-frames)
+              if
+                not SessionStateService:IsRagdolling(otherPlayer)
+                and not SessionStateService:IsDashing(otherPlayer)
+              then
+                local dist = (otherHRP.Position - attackerCFrame.Position).Magnitude
+                if dist < closestPlayerDist then
+                  closestPlayerDist = dist
+                  closestPlayer = otherPlayer
+                end
               end
             end
           end
@@ -517,6 +526,7 @@ function CombatService:KnitStart()
   DataService = Knit.GetService("DataService")
   ContainerService = Knit.GetService("ContainerService")
   DoubloonService = Knit.GetService("DoubloonService")
+  HarborService = Knit.GetService("HarborService")
 
   -- Listen for client attack requests
   self.Client.AttackRequest:Connect(function(player: Player)

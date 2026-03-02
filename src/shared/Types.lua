@@ -77,6 +77,9 @@ export type SessionState = {
   threatLevel: number,
   lastLockTime: number,
 
+  -- Zone
+  inHarbor: boolean,
+
   -- NPC
   phantomCaptainActive: boolean,
 }
@@ -148,6 +151,9 @@ Types.DEFAULT_SESSION_STATE = {
   -- Threat
   threatLevel = 0,
   lastLockTime = 0,
+
+  -- Zone
+  inHarbor = false,
 
   -- NPC
   phantomCaptainActive = false,
@@ -296,6 +302,7 @@ function Types.createSessionState(tutorialCompleted: boolean): SessionState
     tutorialStep = if tutorialCompleted then 0 else 1,
     threatLevel = 0,
     lastLockTime = os.clock(),
+    inHarbor = false,
     phantomCaptainActive = false,
   }
   return state

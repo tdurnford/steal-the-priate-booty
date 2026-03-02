@@ -51,6 +51,7 @@ local CLIENT_VISIBLE_FIELDS = {
   hasBounty = true,
   tutorialActive = true,
   tutorialStep = true,
+  inHarbor = true,
 }
 
 --------------------------------------------------------------------------------
@@ -527,6 +528,27 @@ function SessionStateService:SetPhantomCaptainActive(player: Player, active: boo
 end
 
 --------------------------------------------------------------------------------
+-- HARBOR ZONE
+--------------------------------------------------------------------------------
+
+function SessionStateService:IsInHarbor(player: Player): boolean
+  local state = SessionStates[player]
+  return if state then state.inHarbor else false
+end
+
+function SessionStateService:SetInHarbor(player: Player, inHarbor: boolean)
+  local state = SessionStates[player]
+  if not state then
+    return
+  end
+  if state.inHarbor == inHarbor then
+    return -- no change
+  end
+  state.inHarbor = inHarbor
+  notifyChange(player, "inHarbor", inHarbor)
+end
+
+--------------------------------------------------------------------------------
 -- CLIENT-EXPOSED METHODS (read-only)
 --------------------------------------------------------------------------------
 
@@ -558,6 +580,10 @@ function SessionStateService.Client:GetTutorialStep(player: Player): number
   return SessionStateService:GetTutorialStep(player)
 end
 
+function SessionStateService.Client:IsInHarbor(player: Player): boolean
+  return SessionStateService:IsInHarbor(player)
+end
+
 --[[
   Returns a snapshot of all client-visible session fields.
   Used by the client to initialize HUD state on load.
@@ -575,6 +601,7 @@ function SessionStateService.Client:GetSessionSnapshot(player: Player): { [strin
     hasBounty = state.hasBounty,
     tutorialActive = state.tutorialActive,
     tutorialStep = state.tutorialStep,
+    inHarbor = state.inHarbor,
   }
 end
 

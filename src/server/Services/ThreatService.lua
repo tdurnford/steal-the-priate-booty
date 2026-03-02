@@ -10,6 +10,7 @@
     - Being in danger zones: +3 per minute (future ZONE-001 integration)
   Night multiplier: 1.5x all threat gains.
   Threat pauses (does NOT reset) while in Harbor safe zone.
+  Harbor state is managed by HarborService and read from SessionStateService.
 
   Threat REDUCTION is handled by other services:
     - Ship deposit: -25 (ShipService.DepositAll already calls AddThreat(-25))
@@ -18,7 +19,7 @@
 
   Other services can call:
     - AddThreatFromAction(player, actionType) for event-driven threat
-    - IsInHarbor(player) returns false until HARBOR-001 is implemented
+    - IsInHarbor(player) reads harbor state from SessionStateService
     - OnNPCKilled(player) for NPC death threat gain
 ]]
 
@@ -58,42 +59,21 @@ local TimeAccumulators: { [Player]: number } = {}
 -- Per-player timers for danger zone accumulation
 local DangerZoneAccumulators: { [Player]: number } = {}
 
--- Harbor zone check placeholder. Returns true if the player is inside the
--- Harbor safe zone. Will be replaced by HARBOR-001 zone detection.
-local HarborZonePart: BasePart? = nil
-
 --------------------------------------------------------------------------------
--- HARBOR ZONE CHECK (placeholder until HARBOR-001)
+-- HARBOR ZONE CHECK (delegates to SessionStateService, set by HarborService)
 --------------------------------------------------------------------------------
 
 --[[
   Checks whether a player is currently inside the Harbor safe zone.
-  Uses a simple Part-based bounding box check. If no HarborZone part exists
-  in workspace, always returns false.
+  Reads from SessionStateService (updated by HarborService).
   @param player The player to check
   @return true if the player is inside the Harbor
 ]]
 function ThreatService:IsInHarbor(player: Player): boolean
-  if not HarborZonePart then
+  if not SessionStateService then
     return false
   end
-
-  local character = player.Character
-  if not character then
-    return false
-  end
-  local rootPart = character:FindFirstChild("HumanoidRootPart")
-  if not rootPart then
-    return false
-  end
-
-  -- AABB check against the HarborZone part
-  local zoneCF = HarborZonePart.CFrame
-  local zoneSize = HarborZonePart.Size / 2
-  local localPos = zoneCF:PointToObjectSpace(rootPart.Position)
-  return math.abs(localPos.X) <= zoneSize.X
-    and math.abs(localPos.Y) <= zoneSize.Y
-    and math.abs(localPos.Z) <= zoneSize.Z
+  return SessionStateService:IsInHarbor(player)
 end
 
 --------------------------------------------------------------------------------
@@ -250,12 +230,6 @@ end
 --------------------------------------------------------------------------------
 
 function ThreatService:KnitInit()
-  -- Look for a HarborZone part in workspace (for HARBOR-001 integration)
-  HarborZonePart = workspace:FindFirstChild("HarborZone")
-  if HarborZonePart then
-    print("[ThreatService] Found HarborZone part — harbor pause enabled")
-  end
-
   print("[ThreatService] Initialized")
 end
 

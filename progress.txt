@@ -2081,3 +2081,51 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - StyLua formatting passes. No Roblox Studio MCP available for in-game testing.
 - Next highest-priority features: HARBOR-001 (safe zone), UI-002 (ship hold HUD),
   SHIP-004 (raiding), THREAT-003/004 (tier effects)
+
+---
+
+## 2026-03-02 — HARBOR-001: Harbor Safe Zone
+
+### What was done
+- Created `src/server/Services/HarborService.lua` — centralized Harbor safe zone detection
+- Modified `src/shared/Types.lua` — added `inHarbor` field to SessionState type + defaults
+- Modified `src/server/Services/SessionStateService.lua` — added `IsInHarbor()`, `SetInHarbor()`, client snapshot + visibility
+- Modified `src/server/Services/CombatService.lua` — PvP disabled when attacker or target is in Harbor
+- Modified `src/server/Services/ThreatService.lua` — refactored IsInHarbor() to read from SessionState (set by HarborService)
+- Created `src/client/Controllers/HarborController.lua` — client-side harbor enter/leave notifications
+
+### HarborService.lua
+- Finds `HarborZone` Part in workspace on KnitInit (AABB bounding box detection)
+- Heartbeat loop (0.25s interval) polls all player positions
+- On entry: sets `inHarbor = true` in SessionStateService, fires `PlayerEnteredHarbor` signal + client `HarborStateChanged`
+- On exit: sets `inHarbor = false`, fires signals, calls `ShipService:UnlockShip(player)` for auto-unlock
+- Public API: `IsInHarbor(player)` reads from SessionStateService
+
+### Integration points
+- **CombatService**: `performHitDetection()` now skips player-to-player hits when attacker is in harbor OR target is in harbor. Container hitting still works in harbor.
+- **ThreatService**: Removed local AABB check and HarborZone part lookup. `IsInHarbor()` now delegates to `SessionStateService:IsInHarbor()`, which HarborService keeps up to date.
+- **ShipService**: Already had `UnlockShip(player)` method waiting for HARBOR-001. HarborService calls it on harbor exit.
+- **SessionStateService**: New `inHarbor` boolean in CLIENT_VISIBLE_FIELDS + GetSessionSnapshot. New `IsInHarbor()` and `SetInHarbor()` methods with dedup (no change = no notification).
+
+### Client-side (HarborController)
+- Listens to `HarborService.HarborStateChanged` for enter/leave events
+- Shows toast notification via NotificationController: green "Entered Harbor — Safe Zone" or orange "Leaving Harbor — Watch your back!"
+- Checks initial state via GetSessionSnapshot in case player loaded inside harbor
+
+### Acceptance criteria status
+- ✅ Players cannot attack each other inside the Harbor (CombatService harbor check)
+- ✅ Ship raiding still works inside the Harbor (raid mechanic is separate from PvP combat, no harbor check on raids)
+- ✅ Threat gain pauses (not resets) while in Harbor (ThreatService reads inHarbor)
+- ⏳ NPCs will not enter the Harbor under any circumstance (deferred to NPC-003 pathfinding; HarborZone Part exists for exclusion zone)
+- ⏳ No hazards trigger in the Harbor (deferred to HAZ-* features; they will check HarborService:IsInHarbor())
+
+### Setup required in Roblox Studio
+- Place a Part named `HarborZone` in workspace at the harbor location
+- Size the Part to cover the entire harbor area (AABB bounding box)
+- The Part can be transparent/non-collidable — it's only used for zone detection
+
+### Notes for next developer
+- NPC pathfinding exclusion and hazard exclusion are NOT yet implemented (those are separate features)
+- They can both use `HarborService:IsInHarbor(player)` or `SessionStateService:IsInHarbor(player)` for checks
+- The HarborZone Part must exist in workspace for detection to work — without it, all harbor features are disabled
+- Next priorities: UI-002 (ship hold HUD), SHIP-004 (raiding), NPC-001 (Cursed Skeleton)
