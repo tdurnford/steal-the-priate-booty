@@ -1,3 +1,45 @@
+## 2026-03-02 — DAYNIGHT-004: Night Loot Modifiers
+
+### What was done
+- Fixed night yield multiplier in `ContainerService.lua` to check current phase at
+  break time instead of spawn time (spec says "all containers yield 2x at night")
+- Added `zone` field to `ContainerEntry` type, populated from spawn point's Zone attribute
+- Implemented Cursed Chest ambush mechanic: 50% chance on break to spawn 1-2 ambush NPCs
+  at the chest location via `NPCService:SpawnAmbushNPCs()`
+- Added `SpawnAmbushNPCs(position, count, zone)` method to `NPCService.lua` — spawns NPCs
+  at offset positions around the break location so they don't stack
+- Added `NPCService` as lazy-loaded reference in ContainerService
+
+### Night loot modifiers status (all complete)
+1. **2x night yield**: ContainerService checks `DayNightService:IsNight()` at break time
+   and multiplies yield by `GameConfig.ContainerSystem.nightYieldMultiplier` (2x)
+2. **1.5x spawn rate**: ContainerService Heartbeat loop divides spawn interval by
+   `nightSpawnRateMultiplier` (1.5x) when night is active
+3. **Cursed Chests (2-3 per night)**: Spawned at danger zone points when Night begins,
+   despawned at Dawn. Purple PointLight (range 30) + ParticleEmitter for fog visibility
+4. **50% ambush on break**: ContainerService rolls `cursedChestAmbushChance` (0.50),
+   spawns 1-2 NPCs via `NPCService:SpawnAmbushNPCs()`. Currently spawns Cursed Skeletons
+   as placeholders — will swap to Ghost Pirates when NPC-007 is implemented.
+5. **Dawn revert**: Cursed Chests despawned at Dawn, night yield multiplier only applies
+   during Night phase, spawn rate reverts automatically
+
+### Bug fix
+- Night yield now checks current phase at break time, not `isNightSpawn` flag. This means
+  a container spawned during day but broken at night correctly gets 2x yield. Previously,
+  only containers spawned during night got the bonus.
+
+### Notes for next developer
+- `NPCService:SpawnAmbushNPCs()` has a TODO to swap from Cursed Skeletons to Ghost Pirates
+  when NPC-007 is implemented
+- GameConfig already has all ambush constants: `cursedChestAmbushChance = 0.50`,
+  `cursedChestAmbushCount = { min = 1, max = 2 }`
+- The `isNightSpawn` field on ContainerEntry is still set but no longer used for yield
+  calculation. It could be removed or repurposed for other night-specific behavior.
+- Next priorities to consider: NPC-003 (SimplePath patrol), NPC-006 (spawn manager),
+  EVENT-001 (bounty system), RANK-001 (notoriety XP tracking)
+
+---
+
 ## 2026-03-02 — CONFIG-001: Game Configuration Module
 
 ### What was done

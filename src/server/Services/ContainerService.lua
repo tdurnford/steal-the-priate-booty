@@ -53,6 +53,7 @@ ContainerService.ContainerBroken = Signal.new() -- (containerEntry, player)
 -- Lazy-loaded service references (set in KnitStart)
 local DayNightService = nil
 local DoubloonService = nil
+local NPCService = nil
 
 --------------------------------------------------------------------------------
 -- SPAWN FREQUENCY WEIGHTS
@@ -114,8 +115,9 @@ end
 --   model: Model,         -- the workspace model
 --   position: Vector3,    -- world position
 --   spawnPoint: Part?,    -- the spawn point Part (nil for event spawns)
+--   zone: string,         -- zone name from spawn point (e.g., "danger", "beach")
 --   createdAt: number,    -- os.clock() when spawned
---   isNightSpawn: boolean -- true if spawned during night (for yield multiplier)
+--   isNightSpawn: boolean -- true if spawned during night
 -- }
 type ContainerEntry = {
   id: string,
@@ -125,6 +127,7 @@ type ContainerEntry = {
   model: Model,
   position: Vector3,
   spawnPoint: Part?,
+  zone: string,
   createdAt: number,
   isNightSpawn: boolean,
 }
@@ -317,6 +320,11 @@ local function spawnContainer(
 
   local model = createContainerModel(containerDef, pos, instanceId)
 
+  local zone = ""
+  if spawnPoint then
+    zone = spawnPoint:GetAttribute("Zone") or ""
+  end
+
   local entry: ContainerEntry = {
     id = instanceId,
     def = containerDef,
@@ -325,6 +333,7 @@ local function spawnContainer(
     model = model,
     position = pos,
     spawnPoint = spawnPoint,
+    zone = zone,
     createdAt = os.clock(),
     isNightSpawn = isNight,
   }
@@ -494,8 +503,9 @@ function ContainerService:BreakContainer(containerId: string, attackingPlayer: P
   local yieldMax = entry.def.yieldMax
   local yield = math.random(yieldMin, yieldMax)
 
-  -- Apply night yield multiplier if spawned during night
-  if entry.isNightSpawn then
+  -- Apply night yield multiplier: all containers broken during night yield 2x
+  local isNight = DayNightService and DayNightService:IsNight() or false
+  if isNight then
     yield = yield * GameConfig.ContainerSystem.nightYieldMultiplier
     yield = math.floor(yield)
   end
@@ -503,6 +513,19 @@ function ContainerService:BreakContainer(containerId: string, attackingPlayer: P
   -- Scatter doubloons
   if DoubloonService and yield > 0 then
     DoubloonService:ScatterDoubloons(entry.position, yield, entry.def.scatterRadius)
+  end
+
+  -- Cursed Chest ambush: 50% chance to spawn 1-2 ambush NPCs at break location
+  local ambushCount = 0
+  if entry.def.id == "cursed_chest" then
+    if math.random() < GameConfig.ContainerSystem.cursedChestAmbushChance then
+      local ambushConfig = GameConfig.ContainerSystem.cursedChestAmbushCount
+      ambushCount = math.random(ambushConfig.min, ambushConfig.max)
+      if NPCService then
+        local ambushZone = if entry.zone ~= "" then entry.zone else "danger"
+        NPCService:SpawnAmbushNPCs(entry.position, ambushCount, ambushZone)
+      end
+    end
   end
 
   -- Notify clients
@@ -514,12 +537,17 @@ function ContainerService:BreakContainer(containerId: string, attackingPlayer: P
   -- Remove from world
   self:RemoveContainer(containerId, false)
 
+  local ambushMsg = ""
+  if ambushCount > 0 then
+    ambushMsg = string.format(" (ambush! %d NPCs spawned)", ambushCount)
+  end
   print(
     string.format(
-      "[ContainerService] %s broken by %s — scattered %d doubloons",
+      "[ContainerService] %s broken by %s — scattered %d doubloons%s",
       entry.def.name,
       attackingPlayer and attackingPlayer.Name or "unknown",
-      yield
+      yield,
+      ambushMsg
     )
   )
 end
@@ -637,6 +665,7 @@ end
 function ContainerService:KnitStart()
   DayNightService = Knit.GetService("DayNightService")
   DoubloonService = Knit.GetService("DoubloonService")
+  NPCService = Knit.GetService("NPCService")
 
   -- Listen for day/night transitions
   DayNightService.PhaseChanged:Connect(function(newPhase: string, previousPhase: string)

@@ -1010,6 +1010,35 @@ function NPCService:SpawnNPCAt(npcType: string, position: Vector3): any
   return nil
 end
 
+--[[
+  Spawns ambush NPCs at a position (e.g., Cursed Chest break).
+  Currently spawns Cursed Skeletons as placeholders.
+  TODO: When NPC-007 (Ghost Pirate) is implemented, spawn Ghost Pirates instead.
+  @param position World position to spawn at
+  @param count Number of NPCs to spawn (1-2)
+  @param zone Zone name for the spawned NPCs
+]]
+function NPCService:SpawnAmbushNPCs(position: Vector3, count: number, zone: string)
+  for i = 1, count do
+    -- Offset each NPC slightly so they don't stack on top of each other
+    local angle = (i / count) * math.pi * 2
+    local offset = Vector3.new(math.cos(angle) * 3, 0, math.sin(angle) * 3)
+    local spawnPos = position + offset
+
+    -- TODO: Replace with Ghost Pirate spawn when NPC-007 is done
+    local entry = spawnSkeleton(spawnPos, zone, nil)
+    if entry then
+      print(
+        string.format(
+          "[NPCService] Ambush NPC #%d spawned at Cursed Chest location (zone: %s)",
+          entry.id,
+          zone
+        )
+      )
+    end
+  end
+end
+
 --------------------------------------------------------------------------------
 -- CLIENT-EXPOSED METHODS
 --------------------------------------------------------------------------------
