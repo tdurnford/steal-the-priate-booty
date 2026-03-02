@@ -11,9 +11,9 @@
 	- showOtherPlayers: Whether to render other players
 ]]
 export type Settings = {
-	musicEnabled: boolean,
-	sfxEnabled: boolean,
-	showOtherPlayers: boolean,
+  musicEnabled: boolean,
+  sfxEnabled: boolean,
+  showOtherPlayers: boolean,
 }
 
 --[[
@@ -24,24 +24,24 @@ export type Settings = {
 	- lastPlayedAt: Most recent session timestamp
 ]]
 export type PlayerData = {
-	money: number,
-	settings: Settings,
-	joinedAt: number,
-	lastPlayedAt: number,
+  money: number,
+  settings: Settings,
+  joinedAt: number,
+  lastPlayedAt: number,
 }
 
 local Types = {}
 
 -- Default data template for new players
 Types.DEFAULT_PLAYER_DATA = {
-	money = 0,
-	settings = {
-		musicEnabled = true,
-		sfxEnabled = true,
-		showOtherPlayers = true,
-	},
-	joinedAt = 0,
-	lastPlayedAt = 0,
+  money = 0,
+  settings = {
+    musicEnabled = true,
+    sfxEnabled = true,
+    showOtherPlayers = true,
+  },
+  joinedAt = 0,
+  lastPlayedAt = 0,
 }
 
 --[[
@@ -50,16 +50,16 @@ Types.DEFAULT_PLAYER_DATA = {
 	@return Deep copy of the data
 ]]
 function Types.deepCopyPlayerData(data: PlayerData): PlayerData
-	return {
-		money = data.money,
-		settings = {
-			musicEnabled = data.settings.musicEnabled,
-			sfxEnabled = data.settings.sfxEnabled,
-			showOtherPlayers = data.settings.showOtherPlayers,
-		},
-		joinedAt = data.joinedAt,
-		lastPlayedAt = data.lastPlayedAt,
-	}
+  return {
+    money = data.money,
+    settings = {
+      musicEnabled = data.settings.musicEnabled,
+      sfxEnabled = data.settings.sfxEnabled,
+      showOtherPlayers = data.settings.showOtherPlayers,
+    },
+    joinedAt = data.joinedAt,
+    lastPlayedAt = data.lastPlayedAt,
+  }
 end
 
 return Types

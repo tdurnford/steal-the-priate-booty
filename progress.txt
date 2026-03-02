@@ -1,0 +1,44 @@
+## 2026-03-02 — CONFIG-001: Game Configuration Module
+
+### What was done
+- Created `src/shared/GameConfig.lua` — the central shared configuration module
+  containing ALL tunable game constants from the design spec.
+
+### What's in GameConfig.lua
+The module is organized into these sections:
+- **Combat**: swing cooldowns, charge times, block speed, dash distance/cooldown/i-frames, per-target hit cooldown, recovery window
+- **Ragdoll**: durations for light hit (1.5s), heavy hit (2.5s), blocked hit (0.5s)
+- **Loot Spill**: PvP spill percentages (10%/25%/5%), min spill, bounty multiplier
+- **Containers**: 6 container types (Crate, Barrel, Treasure Chest, Reinforced Trunk, Captain's Vault, Cursed Chest) with HP, yield ranges, scatter radii, spawn frequencies
+- **Pickups**: despawn time (15s), max loose pickups (200), pickup radius
+- **Loot Visibility**: 4 tiers based on held doubloons (none/small/medium/large)
+- **Gear**: 6 cutlass tiers (Driftwood through Legendary Blade) with costs and damage values
+- **Ship Tiers**: 7 tiers (Rowboat through Ghost Ship) with treasury thresholds
+- **Ship System**: dock slots (24), despawn delay, raid duration/steal/cooldown
+- **NPCs**: Cursed Skeleton, Ghost Pirate, Phantom Captain — full stats (HP, speed, attacks, loot, spawn budgets)
+- **NPC Behavior**: SimplePath params, chase/leash/stuck detection, dormant mode, night modifiers
+- **Threat**: accumulation rates, tier thresholds (Calm/Uneasy/Hunted/Cursed/Doomed), tier effects
+- **Day/Night**: phase durations (Dawn 30s, Day 360s, Dusk 30s, Night 240s = 11min cycle)
+- **Hazards**: Volcanic Vent, Tidal Surge, Quicksand, Rogue Wave — all timings and effects
+- **Bounty**: check interval, activation threshold, clear conditions
+- **World Events**: Shipwreck and Loot Surge intervals and durations
+- **Notoriety/Rank**: 11 XP reward actions, 6 rank tiers with thresholds and unlocks
+- **Tutorial**: distances and HP for tutorial sequence
+- **Auto-Save**: 60-second interval
+
+### Accessor functions included
+- `getContainerById()`, `getGearById()`, `getShipTier()`, `getShipTierForTreasury()`
+- `getRankForXP()`, `getThreatTier()`, `getLootVisibilityTier()`
+- `calculateSpill()` — full PvP spill calculation with bounty support
+- `canPurchaseGear()` — validation with (boolean, string?) pattern
+- `isNight()`, `getNotorietyXP()`
+
+### Lookup tables
+Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByNumber`, `RankByNumber`, `NotorietyXPById`
+
+### Notes for next developer
+- All values match the game design spec. If the spec changes, update this file.
+- The module exports Luau types: CombatConfig, RagdollConfig, LootSpillConfig, ContainerDef, GearDef, ShipTierDef, ThreatTierDef, DayPhase, LootVisibilityTier, NotorietyXPReward, RankDef
+- Follows the project's config module pattern (see .claude/skills/game-config/)
+- Local toolchain (selene/rojo via aftman/rokit shims) has pre-existing issues — StyLua works via ~/.rokit/bin/stylua but selene and rojo fail with "No such file or directory" errors
+- Next highest-priority features to consider: TYPES-001 (expand shared types), DATA-001 (player data schema), KNIT-001 (service scaffolding)
