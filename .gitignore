@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# Environment variables (contains secrets)
+.env
+.env.local
+
+# Rojo build output
+build/
+dist/
+
+# Roblox place files
+*.rbxl
+
+# Mantle state
+.mantle-state.yml
+
+# Tooling caches
+.rokit/
+.vscode/*.log
+
+plans/
+Packages/
+DevPackages/
+ServerPackages/
+
+# Lock files (except wally.lock)
+*.rbxlx.lock

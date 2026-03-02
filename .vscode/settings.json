@@ -1,0 +1,9 @@
+{
+  "files.eol": "\n",
+  "editor.formatOnSave": true,
+  "[lua]": {
+    "editor.defaultFormatter": "johnnymorganz.stylua"
+  },
+  "selene.runtime": "selene",
+  "stylua.styluaPath": "stylua"
+}

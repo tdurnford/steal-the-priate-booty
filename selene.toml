@@ -1,0 +1,8 @@
+std = "roblox"
+
+[rules]
+# Keep lint strict but practical for game dev:
+shadowing = "warn"
+unused_variable = "warn"
+unused_function = "warn"
+incorrect_standard_library_use = "deny"
