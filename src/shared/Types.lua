@@ -42,6 +42,43 @@ export type PlayerStats = {
 }
 
 --------------------------------------------------------------------------------
+-- SESSION STATE (transient, server-only, never saved to DataStore)
+--------------------------------------------------------------------------------
+
+export type SessionState = {
+  -- Loot
+  heldDoubloons: number,
+  shipHold: number,
+
+  -- Ship
+  shipLocked: boolean,
+
+  -- Combat
+  isRagdolling: boolean,
+  ragdollEndTime: number,
+  recoveryEndTime: number,
+  dashCooldownEnd: number,
+  lastHitTargets: { [number]: number }, -- [targetUserId] = timestamp
+
+  -- Ship raiding
+  lastRaidedShips: { [number]: number }, -- [ownerUserId] = timestamp
+
+  -- Bounty
+  hasBounty: boolean,
+
+  -- Tutorial
+  tutorialActive: boolean,
+  tutorialStep: number,
+
+  -- Threat
+  threatLevel: number,
+  lastLockTime: number,
+
+  -- NPC
+  phantomCaptainActive: boolean,
+}
+
+--------------------------------------------------------------------------------
 -- PLAYER DATA (persistent, saved to DataStore)
 --------------------------------------------------------------------------------
 
@@ -75,6 +112,40 @@ export type PlayerData = {
 }
 
 local Types = {}
+
+-- Default session state template for new player sessions (server-only, never saved)
+Types.DEFAULT_SESSION_STATE = {
+  -- Loot
+  heldDoubloons = 0,
+  shipHold = 0,
+
+  -- Ship
+  shipLocked = true,
+
+  -- Combat
+  isRagdolling = false,
+  ragdollEndTime = 0,
+  recoveryEndTime = 0,
+  dashCooldownEnd = 0,
+  lastHitTargets = {},
+
+  -- Ship raiding
+  lastRaidedShips = {},
+
+  -- Bounty
+  hasBounty = false,
+
+  -- Tutorial
+  tutorialActive = false,
+  tutorialStep = 0,
+
+  -- Threat
+  threatLevel = 0,
+  lastLockTime = 0,
+
+  -- NPC
+  phantomCaptainActive = false,
+}
 
 -- Default data template for new players (used by ProfileService)
 Types.DEFAULT_PLAYER_DATA = {
@@ -192,6 +263,33 @@ function Types.deepCopyPlayerData(data: PlayerData): PlayerData
   end
 
   return copy
+end
+
+--[[
+  Creates a fresh session state for a player.
+  Optionally sets tutorialActive based on whether the player has completed the tutorial.
+  @param tutorialCompleted Whether the player has already completed the tutorial
+  @return A new SessionState with correct defaults
+]]
+function Types.createSessionState(tutorialCompleted: boolean): SessionState
+  local state: SessionState = {
+    heldDoubloons = 0,
+    shipHold = 0,
+    shipLocked = true,
+    isRagdolling = false,
+    ragdollEndTime = 0,
+    recoveryEndTime = 0,
+    dashCooldownEnd = 0,
+    lastHitTargets = {},
+    lastRaidedShips = {},
+    hasBounty = false,
+    tutorialActive = not tutorialCompleted,
+    tutorialStep = if tutorialCompleted then 0 else 1,
+    threatLevel = 0,
+    lastLockTime = os.clock(),
+    phantomCaptainActive = false,
+  }
+  return state
 end
 
 return Types

@@ -99,3 +99,74 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Toolchain: luau-lsp not available (not in rokit.toml), StyLua formatting passes.
 - Next highest-priority features to consider: DATA-003 (session state), KNIT-001
   (service scaffolding), DATA-002 (auto-save), TYPES-001 (expand shared types)
+
+---
+
+## 2026-03-02 — DATA-003: Session-Only Player State Manager
+
+### What was done
+- Added `SessionState` type and `createSessionState()` factory to `src/shared/Types.lua`.
+- Added `DEFAULT_SESSION_STATE` template alongside the existing `DEFAULT_PLAYER_DATA`.
+- Created `src/server/Services/SessionStateService.lua` — a full Knit service managing
+  per-player transient session state (server-authoritative, never saved to DataStore).
+
+### Types.lua changes
+- **New export type**: `SessionState` with all 15 spec fields
+- **New constant**: `DEFAULT_SESSION_STATE` — default template for reference
+- **New function**: `createSessionState(tutorialCompleted)` — factory that creates a
+  fresh session state; sets `tutorialActive = not tutorialCompleted` and
+  `tutorialStep = 1` for new players who haven't completed the tutorial,
+  initializes `lastLockTime = os.clock()`
+
+### SessionStateService.lua — complete API
+- **Session lifecycle**: `_initSession(player)` on DataService.PlayerDataLoaded,
+  `_cleanupSession(player)` on Players.PlayerRemoving
+- **Held doubloons**: `GetHeldDoubloons()`, `AddHeldDoubloons()`, `SetHeldDoubloons()`
+- **Ship hold**: `GetShipHold()`, `AddShipHold()`, `SetShipHold()`
+- **Ship lock**: `IsShipLocked()`, `SetShipLocked()` — updates `lastLockTime` on lock
+- **Ragdoll/combat**: `IsRagdolling()` (auto-transitions to recovery when time expires),
+  `IsInRecovery()`, `StartRagdoll(duration)`, `EndRagdoll()`,
+  `IsDashOnCooldown()`, `StartDashCooldown(cooldown)`
+- **Per-target hit tracking**: `CanHitTarget(attacker, targetUserId)` — 2s cooldown,
+  `RecordHitTarget()`, `CleanupHitTargets()` — garbage collects expired entries
+- **Ship raid tracking**: `CanRaidShip(raider, ownerUserId)` — 30s cooldown per ship,
+  `RecordShipRaid()`
+- **Bounty**: `HasBounty()`, `SetBounty(active)`
+- **Tutorial**: `IsTutorialActive()`, `GetTutorialStep()`, `SetTutorialStep()`,
+  `CompleteTutorialSession()`
+- **Threat level**: `GetThreatLevel()`, `AddThreat(amount)` (clamped 0-100),
+  `SetThreatLevel()`, `ResetThreat()`, `GetLastLockTime()`
+- **Phantom Captain**: `IsPhantomCaptainActive()`, `SetPhantomCaptainActive()`
+- **Generic accessors**: `GetState()`, `GetField()`, `IsInitialized()`
+
+### Client-visible fields (read-only via signals)
+- `SessionStateChanged` signal fires to client for: `heldDoubloons`, `shipHold`,
+  `shipLocked`, `threatLevel`, `hasBounty`, `tutorialActive`, `tutorialStep`
+- Client-callable methods: `GetHeldDoubloons()`, `GetShipHold()`, `IsShipLocked()`,
+  `GetThreatLevel()`, `HasBounty()`, `IsTutorialActive()`, `GetTutorialStep()`,
+  `GetSessionSnapshot()` (returns all client-visible fields in one call)
+
+### Server-side signal
+- `StateChanged` (GoodSignal): fires `(player, fieldName, newValue)` for every field
+  change — allows other services to react to state changes without polling
+
+### Design decisions
+- Session initializes after DataService.PlayerDataLoaded (not PlayerAdded) so tutorial
+  completion state is available from persistent data
+- `IsRagdolling()` auto-transitions to recovery state when ragdoll time expires,
+  avoiding the need for a heartbeat loop
+- Hit target and raid tracking use `os.clock()` timestamps with lazy cleanup,
+  keeping memory bounded
+- All mutation goes through typed setter methods — no direct field access from
+  external services
+
+### Notes for next developer
+- To add a new session field: add it to the `SessionState` type, add default in
+  `DEFAULT_SESSION_STATE` and `createSessionState()`, add getter/setter methods
+  in SessionStateService, optionally add to `CLIENT_VISIBLE_FIELDS`
+- The service handles studio edge case (players already in game when Knit starts)
+- Roblox Studio MCP server was not available for in-game testing; tested via StyLua
+  formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- Next highest-priority features: DAYNIGHT-001 (day/night cycle clock — many systems
+  depend on it), DATA-002 (auto-save), KNIT-001 (service scaffolding)
