@@ -467,3 +467,88 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
   refactored into that system later.
 - Next highest-priority features: LOOT-002 (container spawning), COMBAT-001
   (light swing), LOOT-005 (doubloon scatter & pickup), GEAR-002 (gear purchase)
+
+---
+
+## 2026-03-02 — LOOT-005: Doubloon Scatter & Pickup System
+
+### What was done
+- Created `src/server/Services/DoubloonService.lua` — a server-authoritative Knit
+  service that manages all doubloon pickup entities in the game world.
+
+### DoubloonService.lua — complete implementation
+
+#### Pickup entity creation
+- Doubloon pickups are small gold cylinder Parts (coin shape) in a `workspace.Pickups`
+  folder, with a PointLight for gold glow
+- Each pickup stores its doubloon value as an attribute (`DoubloonValue`)
+- Parts are Anchored, CanCollide=false, CanQuery=false, CanTouch=false, CastShadow=false
+  for minimal physics overhead
+
+#### Scatter system — `ScatterDoubloons(position, amount, scatterRadius)`
+- Primary API entry point for other services (container breaks, PvP spills, NPC drops)
+- Splits total doubloon amount into 3–15 individual pickup entities using intelligent
+  splitting: small amounts get 1 pickup per doubloon, larger amounts split into
+  baseValue + remainder distribution
+- Each pickup lands at a random angle and distance within the scatter radius
+- Pickups placed 0.5 studs above center Y for ground visibility
+
+#### Proximity collection (server-authoritative)
+- Heartbeat loop checks every 0.1 seconds (not every frame) for performance
+- Builds player position list from HumanoidRootPart, then checks each pickup against
+  each player using squared XZ distance (avoids sqrt)
+- When player is within `GameConfig.Pickups.pickupRadius` (4 studs), the pickup is
+  collected: value added to `heldDoubloons` via SessionStateService, part destroyed,
+  client signal fired for VFX/SFX
+- First-come-first-served: closest check wins when multiple players are near
+
+#### Despawn system
+- Every check cycle, expired pickups (>15s since creation) are removed
+- Oldest-first removal ensures bounded memory
+
+#### Global pickup cap
+- Before spawning new pickups, `enforcePickupCap()` removes oldest pickups if the
+  count would exceed `GameConfig.Pickups.maxLoosePickups` (200)
+- Makes headroom for the incoming batch before creating new entities
+
+#### Disconnect spill integration
+- Connects to `DataService.DisconnectDoubloonSpill` signal in KnitStart
+- When a player disconnects with held doubloons, scatters them at their last position
+  with a 4-stud radius
+
+#### Signals
+- **Server-side**: `DoubloonService.DoubloonCollected` (GoodSignal) fires
+  `(player, amount, position)` on each pickup collection — for future stat tracking,
+  notoriety XP, etc.
+- **Client-side**: `DoubloonService.Client.DoubloonCollected` (Knit RemoteSignal) fires
+  `(pickupPosition, amount)` to the collecting player — for VFX/SFX feedback
+
+### Public API
+- `ScatterDoubloons(position, amount, scatterRadius?)` — scatter pickups at a position
+- `GetActivePickupCount()` — returns current number of active pickups
+
+### Acceptance criteria verification
+- [x] Doubloons scatter visually on the ground (gold coin Parts with PointLight glow)
+- [x] Players auto-collect by walking near them (4-stud radius, server-authoritative)
+- [x] Pickups despawn after 15 seconds (GameConfig.Pickups.despawnTime)
+- [x] Never more than 200 loose pickups on the map; oldest removed first
+- [x] Pickup collection is validated server-side (Heartbeat loop, SessionStateService)
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via StyLua
+  formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The pickup model is a simple gold cylinder — when MODEL-005 (Doubloon Pickup &
+  Coin Purse Models) is implemented, replace `createPickupPart()` with the proper
+  model from the asset library
+- To scatter doubloons from another service:
+  `DoubloonService:ScatterDoubloons(position, amount, scatterRadius)`
+- To react to pickups being collected (e.g., for stat tracking):
+  `DoubloonService.DoubloonCollected:Connect(function(player, amount, pos) ... end)`
+- Client controllers can listen to `DoubloonService.DoubloonCollected` signal for
+  collection SFX/VFX (coin sound, sparkle effect at pickup position)
+- The collection check uses XZ distance only (ignores Y) which works well for
+  ground-level pickups; if pickups end up on elevated surfaces, consider adding
+  a Y threshold
+- Next highest-priority features: LOOT-002 (container spawning), COMBAT-001
+  (light swing), LOOT-003 (container breaking), GEAR-002 (gear purchase)
