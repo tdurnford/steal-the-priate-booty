@@ -37,7 +37,7 @@ local CombatService = Knit.CreateService({
     SwingResult = Knit.CreateSignal(),
 
     -- Fired to a player when they are hit and should ragdoll.
-    -- Args: (attackerName: string, ragdollDuration: number)
+    -- Args: (attackerName: string, ragdollDuration: number, knockbackVelocity: Vector3)
     RagdollTrigger = Knit.CreateSignal(),
 
     -- Fired to all players near a loot spill for VFX.
@@ -245,8 +245,31 @@ local function handlePlayerHit(attacker: Player, target: Player)
   local ragdollDuration = GameConfig.Ragdoll.lightHitDuration
   SessionStateService:StartRagdoll(target, ragdollDuration)
 
-  -- Notify the target to ragdoll visually
-  CombatService.Client.RagdollTrigger:Fire(target, attacker.Name, ragdollDuration)
+  -- Calculate knockback velocity: push target away from attacker
+  local attackerHRP = getHRP(attacker)
+  local targetHRP = getHRP(target)
+  local knockbackVelocity = Vector3.zero
+  if attackerHRP and targetHRP then
+    local knockbackDir = (targetHRP.Position - attackerHRP.Position)
+    -- Use XZ direction only, normalize
+    knockbackDir = Vector3.new(knockbackDir.X, 0, knockbackDir.Z)
+    if knockbackDir.Magnitude > 0.01 then
+      knockbackDir = knockbackDir.Unit
+    else
+      -- Fallback to attacker's look direction
+      knockbackDir = attackerHRP.CFrame.LookVector
+      knockbackDir = Vector3.new(knockbackDir.X, 0, knockbackDir.Z).Unit
+    end
+    knockbackVelocity = knockbackDir * GameConfig.Ragdoll.lightHitKnockback
+  end
+
+  -- Notify the target to ragdoll visually (with knockback)
+  CombatService.Client.RagdollTrigger:Fire(
+    target,
+    attacker.Name,
+    ragdollDuration,
+    knockbackVelocity
+  )
 
   -- Calculate loot spill (light hit = 10%)
   local heldDoubloons = SessionStateService:GetHeldDoubloons(target)
@@ -259,8 +282,8 @@ local function handlePlayerHit(attacker: Player, target: Player)
     SessionStateService:AddHeldDoubloons(target, -spillAmount)
 
     -- Scatter at target's position
-    local targetHRP = getHRP(target)
-    local spillPos = if targetHRP then targetHRP.Position else Vector3.new(0, 5, 0)
+    local spillHRP = getHRP(target)
+    local spillPos = if spillHRP then spillHRP.Position else Vector3.new(0, 5, 0)
 
     if DoubloonService then
       DoubloonService:ScatterDoubloons(spillPos, spillAmount, 4)

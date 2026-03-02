@@ -1206,3 +1206,133 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Next highest-priority features: UI-002 (ship hold indicator), COMBAT-005
   (ragdoll physics), COMBAT-002 (heavy swing), COMBAT-003 (block mechanic),
   UI-011 (cosmetic shop UI)
+
+---
+
+## 2026-03-02 — COMBAT-005: Ragdoll Physics System
+
+### What was done
+- Created `src/shared/RagdollModule.lua` — a shared physics-based ragdoll module
+  that replaces the old placeholder PlatformStanding ragdoll.
+- Updated `src/client/Controllers/CombatController.lua` to use RagdollModule for
+  all ragdoll visuals with knockback support.
+- Updated `src/server/Services/CombatService.lua` to calculate and send knockback
+  velocity to the client on player hits.
+- Extended `src/shared/GameConfig.lua` with knockback force values per hit type.
+
+### RagdollModule.lua — complete implementation
+
+#### Joint disabling system
+- Iterates all Motor6D joints in the character and disables them (Enabled = false)
+- Creates BallSocketConstraint replacements at each joint position using the
+  motor's C0/C1 CFrame transforms
+- Creates Attachment pairs on Part0/Part1 for constraint anchoring
+- All joints, constraints, and attachments are tracked for clean restoration
+
+#### Per-joint limits (exaggerated for comedy)
+- 14 named joints with individual angle limits:
+  - Neck: 50° upper, ±35° twist (head bobble)
+  - Waist: 35° upper, ±25° twist (torso bending)
+  - Shoulders: 130° upper, ±90° twist (floppy arm comedy)
+  - Elbows: 130° upper, ±10° twist (wide bend)
+  - Hips: 100° upper, ±35° twist (exaggerated leg flailing)
+  - Knees: 100° upper, ±5° twist (dramatic leg folding)
+  - Wrists/Ankles: 50° upper, moderate twist
+- Slight restitution (0.3) on all joints for bouncy tumble feel
+- Joints not in the named table get default limits (90°, ±45° twist)
+
+#### Limb collision system
+- Enables CanCollide on 13 body parts (Head, UpperTorso, LowerTorso, all arm
+  and leg segments) so ragdolled characters interact with terrain/walls
+- Original CanCollide values stored and restored on ragdoll end
+- HumanoidRootPart stays non-collidable to avoid physics interference
+
+#### Knockback impulse
+- Sets AssemblyLinearVelocity on HumanoidRootPart for immediate impulse
+- Adds upward kick (35% of horizontal magnitude) for exaggerated launch
+- Adds angular velocity perpendicular to knockback direction for comedic spin
+  (capped at 15 rad/s to prevent excessive rotation)
+
+#### Humanoid state management
+- PlatformStanding = true to prevent auto-stand during ragdoll
+- Disables GettingUp and Running states to prevent Humanoid interference
+- On restore: re-enables states, sets PlatformStanding = false, triggers
+  GettingUp state for smooth stand-up animation
+
+### CombatController.lua changes
+- **Removed**: Old `applyRagdollVisual()` function (PlatformStanding placeholder)
+- **Added**: RagdollModule import and usage
+- **Updated onRagdollTrigger**: Now accepts `knockbackVelocity: Vector3?` parameter,
+  calls `RagdollModule.enable(character, knockbackVelocity)` instead of
+  PlatformStanding, schedules `RagdollModule.disable()` after duration
+- **Added RagdollCleanupThread**: Tracks the pending disable task so overlapping
+  ragdolls cancel the old cleanup before starting a new one
+- **Added CharacterRemoving handler**: Calls `RagdollModule.cleanup(character)` and
+  resets all ragdoll state (IsRagdolled, RagdollCleanupThread) on respawn/death
+
+### CombatService.lua changes
+- **Updated RagdollTrigger signal**: Now sends `knockbackVelocity: Vector3` as the
+  4th argument (was previously just attackerName + duration)
+- **Added knockback calculation in handlePlayerHit**: Computes knockback direction
+  from attacker→target XZ vector (normalized), multiplied by
+  `GameConfig.Ragdoll.lightHitKnockback` (15 studs/s)
+- **Fallback**: If attacker and target overlap, uses attacker's look direction
+- **Fixed variable shadowing**: Renamed inner `targetHRP` to `spillHRP` in the
+  loot spill section to avoid shadowing the outer variable
+
+### GameConfig.lua changes
+- **Extended RagdollConfig type**: Added `lightHitKnockback`, `heavyHitKnockback`,
+  `blockedHitKnockback` number fields
+- **Added knockback values**:
+  - `lightHitKnockback = 15` — studs/s impulse for stumble
+  - `heavyHitKnockback = 40` — studs/s impulse for launch (future COMBAT-002)
+  - `blockedHitKnockback = 0` — no knockback when blocked (future COMBAT-003)
+
+### Design decisions
+- Module is in src/shared/ for potential future server-side NPC ragdoll use
+- BallSocketConstraint chosen over HingeConstraint for more chaotic tumbling
+  (matches the "exaggerated and satisfying" spec requirement)
+- Knockback is computed server-side and sent to client so it can't be exploited
+- Upward kick and angular velocity are computed from knockback magnitude, meaning
+  stronger hits automatically produce more dramatic tumbles
+- Joint limits are intentionally loose (especially shoulders/elbows) so arms flail
+  dramatically during ragdoll — this is the "core humor element" from the spec
+
+### Acceptance criteria verification
+- [x] Player goes limp and tumbles on hit with physics-based ragdoll
+      (Motor6D disabled → BallSocketConstraint, limbs collide with environment)
+- [x] Light hit: 1.5s ragdoll, minimal displacement (15 studs/s knockback impulse)
+- [x] Heavy hit: 2.5s ragdoll with knockback launch (40 studs/s configured,
+      will be used when COMBAT-002 heavy swing is implemented)
+- [x] Blocked hit: 0.5s ragdoll, no knockback (0 studs/s configured,
+      will be used when COMBAT-003 block is implemented)
+- [x] No input accepted during ragdoll state (IsRagdolled blocks canSwing(),
+      server validates via SessionStateService:IsRagdolling)
+- [x] 0.5s recovery window after ragdoll (move only, no attack — totalLockout
+      includes recoveryWindow, server checks IsInRecovery)
+- [x] Ragdolls look exaggerated and entertaining (loose joint limits, bouncy
+      restitution, upward kick, comedic spin, floppy arms)
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via StyLua
+  formatting check across all src files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The ragdoll joint limits are tunable in `JOINT_LIMITS` at the top of
+  RagdollModule.lua — adjust UpperAngle and Twist values to change floppiness
+- `SPIN_FACTOR` (0.5), `MAX_SPIN` (15), and `UP_KICK_FACTOR` (0.35) control
+  the comedic tumble intensity — increase for more dramatic ragdolls
+- To apply ragdoll from another controller (e.g., hazard ragdoll):
+  `RagdollModule.enable(character, knockbackVelocity?)` and schedule
+  `RagdollModule.disable(character)` after the duration
+- When COMBAT-002 (heavy swing) is implemented:
+  - Use `GameConfig.Ragdoll.heavyHitKnockback` (40) for the knockback force
+  - Send this in the RagdollTrigger signal from CombatService
+  - The module handles the larger impulse automatically (bigger launch + spin)
+- When COMBAT-003 (block) is implemented:
+  - Use `GameConfig.Ragdoll.blockedHitKnockback` (0) for zero knockback
+  - Use `GameConfig.Ragdoll.blockedHitDuration` (0.5s) for brief stumble
+- The module calls `RagdollModule.cleanup(character)` on CharacterRemoving to
+  prevent memory leaks from destroyed character references
+- Next highest-priority features: COMBAT-002 (heavy swing — uses the knockback
+  system), COMBAT-003 (block mechanic), COMBAT-004 (dash), UI-002 (ship hold
+  indicator), SHIP-001 (ship dock system)

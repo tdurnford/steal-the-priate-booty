@@ -52,12 +52,18 @@ export type RagdollConfig = {
   lightHitDuration: number,
   heavyHitDuration: number,
   blockedHitDuration: number,
+  lightHitKnockback: number,
+  heavyHitKnockback: number,
+  blockedHitKnockback: number,
 }
 
 GameConfig.Ragdoll = {
   lightHitDuration = 1.5, -- seconds
   heavyHitDuration = 2.5, -- seconds (with knockback)
   blockedHitDuration = 0.5, -- seconds (no knockback)
+  lightHitKnockback = 15, -- studs/s impulse (stumble)
+  heavyHitKnockback = 40, -- studs/s impulse (launch)
+  blockedHitKnockback = 0, -- no knockback when blocked
 } :: RagdollConfig
 
 --------------------------------------------------------------------------------

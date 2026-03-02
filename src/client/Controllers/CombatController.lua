@@ -8,7 +8,8 @@
     - Client-side cooldown display (to prevent spamming the server)
     - Playing swing animation and SFX on attack
     - Receiving hit confirmation and ragdoll triggers from server
-    - Playing ragdoll visual on the local character when hit
+    - Physics-based ragdoll via RagdollModule (joint disabling, knockback, tumble)
+    - Character respawn cleanup for ragdoll state
 
   The server performs all validation and hit detection.
   This controller is purely for input and visual feedback.
@@ -23,6 +24,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 
 local Knit = require(Packages:WaitForChild("Knit"))
 local GameConfig = require(Shared:WaitForChild("GameConfig"))
+local RagdollModule = require(Shared:WaitForChild("RagdollModule"))
 
 local CombatController = Knit.CreateController({
   Name = "CombatController",
@@ -95,26 +97,8 @@ local function playSwingAnimation()
   animation:Destroy()
 end
 
---[[
-  Applies ragdoll visual effect to a character.
-  Disables movement and makes the character go limp for the duration.
-  This is a simplified ragdoll — full physics-based ragdoll is COMBAT-005.
-]]
-local function applyRagdollVisual(character: Model, duration: number)
-  local humanoid = character:FindFirstChildOfClass("Humanoid")
-  if not humanoid then
-    return
-  end
-
-  -- Simple ragdoll: set to PlatformStanding so character falls over
-  humanoid.PlatformStanding = true
-
-  task.delay(duration, function()
-    if humanoid and humanoid.Parent then
-      humanoid.PlatformStanding = false
-    end
-  end)
-end
+-- Tracks the active ragdoll cleanup task so overlapping ragdolls cancel the old one
+local RagdollCleanupThread: thread? = nil
 
 --[[
   Checks if the client-side cooldown has elapsed.
@@ -176,19 +160,40 @@ end
 
 --[[
   Called when the server tells this player to ragdoll.
+  Enables physics-based ragdoll with knockback and schedules recovery.
   @param attackerName string Name of the player who hit us
   @param ragdollDuration number How long to ragdoll
+  @param knockbackVelocity Vector3? Optional knockback impulse direction + force
 ]]
-local function onRagdollTrigger(attackerName: string, ragdollDuration: number)
+local function onRagdollTrigger(
+  attackerName: string,
+  ragdollDuration: number,
+  knockbackVelocity: Vector3?
+)
   IsRagdolled = true
   RagdollEndTime = os.clock() + ragdollDuration
 
-  local character = LocalPlayer.Character
-  if character then
-    applyRagdollVisual(character, ragdollDuration)
+  -- Cancel any pending ragdoll cleanup from a previous hit
+  if RagdollCleanupThread then
+    task.cancel(RagdollCleanupThread)
+    RagdollCleanupThread = nil
   end
 
-  -- Clear ragdoll state after duration + recovery window
+  local character = LocalPlayer.Character
+  if character then
+    -- Enable physics-based ragdoll with knockback
+    RagdollModule.enable(character, knockbackVelocity)
+
+    -- Schedule ragdoll disable after duration
+    RagdollCleanupThread = task.delay(ragdollDuration, function()
+      RagdollCleanupThread = nil
+      if character and character.Parent then
+        RagdollModule.disable(character)
+      end
+    end)
+  end
+
+  -- Clear input lockout after ragdoll + recovery window
   local totalLockout = ragdollDuration + GameConfig.Combat.recoveryWindow
   task.delay(totalLockout, function()
     IsRagdolled = false
@@ -211,6 +216,16 @@ function CombatController:KnitStart()
   -- Listen for server events
   CombatService.SwingResult:Connect(onSwingResult)
   CombatService.RagdollTrigger:Connect(onRagdollTrigger)
+
+  -- Clean up ragdoll state on character removal (death/respawn)
+  LocalPlayer.CharacterRemoving:Connect(function(character: Model)
+    RagdollModule.cleanup(character)
+    IsRagdolled = false
+    if RagdollCleanupThread then
+      task.cancel(RagdollCleanupThread)
+      RagdollCleanupThread = nil
+    end
+  end)
 
   -- Listen for primary click input
   UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
