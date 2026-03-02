@@ -1,6 +1,6 @@
 --[[
   CombatController.lua
-  Client-side combat input handler for light swing, heavy swing, and block.
+  Client-side combat input handler for light swing, heavy swing, block, and dash.
 
   Handles:
     - Detecting primary click (Mouse1 / Touch tap) for attack
@@ -8,12 +8,13 @@
     - Hold 0.8s then release → heavy swing (charge, 1.2s cooldown, vulnerable)
     - Detecting secondary click (Mouse2) for block
     - Hold Mouse2 → block stance (50% speed, reduced ragdoll/spill on hit)
-    - Sending attack/block intent to CombatService
+    - Detecting Q key for dash (10 studs, 3s cooldown, 0.3s i-frames)
+    - Sending attack/block/dash intent to CombatService
     - Client-side cooldown display (to prevent spamming the server)
-    - Playing swing/charge/block animations and SFX
+    - Playing swing/charge/block/dash animations and SFX
     - Receiving hit confirmation, ragdoll triggers, and block impacts from server
     - Physics-based ragdoll via RagdollModule (joint disabling, knockback, tumble)
-    - Character respawn cleanup for ragdoll/block state
+    - Character respawn cleanup for ragdoll/block/dash state
 
   The server performs all validation and hit detection.
   This controller is purely for input and visual feedback.
@@ -21,6 +22,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 
@@ -56,6 +58,12 @@ local ChargeTween: Tween? = nil
 local IsBlocking = false
 local BlockAnimTrack: AnimationTrack? = nil
 
+-- Dash state
+local IsDashing = false
+local LastDashTime = 0
+local DashTrailAttachment: Attachment? = nil
+local DashTrailInstance: Trail? = nil
+
 -- Tracks the active ragdoll cleanup task so overlapping ragdolls cancel the old one
 local RagdollCleanupThread: thread? = nil
 
@@ -63,6 +71,10 @@ local RagdollCleanupThread: thread? = nil
 local LIGHT_SWING_COOLDOWN = GameConfig.Combat.lightSwingCooldown -- 0.4s
 local HEAVY_SWING_COOLDOWN = GameConfig.Combat.heavySwingCooldown -- 1.2s
 local HEAVY_CHARGE_TIME = GameConfig.Combat.heavySwingChargeTime -- 0.8s
+local DASH_COOLDOWN = GameConfig.Combat.dashCooldown -- 3s
+local DASH_DISTANCE = GameConfig.Combat.dashDistance -- 10 studs
+local DASH_INVULN_TIME = GameConfig.Combat.dashInvulnerabilityTime -- 0.3s
+local DASH_DURATION = 0.2 -- seconds to apply dash velocity (covers ~10 studs)
 
 --------------------------------------------------------------------------------
 -- INTERNAL HELPERS
@@ -262,6 +274,181 @@ local function setBlockState(blocking: boolean)
 end
 
 --[[
+  Gets the movement direction based on WASD input, or fallback to look direction.
+  @return Vector3 Unit direction in world space (XZ plane)
+]]
+local function getDashDirection(): Vector3
+  local hrp = getLocalHRP()
+  if not hrp then
+    return Vector3.new(0, 0, -1)
+  end
+
+  local cameraCF = workspace.CurrentCamera and workspace.CurrentCamera.CFrame
+  if not cameraCF then
+    return hrp.CFrame.LookVector
+  end
+
+  -- Build direction from WASD keys relative to camera
+  local moveDir = Vector3.zero
+  if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+    moveDir = moveDir + cameraCF.LookVector
+  end
+  if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+    moveDir = moveDir - cameraCF.LookVector
+  end
+  if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+    moveDir = moveDir + cameraCF.RightVector
+  end
+  if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+    moveDir = moveDir - cameraCF.RightVector
+  end
+
+  -- Flatten to XZ plane
+  moveDir = Vector3.new(moveDir.X, 0, moveDir.Z)
+  if moveDir.Magnitude < 0.01 then
+    -- No movement input — dash forward (camera look direction, flattened)
+    local look = cameraCF.LookVector
+    moveDir = Vector3.new(look.X, 0, look.Z)
+  end
+
+  return moveDir.Unit
+end
+
+--[[
+  Creates a speed trail VFX on the player during dash.
+]]
+local function startDashTrailVFX()
+  local character = LocalPlayer.Character
+  if not character then
+    return
+  end
+
+  local hrp = character:FindFirstChild("HumanoidRootPart")
+  if not hrp or not hrp:IsA("BasePart") then
+    return
+  end
+
+  -- Create two attachments offset vertically for the trail
+  local att0 = Instance.new("Attachment")
+  att0.Name = "DashTrailAtt0"
+  att0.Position = Vector3.new(0, 1, 0)
+  att0.Parent = hrp
+
+  local att1 = Instance.new("Attachment")
+  att1.Name = "DashTrailAtt1"
+  att1.Position = Vector3.new(0, -1, 0)
+  att1.Parent = hrp
+
+  local trail = Instance.new("Trail")
+  trail.Name = "DashTrail"
+  trail.Attachment0 = att0
+  trail.Attachment1 = att1
+  trail.Lifetime = 0.3
+  trail.MinLength = 0.1
+  trail.FaceCamera = true
+  trail.Color = ColorSequence.new(Color3.fromRGB(180, 220, 255), Color3.fromRGB(80, 140, 255))
+  trail.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0.2),
+    NumberSequenceKeypoint.new(1, 1),
+  })
+  trail.WidthScale = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 1),
+    NumberSequenceKeypoint.new(1, 0.3),
+  })
+  trail.Parent = hrp
+
+  DashTrailAttachment = att0 :: any -- store for cleanup (att1 is sibling)
+  DashTrailInstance = trail
+end
+
+--[[
+  Cleans up the dash trail VFX.
+]]
+local function stopDashTrailVFX()
+  if DashTrailInstance then
+    DashTrailInstance:Destroy()
+    DashTrailInstance = nil
+  end
+  if DashTrailAttachment then
+    -- Also clean up the sibling attachment
+    local hrp = DashTrailAttachment.Parent
+    if hrp then
+      local att1 = hrp:FindFirstChild("DashTrailAtt1")
+      if att1 then
+        att1:Destroy()
+      end
+    end
+    DashTrailAttachment:Destroy()
+    DashTrailAttachment = nil
+  end
+end
+
+--[[
+  Applies dash movement by creating a LinearVelocity on the HumanoidRootPart.
+  Covers ~10 studs in DASH_DURATION seconds.
+  @param direction Unit direction vector for the dash
+]]
+local function applyDashMovement(direction: Vector3)
+  local hrp = getLocalHRP()
+  if not hrp then
+    return
+  end
+
+  -- Calculate velocity needed to cover DASH_DISTANCE in DASH_DURATION
+  local dashSpeed = DASH_DISTANCE / DASH_DURATION -- ~50 studs/s
+
+  -- Create LinearVelocity constraint
+  local attachment = Instance.new("Attachment")
+  attachment.Name = "DashAttachment"
+  attachment.Parent = hrp
+
+  local linearVelocity = Instance.new("LinearVelocity")
+  linearVelocity.Name = "DashVelocity"
+  linearVelocity.Attachment0 = attachment
+  linearVelocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+  linearVelocity.VectorVelocity = direction * dashSpeed
+  linearVelocity.MaxForce = 100000 -- strong enough to override character movement
+  linearVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
+  linearVelocity.Parent = hrp
+
+  -- Remove after dash duration
+  task.delay(DASH_DURATION, function()
+    if linearVelocity and linearVelocity.Parent then
+      linearVelocity:Destroy()
+    end
+    if attachment and attachment.Parent then
+      attachment:Destroy()
+    end
+  end)
+end
+
+--[[
+  Handles the dash confirm from server.
+  Applies movement, plays VFX and SFX.
+  @param direction Unit direction vector from server
+]]
+local function onDashConfirm(direction: Vector3)
+  IsDashing = true
+
+  -- Apply dash movement
+  applyDashMovement(direction)
+
+  -- Play dash VFX (speed trail)
+  startDashTrailVFX()
+
+  -- Play dash SFX
+  if SoundController then
+    SoundController:PlayDashSound()
+  end
+
+  -- Clean up dash state after invulnerability ends
+  task.delay(DASH_INVULN_TIME + 0.05, function()
+    IsDashing = false
+    stopDashTrailVFX()
+  end)
+end
+
+--[[
   Checks if the client-side cooldown has elapsed for a given cooldown duration.
   @param cooldown The cooldown time to check against
   @return true if the player can swing
@@ -272,6 +459,10 @@ local function canSwing(cooldown: number): boolean
   end
 
   if IsBlocking then
+    return false
+  end
+
+  if IsDashing then
     return false
   end
 
@@ -290,6 +481,11 @@ end
 local function onPrimaryDown()
   -- Cannot start an attack while blocking — must release block first
   if IsBlocking then
+    return
+  end
+
+  -- Cannot start an attack while dashing
+  if IsDashing then
     return
   end
 
@@ -421,6 +617,12 @@ local function onRagdollTrigger(
     setBlockState(false)
   end
 
+  -- If dashing, cancel the dash VFX (ragdolled interrupts dash)
+  if IsDashing then
+    IsDashing = false
+    stopDashTrailVFX()
+  end
+
   IsRagdolled = true
   RagdollEndTime = os.clock() + ragdollDuration
 
@@ -477,6 +679,11 @@ local function onSecondaryDown()
     return
   end
 
+  -- Cannot block while dashing
+  if IsDashing then
+    return
+  end
+
   setBlockState(true)
 end
 
@@ -507,16 +714,19 @@ function CombatController:KnitStart()
   CombatService.SwingResult:Connect(onSwingResult)
   CombatService.RagdollTrigger:Connect(onRagdollTrigger)
   CombatService.BlockImpact:Connect(onBlockImpact)
+  CombatService.DashConfirm:Connect(onDashConfirm)
 
-  -- Clean up ragdoll and block state on character removal (death/respawn)
+  -- Clean up ragdoll, block, and dash state on character removal (death/respawn)
   LocalPlayer.CharacterRemoving:Connect(function(character: Model)
     RagdollModule.cleanup(character)
     IsRagdolled = false
     IsCharging = false
     ChargeReady = false
     IsBlocking = false
+    IsDashing = false
     stopChargeVFX()
     stopBlockAnimation()
+    stopDashTrailVFX()
     if RagdollCleanupThread then
       task.cancel(RagdollCleanupThread)
       RagdollCleanupThread = nil
@@ -565,7 +775,38 @@ function CombatController:KnitStart()
     end
   end)
 
-  print("[CombatController] Started — click to swing, hold to charge, right-click to block")
+  -- Listen for dash key (Q)
+  UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+    if gameProcessed then
+      return
+    end
+
+    if input.KeyCode == Enum.KeyCode.Q then
+      -- Client-side pre-checks to avoid spamming the server
+      if IsRagdolled or IsBlocking or IsCharging or IsDashing then
+        return
+      end
+
+      local now = os.clock()
+      if (now - LastDashTime) < DASH_COOLDOWN then
+        return
+      end
+
+      LastDashTime = now
+
+      -- Get dash direction from movement input
+      local direction = getDashDirection()
+
+      -- Send dash request to server
+      if CombatService then
+        CombatService.DashRequest:Fire(direction)
+      end
+    end
+  end)
+
+  print(
+    "[CombatController] Started — click to swing, hold to charge, right-click to block, Q to dash"
+  )
 end
 
 return CombatController

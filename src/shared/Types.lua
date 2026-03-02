@@ -58,6 +58,8 @@ export type SessionState = {
   ragdollEndTime: number,
   recoveryEndTime: number,
   dashCooldownEnd: number,
+  isDashing: boolean,
+  dashInvulnEnd: number,
   isBlocking: boolean,
   lastHitTargets: { [number]: number }, -- [targetUserId] = timestamp
 
@@ -128,6 +130,8 @@ Types.DEFAULT_SESSION_STATE = {
   ragdollEndTime = 0,
   recoveryEndTime = 0,
   dashCooldownEnd = 0,
+  isDashing = false,
+  dashInvulnEnd = 0,
   isBlocking = false,
   lastHitTargets = {},
 
@@ -282,6 +286,8 @@ function Types.createSessionState(tutorialCompleted: boolean): SessionState
     ragdollEndTime = 0,
     recoveryEndTime = 0,
     dashCooldownEnd = 0,
+    isDashing = false,
+    dashInvulnEnd = 0,
     isBlocking = false,
     lastHitTargets = {},
     lastRaidedShips = {},

@@ -47,6 +47,9 @@ local SOUNDS = {
   blockRaise = "rbxassetid://3932505093", -- metallic guard raise
   blockImpact = "rbxassetid://4801618977", -- clank/impact on blocked hit
 
+  -- Dash sound
+  dashWhoosh = "rbxassetid://5206020985", -- quick whoosh for dash movement
+
   -- Doubloon pickup
   coinPickup = "rbxassetid://4612373815", -- coin collect chime
 }
@@ -72,6 +75,7 @@ local VOLUMES = {
   containerBreakVault = 1.0,
   blockRaise = 0.3,
   blockImpact = 0.6,
+  dashWhoosh = 0.5,
   coinPickup = 0.4,
 }
 
@@ -193,6 +197,13 @@ end
 ]]
 function SoundController:PlayBlockImpactSound()
   play2DSound(SOUNDS.blockImpact, VOLUMES.blockImpact)
+end
+
+--[[
+	Plays the dash whoosh sound.
+]]
+function SoundController:PlayDashSound()
+  play2DSound(SOUNDS.dashWhoosh, VOLUMES.dashWhoosh)
 end
 
 --[[

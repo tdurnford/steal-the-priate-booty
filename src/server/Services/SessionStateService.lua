@@ -301,6 +301,49 @@ function SessionStateService:StartDashCooldown(player: Player, cooldown: number)
   state.dashCooldownEnd = os.clock() + cooldown
 end
 
+--[[
+  Checks if a player is currently in dash invulnerability frames.
+  Auto-clears isDashing when invulnerability expires.
+]]
+function SessionStateService:IsDashing(player: Player): boolean
+  local state = SessionStates[player]
+  if not state then
+    return false
+  end
+  if state.isDashing and os.clock() >= state.dashInvulnEnd then
+    state.isDashing = false
+  end
+  return state.isDashing
+end
+
+--[[
+  Starts a dash: sets isDashing, invulnerability end time, and cooldown.
+  @param player The dashing player
+  @param invulnTime Duration of i-frames (seconds)
+  @param cooldown Cooldown before next dash (seconds)
+]]
+function SessionStateService:StartDash(player: Player, invulnTime: number, cooldown: number)
+  local state = SessionStates[player]
+  if not state then
+    return
+  end
+  local now = os.clock()
+  state.isDashing = true
+  state.dashInvulnEnd = now + invulnTime
+  state.dashCooldownEnd = now + cooldown
+end
+
+--[[
+  Ends dash invulnerability early (e.g. if ragdolled during dash).
+]]
+function SessionStateService:EndDash(player: Player)
+  local state = SessionStates[player]
+  if not state then
+    return
+  end
+  state.isDashing = false
+end
+
 --------------------------------------------------------------------------------
 -- PER-TARGET HIT TRACKING
 --------------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 --[[
   CombatService.lua
-  Server-authoritative combat service for light swing, heavy swing, and block.
+  Server-authoritative combat service for light swing, heavy swing, block, and dash.
 
   Handles:
     - Validating client attack inputs (cooldowns, state checks)
@@ -8,6 +8,7 @@
     - Light swing: fast 0.4s cooldown, 8 stud range, 70° arc
     - Heavy swing: 0.8s charge, 1.2s cooldown, 10 stud range, 90° arc
     - Block: secondary click hold, 50% speed, reduced ragdoll/spill on hit
+    - Dash: directional 10-stud dash, 3s cooldown, 0.3s invulnerability frames
     - Damage to containers (gear containerDamage value)
     - Damage to players (ragdoll + loot spill, reduced when blocking)
     - Per-target hit cooldown enforcement (2s)
@@ -15,6 +16,7 @@
 
   Client sends attack intent via AttackRequest (light) or HeavyAttackRequest (heavy).
   Client sends block state via BlockStateChanged.
+  Client sends dash intent via DashRequest.
   Server validates, performs hit detection, and fires results back.
 ]]
 
@@ -41,6 +43,14 @@ local CombatService = Knit.CreateService({
     -- Client fires this to notify the server of block state changes.
     -- Args: (blocking: boolean)
     BlockStateChanged = Knit.CreateSignal(),
+
+    -- Client fires this to request a dash in a direction.
+    -- Args: (direction: Vector3) — unit vector in world space
+    DashRequest = Knit.CreateSignal(),
+
+    -- Fired to the dashing player to confirm dash (for VFX/movement).
+    -- Args: (direction: Vector3)
+    DashConfirm = Knit.CreateSignal(),
 
     -- Fired to the attacker when their swing connects.
     -- Args: (hitType: string, targetName: string?, attackType: string?)
@@ -88,6 +98,11 @@ local HEAVY_SWING_CHARGE_TIME = GameConfig.Combat.heavySwingChargeTime -- 0.8s
 
 -- Block parameters
 local BLOCK_SPEED_MULTIPLIER = GameConfig.Combat.blockSpeedMultiplier -- 0.5
+
+-- Dash parameters
+local DASH_DISTANCE = GameConfig.Combat.dashDistance -- 10 studs
+local DASH_COOLDOWN = GameConfig.Combat.dashCooldown -- 3s
+local DASH_INVULN_TIME = GameConfig.Combat.dashInvulnerabilityTime -- 0.3s
 
 -- Per-player default walk speed (stored on first block for restoration)
 local PlayerDefaultWalkSpeed: { [Player]: number } = {}
@@ -138,6 +153,10 @@ local function validateAttack(player: Player, cooldown: number): (boolean, strin
 
   if SessionStateService:IsBlocking(player) then
     return false, "Cannot attack while blocking"
+  end
+
+  if SessionStateService:IsDashing(player) then
+    return false, "Cannot attack while dashing"
   end
 
   -- Rate limiting: enforce minimum cooldown between attacks
@@ -220,8 +239,11 @@ local function performHitDetection(attacker: Player, range: number, arc: number)
         if isInSwingArc(attackerCFrame, otherHRP.Position, range, arc) then
           -- Check per-target cooldown
           if SessionStateService:CanHitTarget(attacker, otherPlayer.UserId) then
-            -- Check target is not already ragdolling
-            if not SessionStateService:IsRagdolling(otherPlayer) then
+            -- Check target is not already ragdolling or dashing (i-frames)
+            if
+              not SessionStateService:IsRagdolling(otherPlayer)
+              and not SessionStateService:IsDashing(otherPlayer)
+            then
               local dist = (otherHRP.Position - attackerCFrame.Position).Magnitude
               if dist < closestPlayerDist then
                 closestPlayerDist = dist
@@ -545,6 +567,73 @@ function CombatService:KnitStart()
         end
       end
     end
+  end)
+
+  -- Listen for dash requests from client
+  self.Client.DashRequest:Connect(function(player: Player, direction: any)
+    -- Validate direction is a Vector3
+    if typeof(direction) ~= "Vector3" then
+      return
+    end
+
+    if not SessionStateService or not SessionStateService:IsInitialized(player) then
+      return
+    end
+
+    -- Cannot dash while ragdolled
+    if SessionStateService:IsRagdolling(player) then
+      return
+    end
+
+    -- Cannot dash while in recovery
+    if SessionStateService:IsInRecovery(player) then
+      return
+    end
+
+    -- Cannot dash while blocking
+    if SessionStateService:IsBlocking(player) then
+      return
+    end
+
+    -- Cannot dash while already dashing
+    if SessionStateService:IsDashing(player) then
+      return
+    end
+
+    -- Check cooldown
+    if SessionStateService:IsDashOnCooldown(player) then
+      return
+    end
+
+    -- Normalize direction (XZ only, ignore vertical)
+    local dashDir = Vector3.new(direction.X, 0, direction.Z)
+    if dashDir.Magnitude < 0.01 then
+      -- Fallback to player's look direction
+      local hrp = getHRP(player)
+      if not hrp then
+        return
+      end
+      local look = hrp.CFrame.LookVector
+      dashDir = Vector3.new(look.X, 0, look.Z).Unit
+    else
+      dashDir = dashDir.Unit
+    end
+
+    -- Start dash (sets isDashing, invulnerability, and cooldown)
+    SessionStateService:StartDash(player, DASH_INVULN_TIME, DASH_COOLDOWN)
+
+    -- Cancel block state if somehow still active
+    if SessionStateService:IsBlocking(player) then
+      SessionStateService:SetBlocking(player, false)
+      local character = player.Character
+      local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+      if humanoid and PlayerDefaultWalkSpeed[player] then
+        humanoid.WalkSpeed = PlayerDefaultWalkSpeed[player]
+      end
+    end
+
+    -- Confirm dash to client (triggers VFX and movement)
+    CombatService.Client.DashConfirm:Fire(player, dashDir)
   end)
 
   -- Clean up rate limiting data on player leave
