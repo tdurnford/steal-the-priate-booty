@@ -7,6 +7,7 @@
     - Threat level indicator with color-coded tier icon (UI-003)
     - Day/night phase indicator with progress bar (UI-004)
     - Notoriety rank indicator with XP progress (RANK-001)
+    - Bounty status integration (EVENT-001)
 ]]
 
 local Players = game:GetService("Players")
@@ -39,6 +40,7 @@ local ShipService = nil
 local SoundController = nil
 local DayNightController = nil
 local NotorietyController = nil
+local BountyController = nil
 
 -- Fusion state
 local FusionScope = nil
@@ -231,6 +233,7 @@ function HudController:KnitStart()
   SoundController = Knit.GetController("SoundController")
   DayNightController = Knit.GetController("DayNightController")
   NotorietyController = Knit.GetController("NotorietyController")
+  BountyController = Knit.GetController("BountyController")
 
   -- Get initial values from session snapshot
   SessionStateService:GetSessionSnapshot()
@@ -275,6 +278,11 @@ function HudController:KnitStart()
       updateShipLocked(value)
     elseif fieldName == "threatLevel" and type(value) == "number" then
       updateThreatLevel(value)
+    elseif fieldName == "hasBounty" and type(value) == "boolean" then
+      -- Pulse doubloons counter when bounty state changes (visual feedback)
+      if value == true and DoubloonsPulseFn then
+        DoubloonsPulseFn()
+      end
     end
   end)
 

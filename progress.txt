@@ -1,3 +1,71 @@
+## 2026-03-02 — EVENT-001: Bounty System
+
+### What was done
+- Created `src/server/Services/BountyService.lua` — server-authoritative bounty system
+  that checks every 60 seconds for the player with the most held (unbanked) doubloons.
+- Created `src/client/Controllers/BountyController.lua` — client-side controller that
+  syncs bounty state from server, shows notifications, and exposes signals for UI.
+- Integrated bounty state changes into `HudController.lua` (pulse on bounty start).
+
+### BountyService (server) features
+1. **60s check loop**: Heartbeat accumulator checks `GameConfig.Bounty.checkInterval` (60s).
+   Finds the richest player with 200+ held doubloons (skips harbor players).
+2. **Single bounty**: Only one active bounty at a time. Skips check if bounty is active.
+3. **Skull BillboardGui**: Server-created (replicated to all clients) skull icon above
+   the target's head. AlwaysOnTop, 200 stud MaxDistance, red pulsing glow layer.
+4. **Clear conditions**:
+   - Held doubloons drop below 100 (listens to `SessionStateService.StateChanged`)
+   - 90s timeout (1s Heartbeat check)
+   - Target disconnects (PlayerRemoving)
+5. **Character respawn handling**: Re-attaches skull billboard on CharacterAdded.
+6. **Client signals**: `BountyStarted(userId, displayName)` and `BountyEnded(userId, reason)`
+   fired to all clients via Knit RemoteSignals.
+7. **Server signals**: `BountyAssigned(player)` and `BountyCleared(player, reason)` for
+   inter-service communication.
+8. **Client RPCs**: `IsBountyActive()` and `GetBountyTargetUserId()` for late-join sync.
+
+### BountyController (client) features
+- Listens for `BountyStarted`/`BountyEnded` from BountyService
+- Shows "BOUNTY ON YOU!" red warning (6s duration) to the bounty target
+- Shows "Bounty placed on [name]!" orange notification (4s) to other players
+- Shows bounty cleared notifications with reason-specific text
+- Late-join support: queries `GetBountyTargetUserId()` on startup
+- Exposes `BountyStarted`/`BountyEnded` local signals for future UI components
+- Public API: `IsBountyActive()`, `GetBountyTargetUserId()`, `GetBountyTargetName()`,
+  `IsLocalPlayerBounty()`
+
+### How existing systems connect (no changes needed)
+- **Double spill**: CombatService already calls `SessionStateService:HasBounty(target)`
+  and passes it to `GameConfig.calculateSpill()` which applies 2x multiplier
+- **Bounty XP**: NotorietyService already has `hit_bounty_target` (15 XP) and
+  `survive_bounty` (25 XP) hooks that check `SessionStateService:HasBounty()`
+- **Session state**: `SessionStateService:SetBounty()` already fires `hasBounty` change
+  to client via `SessionStateChanged` signal
+
+### Design decisions
+- **Harbor exclusion**: Players in the harbor are skipped during the 60s check,
+  preventing safe-zone abuse (hoard loot in harbor)
+- **Clear on loot drop**: Listens to `SessionStateService.StateChanged` for
+  `heldDoubloons` changes, immediately clears if below `clearThreshold` (100).
+  This catches spills from PvP hits, not just deposits.
+- **Skull as BillboardGui**: Server-side creation ensures all clients see it without
+  needing per-client management. Re-attached on character respawn.
+- **Single bounty constraint**: Only one bounty active at a time. The richest player
+  above threshold gets it. If no one qualifies, no bounty is assigned.
+
+### Notes for next developer
+- The skull BillboardGui uses emoji text (\u{1F480}) — if Roblox doesn't render emoji
+  in BillboardGui TextLabels, replace with an ImageLabel using a skull decal asset.
+- SoundController:PlayUISound("bounty_warning") is called but the sound may not
+  exist yet — add a bounty warning sound to SoundController when audio assets
+  are available (AUDIO-001).
+- Minimap bounty tracking (acceptance criteria #5) deferred to UI-005 (minimap).
+  BountyController exposes `GetBountyTargetUserId()` ready for minimap integration.
+- Next priorities: RANK-002 (rank unlocks), NPC-003 (SimplePath patrol),
+  NPC-006 (spawn manager), THREAT-003 (threat effects)
+
+---
+
 ## 2026-03-02 — RANK-001: Notoriety XP Tracking
 
 ### What was done
