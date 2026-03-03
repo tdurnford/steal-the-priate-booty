@@ -3887,3 +3887,50 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
   re-fire TutorialWaypoint on reconnect). The existing late-join for step text works.
 - Next priorities: SHIP-005 (ship lock visuals), SHIP-006 (ship tier progression),
   UI-005 (minimap), HAZARD-001 (volcanic vents)
+
+## 2026-03-02 — SHIP-005: Ship Lock State Visual Indicators
+
+### What was done
+- Added ship lock/hold visual indicators to `src/server/Services/ShipService.lua`.
+  All visuals are server-side (attached to the ship model in workspace) so they
+  replicate to all clients automatically.
+
+### Visual elements added
+1. **Status label**: Second TextLabel in the OwnerLabel BillboardGui. Shows "LOCKED"
+   (gray) when ship is locked, "LOOT ABOARD" (gold) when unlocked with doubloons in
+   hold, or empty when unlocked with no hold.
+2. **Gold glow**: PointLight (`HoldGlow`) on hull. Active when unlocked with hold > 0.
+   Brightness scales from 0.5 to 3.0 based on hold amount. Range 15-30 studs.
+3. **Gold shimmer particles**: ParticleEmitter (`HoldShimmer`) on hull. Gold sparkle
+   effect when unlocked with hold > 0. Rate scales from 2-12 based on amount.
+4. **Coin piles on deck**: 1-3 gold cylinder Parts in a `CoinPiles` folder. Tier
+   thresholds: 1+ hold = 1 pile, 100+ = 2 piles, 500+ = 3 piles. Piles are positioned
+   spread across the deck surface. Only visible when unlocked with hold.
+
+### Implementation approach
+- `updateShipVisuals(entry)` master function reads owner's lock state and ship hold
+  from SessionStateService, then creates/updates/removes visual children on the hull.
+- Defaults to locked+empty if owner has disconnected (safe visual state).
+- Called in 3 places: after `spawnShip`, after `RecalculateShipTier` (model replaced),
+  and from a `SessionStateService.StateChanged` listener for `shipHold`/`shipLocked`.
+- All state changes (deposit, lock, unlock, raid) flow through SessionStateService,
+  so the single listener covers all cases.
+
+### Billboard modification
+- Expanded OwnerLabel billboard height from 50→70 pixels.
+- NameLabel now 55% height (was 60%).
+- Added StatusLabel at 60% Y offset, 40% height, for lock/hold status text.
+
+### Acceptance criteria met
+- Locked ship: shows "LOCKED" status label (padlock state visible to all)
+- Unlocked + loot: gold glow, shimmer particles, coin piles on deck, "LOOT ABOARD" label
+- Unlocked + empty: no special indicators, clean label
+- All visuals replicate via workspace model (server-authoritative)
+- Owner name + lock state visible at MaxDistance=60 studs
+
+### Notes for next person
+- The coin piles are placeholder cylinders. When ART-002 (ship models) is implemented,
+  these should be replaced with proper coin mesh models.
+- Selene lint is broken due to aftman/rokit PATH conflict; StyLua works fine.
+- Next priorities: SHIP-006 (ship tier progression), UI-005 (minimap), HAZARD-001
+  (volcanic vents), THREAT-005 (danger zone detection).

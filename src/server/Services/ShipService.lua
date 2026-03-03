@@ -293,10 +293,10 @@ local function createShipModel(
     particles.Parent = hull
   end
 
-  -- Owner name billboard
+  -- Owner name + status billboard
   local billboardGui = Instance.new("BillboardGui")
   billboardGui.Name = "OwnerLabel"
-  billboardGui.Size = UDim2.new(0, 200, 0, 50)
+  billboardGui.Size = UDim2.new(0, 200, 0, 70)
   billboardGui.StudsOffset = Vector3.new(0, appearance.size.Y + 2, 0)
   billboardGui.AlwaysOnTop = false
   billboardGui.MaxDistance = 60
@@ -304,7 +304,7 @@ local function createShipModel(
 
   local nameLabel = Instance.new("TextLabel")
   nameLabel.Name = "NameLabel"
-  nameLabel.Size = UDim2.new(1, 0, 0.6, 0)
+  nameLabel.Size = UDim2.new(1, 0, 0.55, 0)
   nameLabel.BackgroundTransparency = 1
   nameLabel.Text = ownerName .. "'s " .. shipTierDef.name
   nameLabel.TextColor3 = Color3.fromRGB(255, 230, 150)
@@ -313,8 +313,224 @@ local function createShipModel(
   nameLabel.Font = Enum.Font.GothamBold
   nameLabel.Parent = billboardGui
 
+  local statusLabel = Instance.new("TextLabel")
+  statusLabel.Name = "StatusLabel"
+  statusLabel.Size = UDim2.new(1, 0, 0.4, 0)
+  statusLabel.Position = UDim2.new(0, 0, 0.6, 0)
+  statusLabel.BackgroundTransparency = 1
+  statusLabel.Text = ""
+  statusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+  statusLabel.TextStrokeTransparency = 0.5
+  statusLabel.TextScaled = true
+  statusLabel.Font = Enum.Font.GothamMedium
+  statusLabel.Parent = billboardGui
+
   model.Parent = ShipsFolder
   return model
+end
+
+--------------------------------------------------------------------------------
+-- SHIP VISUAL INDICATORS (SHIP-005)
+--------------------------------------------------------------------------------
+
+-- Coin pile tiers: how many gold piles to show based on ship hold amount
+local COIN_PILE_TIERS = {
+  { threshold = 1, count = 1 },
+  { threshold = 100, count = 2 },
+  { threshold = 500, count = 3 },
+}
+
+--[[
+  Updates the status label on the ship billboard to show lock/hold state.
+  @param hull The ship's Hull BasePart
+  @param isLocked Whether the ship is locked
+  @param shipHold Current doubloons in ship hold
+]]
+local function updateStatusLabel(hull: BasePart, isLocked: boolean, shipHold: number)
+  local billboard = hull:FindFirstChild("OwnerLabel")
+  if not billboard then
+    return
+  end
+
+  local statusLabel = billboard:FindFirstChild("StatusLabel")
+  if not statusLabel then
+    return
+  end
+
+  if isLocked then
+    statusLabel.Text = "LOCKED"
+    statusLabel.TextColor3 = Color3.fromRGB(160, 160, 180)
+  elseif shipHold > 0 then
+    statusLabel.Text = "LOOT ABOARD"
+    statusLabel.TextColor3 = Color3.fromRGB(255, 200, 50)
+  else
+    statusLabel.Text = ""
+  end
+end
+
+--[[
+  Updates the gold glow PointLight on a ship's hull.
+  Active when unlocked with doubloons in hold. Brightness scales with amount.
+  @param hull The ship's Hull BasePart
+  @param isLocked Whether the ship is locked
+  @param shipHold Current doubloons in ship hold
+]]
+local function updateHoldGlow(hull: BasePart, isLocked: boolean, shipHold: number)
+  local existing = hull:FindFirstChild("HoldGlow")
+
+  if not isLocked and shipHold > 0 then
+    if not existing then
+      existing = Instance.new("PointLight")
+      existing.Name = "HoldGlow"
+      existing.Color = Color3.fromRGB(255, 200, 50)
+      existing.Parent = hull
+    end
+    existing.Brightness = math.clamp(0.5 + (shipHold / 200), 0.5, 3.0)
+    existing.Range = math.clamp(15 + (shipHold / 100) * 2, 15, 30)
+  else
+    if existing then
+      existing:Destroy()
+    end
+  end
+end
+
+--[[
+  Updates the gold shimmer particle effect on a ship's hull.
+  Active when unlocked with doubloons in hold. Rate scales with amount.
+  @param hull The ship's Hull BasePart
+  @param isLocked Whether the ship is locked
+  @param shipHold Current doubloons in ship hold
+]]
+local function updateHoldParticles(hull: BasePart, isLocked: boolean, shipHold: number)
+  local existing = hull:FindFirstChild("HoldShimmer")
+
+  if not isLocked and shipHold > 0 then
+    if not existing then
+      existing = Instance.new("ParticleEmitter")
+      existing.Name = "HoldShimmer"
+      existing.Color = ColorSequence.new(Color3.fromRGB(255, 215, 50))
+      existing.Size = NumberSequence.new(0.2, 0)
+      existing.Lifetime = NumberRange.new(0.8, 1.5)
+      existing.Speed = NumberRange.new(0.5, 1.5)
+      existing.SpreadAngle = Vector2.new(180, 180)
+      existing.Transparency = NumberSequence.new(0.3, 1)
+      existing.LightEmission = 0.8
+      existing.Parent = hull
+    end
+    existing.Rate = math.clamp(2 + math.floor(shipHold / 100), 2, 12)
+  else
+    if existing then
+      existing:Destroy()
+    end
+  end
+end
+
+--[[
+  Updates coin pile models on the ship deck.
+  Shows 1-3 gold cylinder piles based on hold amount.
+  Only visible when unlocked with doubloons in hold.
+  @param hull The ship's Hull BasePart
+  @param isLocked Whether the ship is locked
+  @param shipHold Current doubloons in ship hold
+]]
+local function updateCoinPiles(hull: BasePart, isLocked: boolean, shipHold: number)
+  local model = hull.Parent
+  if not model then
+    return
+  end
+
+  -- Remove existing coin piles
+  local existing = model:FindFirstChild("CoinPiles")
+  if existing then
+    existing:Destroy()
+  end
+
+  if isLocked or shipHold <= 0 then
+    return
+  end
+
+  local pileCount = 0
+  for _, tier in COIN_PILE_TIERS do
+    if shipHold >= tier.threshold then
+      pileCount = tier.count
+    end
+  end
+
+  if pileCount <= 0 then
+    return
+  end
+
+  local folder = Instance.new("Folder")
+  folder.Name = "CoinPiles"
+
+  local hullSize = hull.Size
+  local hullPos = hull.Position
+  local deckY = hullPos.Y + hullSize.Y / 2
+
+  -- Spread piles across the deck surface
+  local offsets = {
+    Vector3.new(0, 0, -hullSize.Z * 0.15),
+    Vector3.new(hullSize.X * 0.15, 0, hullSize.Z * 0.1),
+    Vector3.new(-hullSize.X * 0.12, 0, hullSize.Z * 0.2),
+  }
+
+  for i = 1, pileCount do
+    local radius = 0.5 + (i * 0.15)
+    local height = 0.4 + (i * 0.1)
+
+    local pile = Instance.new("Part")
+    pile.Name = "CoinPile_" .. i
+    pile.Shape = Enum.PartType.Cylinder
+    pile.Size = Vector3.new(height, radius * 2, radius * 2)
+    pile.Color = Color3.fromRGB(255, 200, 50)
+    pile.Material = Enum.Material.SmoothPlastic
+    pile.Reflectance = 0.3
+    pile.Anchored = true
+    pile.CanCollide = false
+    pile.CanQuery = false
+    pile.CanTouch = false
+    pile.CastShadow = true
+
+    local offset = offsets[i] or Vector3.zero
+    -- Rotate cylinder 90° so flat face is horizontal (stacked coins)
+    pile.CFrame = CFrame.new(hullPos.X + offset.X, deckY + height / 2, hullPos.Z + offset.Z)
+      * CFrame.Angles(0, 0, math.rad(90))
+    pile.Parent = folder
+  end
+
+  folder.Parent = model
+end
+
+--[[
+  Master function: updates all visual indicators on a ship model.
+  Reads the owner's lock state and ship hold from SessionStateService.
+  Safe to call when the owner has disconnected (defaults to locked/empty).
+  @param entry The ShipEntry to update visuals for
+]]
+local function updateShipVisuals(entry: ShipEntry)
+  local model = entry.model
+  if not model or not model.Parent then
+    return
+  end
+
+  local hull = model:FindFirstChild("Hull")
+  if not hull or not hull:IsA("BasePart") then
+    return
+  end
+
+  -- Get owner state; default to locked+empty if owner disconnected
+  local isLocked = true
+  local shipHold = 0
+  local owner = entry.owner
+  if owner and owner.Parent and SessionStateService then
+    isLocked = SessionStateService:IsShipLocked(owner)
+    shipHold = SessionStateService:GetShipHold(owner)
+  end
+
+  updateStatusLabel(hull, isLocked, shipHold)
+  updateHoldGlow(hull, isLocked, shipHold)
+  updateHoldParticles(hull, isLocked, shipHold)
+  updateCoinPiles(hull, isLocked, shipHold)
 end
 
 --------------------------------------------------------------------------------
@@ -380,6 +596,9 @@ local function spawnShip(player: Player): ShipEntry?
     shipTierDef.id,
     position
   )
+
+  -- Set initial visual indicators (locked, no hold)
+  updateShipVisuals(entry)
 
   print("[ShipService] Spawned", shipTierDef.name, "for", player.Name, "at dock slot", slotIndex)
   return entry
@@ -485,6 +704,9 @@ function ShipService:RecalculateShipTier(player: Player)
   entry.shipTierId = newTierDef.id
   entry.shipTierNumber = newTierDef.tier
   entry.model = newModel
+
+  -- Re-apply visual indicators on the new model
+  updateShipVisuals(entry)
 
   -- Fire signals
   ShipService.ShipTierChanged:Fire(entry, oldTierId, newTierDef.id)
@@ -1088,6 +1310,18 @@ function ShipService:KnitStart()
       if fieldName == "isRagdolling" and newValue == true then
         if ActiveRaids[player] then
           ShipService:CancelRaid(player, "Ragdolled")
+        end
+      end
+    end
+  )
+
+  -- Update ship visual indicators when hold or lock state changes
+  SessionStateService.StateChanged:Connect(
+    function(player: Player, fieldName: string, _newValue: any)
+      if fieldName == "shipHold" or fieldName == "shipLocked" then
+        local entry = DockedShips[player]
+        if entry then
+          updateShipVisuals(entry)
         end
       end
     end
