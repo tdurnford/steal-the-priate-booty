@@ -4123,3 +4123,59 @@ The ship tier system was already fully functional from prior work:
   walk onto an active eruption mid-phase will also be hit.
 - Next priorities: HAZARD-002 (tidal surge), HAZARD-003 (quicksand), EVENT-002 (shipwreck),
   UI-007 (bounty/raid alerts)
+
+---
+
+## 2026-03-02 — UI-012: Leaderboard UI
+
+### What was done
+- Created `src/server/Services/LeaderboardService.lua` — Server-authoritative leaderboard
+  data aggregation. Collects held doubloons (from SessionStateService), treasury (from
+  DataService), and notoriety XP + rank (from DataService + GameConfig). Refreshes every
+  5 seconds. Caches sorted arrays for all 3 categories. Exposes `Client:GetLeaderboard()`
+  RPC returning `{ held, treasury, notoriety }`. Fires `LeaderboardUpdated` client signal
+  on each refresh to prompt open panels to re-fetch.
+- Created `src/client/Controllers/LeaderboardController.lua` — Client-side Knit controller
+  that manages the leaderboard modal panel. L keybind toggles open/close. Fetches fresh
+  data from LeaderboardService on open. Auto-refreshes when server signals update (only if
+  panel is visible). Manages tab state (held/treasury/notoriety) and rebuilds panel on tab
+  change. Creates its own ScreenGui (DisplayOrder 55). Follows GearShopController pattern.
+- Created `src/client/UI/LeaderboardPanel.lua` — Fusion 0.3 component: tabbed leaderboard
+  panel with 3 categories (Held Doubloons, Treasury, Notoriety). Shows top 10 players per
+  category with rank position, display name, and value. Gold/silver/bronze medal colors for
+  top 3. Local player's row highlighted with gold stroke and SurfaceSelected background. If
+  local player isn't in top 10, a "..." separator and their actual rank row are appended.
+  Notoriety tab shows rank name + XP with per-rank color coding. Empty state text when no
+  players. UITheme design tokens throughout. Animated open/close (scale bounce + fade).
+
+### Acceptance criteria met
+- Leaderboard shows top players in 3 categories (Held Doubloons, Treasury, Notoriety) ✓
+- Data updates periodically from server (every 5 seconds) ✓
+- Local player's position is highlighted (gold stroke + selected bg, shown even if not top 10) ✓
+- Accessible from gameplay via keybind (L key) ✓
+
+### Design decisions
+- **Standalone controller pattern**: Follows GearShopController's pattern — independent
+  ScreenGui, self-managed keybind, no HudController wiring needed. This keeps the HUD clean
+  and the leaderboard fully self-contained.
+- **Rebuild-on-change**: Panel is destroyed and rebuilt on data refresh and tab change (same
+  pattern as GearShopPanel). This avoids complex reactive row management while keeping the UI
+  always up-to-date.
+- **Tab state in controller**: Tab ID is stored in the controller (not the panel) so tab clicks
+  trigger a callback → controller updates state → panel rebuilds. This makes the data flow
+  unidirectional and predictable.
+- **Server-cached data**: LeaderboardService caches sorted arrays and serves them from cache
+  on client request. The 5-second refresh loop only runs when players are connected. This is
+  efficient and avoids per-request sorting.
+- **DisplayName for player names**: Uses `player.DisplayName` for leaderboard entries so
+  players see their Roblox display names (not usernames).
+
+### Notes for next developer
+- The leaderboard currently shows up to 10 players per tab. Adjust `MAX_ROWS` in
+  LeaderboardPanel.lua to change this.
+- The server refresh interval is 5 seconds (`UPDATE_INTERVAL` in LeaderboardService.lua).
+  Increase for larger servers to reduce overhead.
+- Tab icons use emoji characters (🪙, 🏦, ⚔). If they don't render well in your Roblox font,
+  swap to TextLabel-based icons.
+- Next priorities: HAZARD-002 (tidal surge), HAZARD-003 (quicksand), EVENT-002 (shipwreck),
+  UI-005 (minimap), UI-013 (player stats)
