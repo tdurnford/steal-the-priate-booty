@@ -1,7 +1,8 @@
 --[[
   MapBootstrap.lua
   Pre-Knit workspace object creation for MAP-001 (Harbor Zone Layout),
-  MAP-002 (Tutorial Beach Area), and MAP-003 (NPC Spawn Zone Definitions).
+  MAP-002 (Tutorial Beach Area), MAP-003 (NPC Spawn Zone Definitions),
+  and MAP-004 (Container Spawn Point Placement).
 
   Called by Main.server.lua BEFORE any Knit services are loaded.
   Creates all required workspace objects that services expect to find:
@@ -15,6 +16,7 @@
     - DangerZones folder with AABB Parts (for DangerZoneService)
     - NPCSpawnPoints folder with zone+type spawn markers (for NPCService)
     - PatrolWaypoints folder with ordered zone waypoints (for NPCService)
+    - ContainerSpawnPoints folder with zone-tagged markers (for ContainerService)
 
   All objects are created only if they don't already exist (idempotent).
   When Roblox Studio map assets are finalized, this module can be removed
@@ -1064,6 +1066,204 @@ local function setupPatrolWaypoints()
 end
 
 --------------------------------------------------------------------------------
+-- CONTAINER SPAWN POINTS (MAP-004 — for ContainerService)
+--------------------------------------------------------------------------------
+
+--[[
+  Container spawn point placement across the map.
+  ContainerService scans workspace.ContainerSpawnPoints for BasePart children.
+
+  Key behavior:
+    - Regular containers spawn at ANY unoccupied point (weighted random type)
+    - Cursed Chests (night-only) spawn ONLY at points with Zone = "danger"
+    - Zone attribute is used for Cursed Chest filtering, not container type selection
+
+  Distribution strategy:
+    - Danger zones (skull_cave, volcano, deep_jungle): Zone = "danger"
+      Higher risk, but also where Cursed Chests appear at night
+    - Non-danger zones (watchtower, pirate_town): zone name as Zone
+      Medium risk areas with skeleton-only enemies
+    - Paths and neutral areas: Zone = "path"
+      Low risk, common crate/barrel territory
+    - Beach outskirts: Zone = "beach"
+      Easy pickings near the tutorial area
+
+  ~45 total spawn points supports the 20 active container cap with good
+  rotation variety. At any given time, ~55% of points are unoccupied,
+  ensuring spawns can always find available locations.
+]]
+
+-- Spawn points within NPC zones (offsets from zone center)
+local ZONE_CONTAINER_SPAWNS = {
+  skull_cave = {
+    -- Deep cave chambers — high-value territory
+    Vector3.new(-50, 5, -30),
+    Vector3.new(-10, 5, 40),
+    Vector3.new(35, 5, -20),
+    Vector3.new(-30, 5, -60),
+    Vector3.new(60, 5, 10),
+    Vector3.new(15, 5, 55),
+  },
+  volcano = {
+    -- Slopes and crater rim — treacherous terrain
+    Vector3.new(-40, -5, 50),
+    Vector3.new(50, -10, -40),
+    Vector3.new(-60, -10, -30),
+    Vector3.new(30, 0, 70),
+    Vector3.new(0, 0, -65),
+    Vector3.new(-70, -5, 20),
+  },
+  deep_jungle = {
+    -- Jungle clearings and vine tunnels
+    Vector3.new(30, 0, -50),
+    Vector3.new(-50, 0, 30),
+    Vector3.new(60, 0, 40),
+    Vector3.new(-40, 0, -40),
+    Vector3.new(10, 0, 65),
+    Vector3.new(-65, 0, -10),
+  },
+  watchtower = {
+    -- Ruined tower grounds and approaches
+    Vector3.new(-10, -5, -20),
+    Vector3.new(25, 0, 30),
+    Vector3.new(-35, -5, 10),
+    Vector3.new(40, -5, -40),
+    Vector3.new(0, 0, 50),
+  },
+  pirate_town = {
+    -- Market stalls, alleys, tavern area
+    Vector3.new(-25, 0, 15),
+    Vector3.new(20, 0, -30),
+    Vector3.new(35, 0, 20),
+    Vector3.new(-10, 0, -45),
+    Vector3.new(-40, 0, -10),
+  },
+}
+
+-- Spawn points in neutral/path areas (absolute positions)
+-- NOTE: Harbor safe zone is X:[-150,150] Z:[-100,100] — all points must be outside
+local PATH_CONTAINER_SPAWNS = {
+  -- Harbor approach — just outside the safe zone boundaries
+  { name = "harbor_approach_1", position = Vector3.new(-165, 3, -30) },
+  { name = "harbor_approach_2", position = Vector3.new(165, 3, -50) },
+  { name = "harbor_approach_3", position = Vector3.new(-100, 3, 115) },
+  { name = "harbor_approach_4", position = Vector3.new(60, 3, -120) },
+
+  -- Crossroads between zones
+  { name = "crossroad_nw", position = Vector3.new(-180, 3, -40) },
+  { name = "crossroad_ne", position = Vector3.new(200, 5, -140) },
+  { name = "crossroad_sw", position = Vector3.new(-155, 3, 60) },
+  { name = "crossroad_n", position = Vector3.new(-100, 10, -280) },
+  { name = "crossroad_e", position = Vector3.new(300, 5, -120) },
+}
+
+-- Beach/coastal spawn points (absolute positions)
+local BEACH_CONTAINER_SPAWNS = {
+  { name = "beach_cove_1", position = Vector3.new(160, 3, 160) },
+  { name = "beach_cove_2", position = Vector3.new(240, 3, 140) },
+  { name = "beach_shore_1", position = Vector3.new(180, 3, 230) },
+}
+
+--[[
+  Creates the ContainerSpawnPoints folder with Parts for each spawn location.
+  Each Part has a Zone attribute:
+    - "danger" for skull_cave, volcano, deep_jungle (Cursed Chest eligible)
+    - Zone name for watchtower, pirate_town
+    - "path" for crossroads/harbor approach
+    - "beach" for coastal areas
+  ContainerService reads this folder at KnitInit().
+]]
+local function setupContainerSpawnPoints()
+  local folder = ensureFolder(workspace, "ContainerSpawnPoints")
+
+  -- Check if spawn points already exist (from Studio or prior run)
+  local existingCount = 0
+  for _, child in folder:GetChildren() do
+    if child:IsA("BasePart") then
+      existingCount += 1
+    end
+  end
+  if existingCount > 0 then
+    print("[MapBootstrap] ContainerSpawnPoints already has", existingCount, "points, skipping")
+    return
+  end
+
+  local totalCount = 0
+
+  -- Zone-based container spawn points
+  for zoneId, offsets in ZONE_CONTAINER_SPAWNS do
+    local zoneDef = NPC_ZONES[zoneId]
+    if not zoneDef then
+      warn("[MapBootstrap] Unknown zone for container spawns:", zoneId)
+      continue
+    end
+
+    -- Danger zones get Zone="danger" so ContainerService can spawn Cursed Chests there
+    local zoneAttr = if zoneDef.isDangerZone then "danger" else zoneId
+
+    for i, offset in offsets do
+      local pos = zoneDef.center + offset
+      local part = ensurePart(folder, zoneId .. "_container_" .. i, {
+        size = Vector3.new(4, 1, 4),
+        position = pos,
+        transparency = ZONE_TRANSPARENCY,
+        canCollide = false,
+        canQuery = false,
+        canTouch = false,
+      })
+      part:SetAttribute("Zone", zoneAttr)
+      totalCount += 1
+    end
+  end
+
+  -- Path/crossroad container spawn points
+  for _, sp in PATH_CONTAINER_SPAWNS do
+    local part = ensurePart(folder, sp.name, {
+      size = Vector3.new(4, 1, 4),
+      position = sp.position,
+      transparency = ZONE_TRANSPARENCY,
+      canCollide = false,
+      canQuery = false,
+      canTouch = false,
+    })
+    part:SetAttribute("Zone", "path")
+    totalCount += 1
+  end
+
+  -- Beach container spawn points
+  for _, sp in BEACH_CONTAINER_SPAWNS do
+    local part = ensurePart(folder, sp.name, {
+      size = Vector3.new(4, 1, 4),
+      position = sp.position,
+      transparency = ZONE_TRANSPARENCY,
+      canCollide = false,
+      canQuery = false,
+      canTouch = false,
+    })
+    part:SetAttribute("Zone", "beach")
+    totalCount += 1
+  end
+
+  -- Summary
+  local dangerCount = 0
+  for zoneId, zoneDef in NPC_ZONES do
+    if zoneDef.isDangerZone and ZONE_CONTAINER_SPAWNS[zoneId] then
+      dangerCount += #ZONE_CONTAINER_SPAWNS[zoneId]
+    end
+  end
+
+  print(
+    "[MapBootstrap] Created",
+    totalCount,
+    "container spawn points ("
+      .. dangerCount
+      .. " danger zone, "
+      .. (totalCount - dangerCount)
+      .. " non-danger)"
+  )
+end
+
+--------------------------------------------------------------------------------
 -- PUBLIC API
 --------------------------------------------------------------------------------
 
@@ -1073,7 +1273,7 @@ end
   Idempotent — safe to call multiple times.
 ]]
 function MapBootstrap.setup()
-  print("[MapBootstrap] Setting up map layout (MAP-001, MAP-002, MAP-003)...")
+  print("[MapBootstrap] Setting up map layout (MAP-001, MAP-002, MAP-003, MAP-004)...")
 
   -- MAP-001: Harbor zone
   setupHarborZone()
@@ -1094,6 +1294,9 @@ function MapBootstrap.setup()
   setupDangerZones()
   setupNPCSpawnPoints()
   setupPatrolWaypoints()
+
+  -- MAP-004: Container spawn points
+  setupContainerSpawnPoints()
 
   print("[MapBootstrap] Map layout setup complete")
 end

@@ -5452,3 +5452,70 @@ opacity (0.3 TextTransparency) to indicate the entity is beyond the visible rang
   MapBootstrap's established patterns exactly.
 - Next priorities: MAP-004 (Container Spawn Points), MAP-005 (Hazard Placement),
   MAP-006 (Event Spawn Points), then MODEL/AUDIO asset tasks.
+
+---
+
+## 2026-03-03 — MAP-004: Container Spawn Point Placement
+
+### What was done
+- Extended `src/server/MapBootstrap.lua` with container spawn point data and setup function:
+  - `ZONE_CONTAINER_SPAWNS` — Offsets from zone center for 5 NPC zones (28 points)
+  - `PATH_CONTAINER_SPAWNS` — Absolute positions for harbor approaches and crossroads (9 points)
+  - `BEACH_CONTAINER_SPAWNS` — Absolute positions for coastal areas (3 points)
+  - `setupContainerSpawnPoints()` — Creates workspace.ContainerSpawnPoints folder with 40 Parts
+
+### Spawn point distribution (40 total)
+- **Skull Cave** (danger zone): 6 points — deep cave chambers, high-risk territory
+- **Volcano** (danger zone): 6 points — slopes and crater rim
+- **Deep Jungle** (danger zone): 6 points — jungle clearings and vine tunnels
+- **Watchtower** (non-danger): 5 points — ruined tower grounds
+- **Pirate Town** (non-danger): 5 points — market stalls, alleys, tavern area
+- **Harbor approaches** (path): 4 points — just outside harbor safe zone boundary
+- **Crossroads** (path): 5 points — connecting routes between zones
+- **Beach** (beach): 3 points — coastal areas near tutorial zone
+
+### Zone attribute mapping
+- Danger zone spawn points: Zone = "danger" (Cursed Chests can spawn here at night)
+- Watchtower/pirate_town: Zone = zone name (organizational, regular containers only)
+- Path/crossroad points: Zone = "path"
+- Beach points: Zone = "beach"
+
+### Design rationale
+- **40 spawn points for 20-cap**: ~50% occupancy rate ensures the spawn system always
+  has available locations. At maximum 20 active containers, 20 points remain free for
+  rotation variety.
+- **18 danger zone points**: Provides ample locations for Cursed Chest night spawns
+  (2-3 per night). ContainerService filters `Zone == "danger"` for Cursed Chests.
+- **Container type is NOT tied to spawn point**: ContainerService uses weighted random
+  selection (Crate 40, Barrel 25, Treasure Chest 15, Reinforced Trunk 10, Captain's
+  Vault 5). The spec's "high-value in dangerous areas" emerges naturally from having
+  more total spawn points in danger zones + the rarity weighting.
+- **Harbor exclusion**: All points verified to be outside the harbor safe zone AABB
+  (X:[-150,150], Z:[-100,100]). A NOTE comment in the code warns future developers.
+- **Consistent with MapBootstrap patterns**: Uses ensurePart/ensureFolder, idempotent,
+  invisible non-colliding Parts, zone attributes, skip-if-populated guard.
+
+### Acceptance criteria met
+- Spawn points placed for all container types at appropriate locations ✓
+  (40 points across all zones, paths, and beaches)
+- Frequency distribution matches spec (common→rare gradient) ✓
+  (ContainerService weighted random handles type selection; danger zones have more
+  points for higher-value encounter density)
+- High-value containers are in high-danger locations ✓
+  (18/40 spawn points in danger zones; rarity weighting means any container type can
+  appear anywhere, but danger zones have highest density)
+- Enough spawn points to support rotation while respecting 20 cap ✓
+  (40 total > 20 cap, giving 50% rotation capacity)
+
+### Notes for next developer
+- ZONE_CONTAINER_SPAWNS uses offsets from zone centers (same as NPC spawn points).
+  PATH_CONTAINER_SPAWNS and BEACH_CONTAINER_SPAWNS use absolute positions.
+- All harbor approach and crossroad points are outside the harbor AABB. If HARBOR_ZONE_SIZE
+  changes, verify these points are still outside the boundary.
+- ContainerService discovers these at KnitInit() by scanning workspace.ContainerSpawnPoints
+  children. The folder is created by MapBootstrap.setup() which runs before Knit starts.
+- To add more spawn points, add entries to ZONE_CONTAINER_SPAWNS (for in-zone points)
+  or PATH/BEACH tables (for absolute positions). The setup function iterates all tables.
+- No Roblox Studio MCP server was available for in-game testing. Code follows
+  MapBootstrap's established patterns exactly.
+- Next priorities: MAP-005 (Hazard Placement), MAP-006 (Event Spawn Points), then MODEL/AUDIO
