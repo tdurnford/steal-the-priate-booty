@@ -1,3 +1,69 @@
+## 2026-03-03 — MAP-002: Tutorial Beach Area
+
+### What was done
+- Extended `src/server/MapBootstrap.lua` with 4 new setup functions for the tutorial beach area:
+  - `setupTutorialBeach()` — Creates the **TutorialBeach** invisible Part (CFrame oriented
+    toward harbor, so `CFrame.LookVector` gives TutorialService the forward direction for
+    placing driftwood/crate/skeleton). Also creates **TutorialSkeletonSpawn** marker Part
+    ~20 studs forward from spawn.
+  - `setupBeachTerrain()` — Creates the **TutorialBeachArea** folder with physical beach
+    environment: main sand ground (80x60), wet sand strip at water's edge, shallow water
+    plane, grassy transition area behind beach, 3 rocky outcrops, 3 palm trees (trunk + canopy).
+  - `setupShipwreckDebris()` — Creates the **TutorialShipwreck** folder with atmospheric
+    debris: broken hull section (tilted, half-submerged), broken mast, torn sail, 5 scattered
+    planks, rope coil. Sells the "washed ashore" narrative.
+  - `setupBeachToHarborPath()` — Creates the **TutorialPath** folder: 6 alternating dirt/grass
+    ground segments from beach to harbor with a gentle sine curve, 3 torches with Fire + PointLight
+    along the path for night visibility, "HARBOR →" signpost at the path entrance.
+
+### Beach design
+- **Position**: (200, 2, 200) — southeast of harbor at (0, 0, 0). Matches TutorialService's
+  `DEFAULT_TUTORIAL_POSITION` fallback. Distance from harbor is ~283 studs diagonally.
+- **Orientation**: TutorialBeach CFrame faces toward harbor center. This means:
+  - Step 1-5 entities (driftwood 10 studs, crate 15 studs, skeleton 20 studs) all spawn
+    in front of the player, naturally leading toward the harbor.
+  - Step 6 harbor beacon is directly ahead.
+- **Path**: Gentle sine-curve path (15 stud lateral offset at peak) avoids boring straight line.
+  Alternating Ground/Grass materials create natural-looking trail.
+- **Atmosphere**: Shipwreck debris, palm trees, and rocks frame the scene. Water plane along
+  the +Z edge of the beach. All objects use Anchored=true, appropriate Materials.
+
+### Acceptance criteria met
+- Tutorial beach area exists on the main map (TutorialBeachArea folder in workspace) ✓
+- Driftwood and crate are positioned per spec distances (TutorialService uses TutorialBeach
+  CFrame.LookVector * 10/15 studs — now resolves correctly with the Part) ✓
+- Path to Harbor exists with additional crate placements (TutorialPath ground segments +
+  TutorialService dynamically spawns 2 path crates via lerp) ✓
+- Skeleton spawn point defined for tutorial encounter (TutorialSkeletonSpawn Part) ✓
+- Area is visible to all players (shared world, not instanced) ✓
+
+### Design decisions
+- **Extended MapBootstrap, not new module**: The beach setup follows the exact same pattern
+  (ensurePart/ensureFolder, idempotent checks, print logging) and is called from the same
+  `setup()` function. This keeps all map bootstrapping centralized.
+- **Dynamic entities handled by TutorialService**: The driftwood pickup, tutorial crate,
+  path crates, and skeleton are still created dynamically by TutorialService (per-player).
+  MAP-002 provides only the static environment and marker Parts.
+- **Path torches in shared Torches folder**: Path torches are added to the existing `workspace.Torches`
+  folder so DayNightLightingController's torch toggle (night on/day off) applies to them too.
+- **No terrain API**: Used Part-based ground (Sand/Grass/Ground materials) instead of Roblox
+  Terrain API since MapBootstrap uses only Instance.new("Part"). Terrain would look better
+  but requires Studio or a different API approach.
+
+### Notes for next developer
+- TutorialBeach Part at (200, 5, 200) facing harbor (0, 0, 0). TutorialService finds this
+  via `workspace:FindFirstChild("TutorialBeach")` — no code changes needed in TutorialService.
+- Beach area dimensions: 80x60 studs. Shipwreck debris is at +15X, +20Z from center (water edge).
+- Path has 6 segments and 3 torches. Adjust PATH_SEGMENT_COUNT and torch count if the path
+  feels too sparse or dense.
+- All new folders: TutorialBeachArea, TutorialShipwreck, TutorialPath (plus PathTorch_* in Torches).
+- No Roblox Studio MCP server was available for in-game testing. Code follows MapBootstrap's
+  established patterns exactly.
+- Next priorities: MAP-003 (NPC Spawn Zones), MAP-004 (Container Spawn Points), MAP-005
+  (Hazard Placement), MAP-006 (Event Spawn Points), then MODEL/AUDIO asset tasks.
+
+---
+
 ## 2026-03-03 — NETWORK-003: Server-Side Speed Check
 
 ### What was done

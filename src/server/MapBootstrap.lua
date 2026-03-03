@@ -1,6 +1,7 @@
 --[[
   MapBootstrap.lua
-  Pre-Knit workspace object creation for MAP-001 (Harbor Zone Layout).
+  Pre-Knit workspace object creation for MAP-001 (Harbor Zone Layout)
+  and MAP-002 (Tutorial Beach Area).
 
   Called by Main.server.lua BEFORE any Knit services are loaded.
   Creates all required workspace objects that services expect to find:
@@ -9,10 +10,12 @@
     - HarborSpawn Part (tutorial/spawn waypoint for TutorialService)
     - ShopTrigger Part (gear/cosmetic shop area for TutorialService)
     - Visual pier structures and boundary markers
+    - TutorialBeach Part (spawn + orientation for TutorialService)
+    - Beach terrain, shipwreck debris, path to Harbor
 
   All objects are created only if they don't already exist (idempotent).
-  When Roblox Studio map assets are finalized (MAP-001 complete in Studio),
-  this module can be removed — the Studio-placed objects will take precedence.
+  When Roblox Studio map assets are finalized, this module can be removed
+  — the Studio-placed objects will take precedence.
 ]]
 
 local MapBootstrap = {}
@@ -47,6 +50,28 @@ local SHOP_TRIGGER_OFFSET = Vector3.new(-60, 3, 60) -- west side of harbor
 local PIER_COLOR = Color3.fromRGB(139, 90, 43) -- wood brown
 local BOUNDARY_COLOR = Color3.fromRGB(200, 170, 100) -- sandy gold
 local ZONE_TRANSPARENCY = 1 -- invisible zone part
+
+--------------------------------------------------------------------------------
+-- TUTORIAL BEACH CONSTANTS (MAP-002)
+--------------------------------------------------------------------------------
+
+-- Beach position — southeast of harbor, matches TutorialService DEFAULT_TUTORIAL_POSITION
+local BEACH_CENTER = Vector3.new(200, 2, 200)
+
+-- Beach dimensions
+local BEACH_SIZE = Vector3.new(80, 1, 60) -- main sandy area
+local BEACH_WATER_DEPTH = -2 -- Y offset for water line
+
+-- The TutorialBeach part faces toward the harbor so TutorialService's
+-- CFrame.LookVector points from spawn toward driftwood/crate/harbor
+local BEACH_LOOK_TARGET = HARBOR_CENTER
+
+-- Shipwreck debris offset from beach center (washed ashore, at water's edge)
+local WRECK_OFFSET = Vector3.new(15, -1, 20)
+
+-- Path from beach to harbor: we place a series of ground patches
+local PATH_WIDTH = 8
+local PATH_SEGMENT_COUNT = 6 -- ground segments between beach and harbor
 
 --------------------------------------------------------------------------------
 -- HELPERS
@@ -474,6 +499,335 @@ local function setupTorches()
 end
 
 --------------------------------------------------------------------------------
+-- TUTORIAL BEACH SPAWN MARKER (MAP-002)
+--------------------------------------------------------------------------------
+
+--[[
+  Creates the TutorialBeach Part that TutorialService uses to determine:
+    - Spawn position (Part.Position + 0,3,0)
+    - Forward direction (Part.CFrame.LookVector → toward driftwood/harbor)
+  Also creates the TutorialSkeletonSpawn marker near the crate area.
+]]
+local function setupTutorialBeach()
+  -- TutorialBeach marker — invisible Part with oriented CFrame
+  local beachPos = BEACH_CENTER + Vector3.new(0, 3, 0) -- slightly above ground
+  local lookTarget = Vector3.new(BEACH_LOOK_TARGET.X, beachPos.Y, BEACH_LOOK_TARGET.Z)
+
+  local beachPart = ensurePart(workspace, "TutorialBeach", {
+    size = Vector3.new(8, 1, 8),
+    transparency = ZONE_TRANSPARENCY,
+    canCollide = false,
+    canQuery = false,
+    canTouch = false,
+  })
+  -- Set CFrame so LookVector points toward harbor
+  beachPart.CFrame = CFrame.new(beachPos, lookTarget)
+
+  -- TutorialSkeletonSpawn — marker for where the tutorial skeleton appears
+  -- Positioned ~20 studs forward and 5 studs to the side from spawn
+  -- (matches TutorialService's skeleton spawn: forward * 20 + Vector3.new(5, 0, 0))
+  local forward = (lookTarget - beachPos).Unit
+  local skeletonPos = beachPos + forward * 20 + Vector3.new(5, 0, -2)
+  ensurePart(workspace, "TutorialSkeletonSpawn", {
+    size = Vector3.new(4, 1, 4),
+    position = skeletonPos,
+    transparency = ZONE_TRANSPARENCY,
+    canCollide = false,
+    canQuery = false,
+    canTouch = false,
+  })
+
+  print("[MapBootstrap] TutorialBeach at", beachPos, "facing harbor")
+end
+
+--------------------------------------------------------------------------------
+-- TUTORIAL BEACH TERRAIN (MAP-002)
+--------------------------------------------------------------------------------
+
+--[[
+  Creates the physical beach environment: sand ground, water edge, rocks,
+  shipwreck debris, and atmospheric props. All visible to other players.
+]]
+local function setupBeachTerrain()
+  local beachFolder = ensureFolder(workspace, "TutorialBeachArea")
+
+  if #beachFolder:GetChildren() > 0 then
+    print("[MapBootstrap] TutorialBeachArea already populated, skipping")
+    return
+  end
+
+  -- Main sandy beach ground
+  ensurePart(beachFolder, "BeachSand", {
+    size = BEACH_SIZE,
+    position = BEACH_CENTER,
+    color = Color3.fromRGB(230, 210, 160),
+    material = Enum.Material.Sand,
+  })
+
+  -- Wet sand near water's edge (darker, closer to water)
+  ensurePart(beachFolder, "WetSand", {
+    size = Vector3.new(BEACH_SIZE.X, 0.5, 15),
+    position = BEACH_CENTER + Vector3.new(0, -0.3, BEACH_SIZE.Z / 2 - 5),
+    color = Color3.fromRGB(180, 160, 120),
+    material = Enum.Material.Sand,
+  })
+
+  -- Shallow water plane at the beach edge
+  local waterPart = ensurePart(beachFolder, "ShallowWater", {
+    size = Vector3.new(BEACH_SIZE.X + 40, 1, 30),
+    position = BEACH_CENTER + Vector3.new(0, BEACH_WATER_DEPTH, BEACH_SIZE.Z / 2 + 10),
+    color = Color3.fromRGB(30, 120, 180),
+    material = Enum.Material.Water,
+    transparency = 0.3,
+    canCollide = false,
+  })
+  -- Water doesn't need query/touch
+  waterPart.CanQuery = false
+  waterPart.CanTouch = false
+
+  -- Grassy area behind the beach (transition to island interior)
+  ensurePart(beachFolder, "BeachGrass", {
+    size = Vector3.new(BEACH_SIZE.X - 10, 1, 25),
+    position = BEACH_CENTER + Vector3.new(0, 0.3, -BEACH_SIZE.Z / 2 - 10),
+    color = Color3.fromRGB(80, 140, 50),
+    material = Enum.Material.Grass,
+  })
+
+  -- Rocky outcrop on the east side of the beach
+  ensurePart(beachFolder, "Rock_1", {
+    size = Vector3.new(8, 5, 6),
+    position = BEACH_CENTER + Vector3.new(35, 2, 10),
+    color = Color3.fromRGB(100, 95, 85),
+    material = Enum.Material.Slate,
+  })
+  ensurePart(beachFolder, "Rock_2", {
+    size = Vector3.new(5, 3, 4),
+    position = BEACH_CENTER + Vector3.new(32, 1, 5),
+    color = Color3.fromRGB(90, 85, 75),
+    material = Enum.Material.Slate,
+  })
+
+  -- Rocks on the west side
+  ensurePart(beachFolder, "Rock_3", {
+    size = Vector3.new(6, 4, 5),
+    position = BEACH_CENTER + Vector3.new(-33, 1.5, 15),
+    color = Color3.fromRGB(95, 90, 80),
+    material = Enum.Material.Slate,
+  })
+
+  -- Palm tree trunks (simple cylinders) — 3 palm trees
+  local palmPositions = {
+    BEACH_CENTER + Vector3.new(-20, 0, -15),
+    BEACH_CENTER + Vector3.new(15, 0, -20),
+    BEACH_CENTER + Vector3.new(-10, 0, -25),
+  }
+  for i, palmPos in palmPositions do
+    -- Trunk
+    ensurePart(beachFolder, "PalmTrunk_" .. i, {
+      size = Vector3.new(2, 14, 2),
+      cframe = CFrame.new(palmPos + Vector3.new(0, 7, 0))
+        * CFrame.Angles(0, 0, math.rad(5 * (i % 2 == 0 and 1 or -1))),
+      color = Color3.fromRGB(120, 85, 40),
+      material = Enum.Material.Wood,
+    })
+    -- Canopy (flattened sphere)
+    ensurePart(beachFolder, "PalmCanopy_" .. i, {
+      size = Vector3.new(10, 3, 10),
+      position = palmPos + Vector3.new(0, 15, 0),
+      color = Color3.fromRGB(40, 120, 30),
+      material = Enum.Material.Grass,
+      canCollide = false,
+    })
+  end
+
+  print("[MapBootstrap] Created tutorial beach terrain")
+end
+
+--------------------------------------------------------------------------------
+-- SHIPWRECK DEBRIS (MAP-002)
+--------------------------------------------------------------------------------
+
+--[[
+  Creates shipwreck debris props at the water's edge of the tutorial beach.
+  Sells the "washed ashore" narrative for new players.
+]]
+local function setupShipwreckDebris()
+  local debrisFolder = ensureFolder(workspace, "TutorialShipwreck")
+
+  if #debrisFolder:GetChildren() > 0 then
+    print("[MapBootstrap] TutorialShipwreck already populated, skipping")
+    return
+  end
+
+  local wreckPos = BEACH_CENTER + WRECK_OFFSET
+
+  -- Broken hull section (the main wreck piece, half-submerged)
+  ensurePart(debrisFolder, "BrokenHull", {
+    size = Vector3.new(12, 5, 20),
+    cframe = CFrame.new(wreckPos + Vector3.new(0, 1, 0))
+      * CFrame.Angles(0, math.rad(35), math.rad(15)),
+    color = Color3.fromRGB(80, 55, 30),
+    material = Enum.Material.Wood,
+  })
+
+  -- Broken mast lying on the sand
+  ensurePart(debrisFolder, "BrokenMast", {
+    size = Vector3.new(1.5, 1.5, 18),
+    cframe = CFrame.new(wreckPos + Vector3.new(-8, 0.5, -5))
+      * CFrame.Angles(0, math.rad(60), math.rad(5)),
+    color = Color3.fromRGB(100, 70, 35),
+    material = Enum.Material.Wood,
+  })
+
+  -- Torn sail (flat fabric)
+  ensurePart(debrisFolder, "TornSail", {
+    size = Vector3.new(8, 0.2, 6),
+    cframe = CFrame.new(wreckPos + Vector3.new(-5, 0.3, -8))
+      * CFrame.Angles(0, math.rad(20), math.rad(3)),
+    color = Color3.fromRGB(200, 185, 150),
+    material = Enum.Material.Fabric,
+    canCollide = false,
+  })
+
+  -- Scattered planks
+  local plankOffsets = {
+    { x = -12, z = -3, rot = 45 },
+    { x = 5, z = -10, rot = -20 },
+    { x = -3, z = 8, rot = 70 },
+    { x = 10, z = 5, rot = -55 },
+    { x = -8, z = 12, rot = 10 },
+  }
+  for i, plank in plankOffsets do
+    ensurePart(debrisFolder, "Plank_" .. i, {
+      size = Vector3.new(0.5, 0.3, 4),
+      cframe = CFrame.new(wreckPos + Vector3.new(plank.x, 0.2, plank.z))
+        * CFrame.Angles(0, math.rad(plank.rot), 0),
+      color = Color3.fromRGB(110, 75, 35),
+      material = Enum.Material.Wood,
+      canCollide = false,
+    })
+  end
+
+  -- Rope coil
+  ensurePart(debrisFolder, "RopeCoil", {
+    size = Vector3.new(2, 0.5, 2),
+    position = wreckPos + Vector3.new(-6, 0.3, 3),
+    color = Color3.fromRGB(160, 140, 90),
+    material = Enum.Material.Fabric,
+    canCollide = false,
+  })
+
+  print("[MapBootstrap] Created shipwreck debris at tutorial beach")
+end
+
+--------------------------------------------------------------------------------
+-- BEACH-TO-HARBOR PATH (MAP-002)
+--------------------------------------------------------------------------------
+
+--[[
+  Creates a visible dirt/grass path from the tutorial beach to the harbor.
+  Players follow this path during step 6 of the tutorial (with compass).
+  Torches along the path provide night visibility.
+]]
+local function setupBeachToHarborPath()
+  local pathFolder = ensureFolder(workspace, "TutorialPath")
+
+  if #pathFolder:GetChildren() > 0 then
+    print("[MapBootstrap] TutorialPath already populated, skipping")
+    return
+  end
+
+  local startPos = BEACH_CENTER + Vector3.new(0, 0, -BEACH_SIZE.Z / 2 - 10)
+  local endPos = HARBOR_CENTER + Vector3.new(0, GROUND_Y, HARBOR_ZONE_SIZE.Z / 2)
+
+  -- Create path ground segments (lerp from beach to harbor)
+  for i = 0, PATH_SEGMENT_COUNT - 1 do
+    local t = i / PATH_SEGMENT_COUNT
+    local segPos = startPos:Lerp(endPos, t + 0.5 / PATH_SEGMENT_COUNT)
+    -- Add slight natural curve offset
+    local curveOffset = math.sin(t * math.pi) * 15
+    segPos = segPos + Vector3.new(curveOffset, 0, 0)
+
+    -- Alternate dirt and grass for natural look
+    local isDirt = i % 2 == 0
+    ensurePart(pathFolder, "PathSeg_" .. (i + 1), {
+      size = Vector3.new(PATH_WIDTH, 0.5, (endPos - startPos).Magnitude / PATH_SEGMENT_COUNT + 4),
+      position = segPos,
+      color = isDirt and Color3.fromRGB(140, 110, 60) or Color3.fromRGB(90, 130, 55),
+      material = isDirt and Enum.Material.Ground or Enum.Material.Grass,
+    })
+  end
+
+  -- Torches along the path (one per 2 segments, alternating sides)
+  local torchesFolder = ensureFolder(workspace, "Torches")
+  local pathTorchCount = math.floor(PATH_SEGMENT_COUNT / 2)
+  for i = 1, pathTorchCount do
+    local t = i / (pathTorchCount + 1)
+    local torchPos = startPos:Lerp(endPos, t)
+    local curveOffset = math.sin(t * math.pi) * 15
+    -- Alternate sides
+    local side = (i % 2 == 0) and 1 or -1
+    torchPos = torchPos + Vector3.new(curveOffset + side * (PATH_WIDTH / 2 + 3), 0, 0)
+
+    local post = ensurePart(torchesFolder, "PathTorch_" .. i, {
+      size = Vector3.new(1, 8, 1),
+      position = torchPos + Vector3.new(0, 4, 0),
+      color = Color3.fromRGB(80, 50, 25),
+      material = Enum.Material.Wood,
+    })
+
+    local light = Instance.new("PointLight")
+    light.Name = "TorchLight"
+    light.Color = Color3.fromRGB(255, 180, 80)
+    light.Brightness = 1.5
+    light.Range = 25
+    light.Parent = post
+
+    local fire = Instance.new("Fire")
+    fire.Size = 3
+    fire.Heat = 5
+    fire.Color = Color3.fromRGB(255, 150, 50)
+    fire.SecondaryColor = Color3.fromRGB(255, 80, 20)
+    fire.Parent = post
+  end
+
+  -- Simple signpost at the start of the path pointing to Harbor
+  local signPos = startPos + Vector3.new(PATH_WIDTH / 2 + 2, 0, 5)
+  ensurePart(pathFolder, "Signpost", {
+    size = Vector3.new(1, 6, 1),
+    position = signPos + Vector3.new(0, 3, 0),
+    color = Color3.fromRGB(100, 70, 35),
+    material = Enum.Material.Wood,
+  })
+
+  -- Sign board
+  local signBoard = ensurePart(pathFolder, "SignBoard", {
+    size = Vector3.new(4, 1.5, 0.3),
+    position = signPos + Vector3.new(0, 5.5, 0),
+    color = Color3.fromRGB(120, 85, 40),
+    material = Enum.Material.Wood,
+  })
+
+  -- Sign text
+  local surfaceGui = Instance.new("SurfaceGui")
+  surfaceGui.Name = "SignGui"
+  surfaceGui.Face = Enum.NormalId.Front
+  surfaceGui.Parent = signBoard
+
+  local label = Instance.new("TextLabel")
+  label.Name = "SignLabel"
+  label.Size = UDim2.fromScale(1, 1)
+  label.BackgroundTransparency = 1
+  label.Text = "HARBOR  -->"
+  label.TextColor3 = Color3.fromRGB(240, 220, 160)
+  label.TextScaled = true
+  label.Font = Enum.Font.GothamBold
+  label.Parent = surfaceGui
+
+  print("[MapBootstrap] Created beach-to-harbor path with", pathTorchCount, "torches")
+end
+
+--------------------------------------------------------------------------------
 -- PUBLIC API
 --------------------------------------------------------------------------------
 
@@ -483,8 +837,9 @@ end
   Idempotent — safe to call multiple times.
 ]]
 function MapBootstrap.setup()
-  print("[MapBootstrap] Setting up Harbor zone layout (MAP-001)...")
+  print("[MapBootstrap] Setting up map layout (MAP-001, MAP-002)...")
 
+  -- MAP-001: Harbor zone
   setupHarborZone()
   setupDockSlots()
   setupPierVisuals()
@@ -493,7 +848,13 @@ function MapBootstrap.setup()
   setupHarborGround()
   setupTorches()
 
-  print("[MapBootstrap] Harbor zone setup complete")
+  -- MAP-002: Tutorial beach
+  setupTutorialBeach()
+  setupBeachTerrain()
+  setupShipwreckDebris()
+  setupBeachToHarborPath()
+
+  print("[MapBootstrap] Map layout setup complete")
 end
 
 return MapBootstrap
