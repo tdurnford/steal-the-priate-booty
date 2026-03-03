@@ -4548,3 +4548,86 @@ The ship tier system was already fully functional from prior work:
   simultaneously, stats panel is on top. Consider adding mutual exclusion if desired.
 - Next priorities: HAZARD-003 (quicksand), HAZARD-004 (rogue wave), EVENT-003 (loot surge),
   UI-005 (minimap), COSMETIC-001/002/003 (cosmetic system)
+
+---
+
+## 2026-03-02 — UI-005: HUD Minimap
+
+### What was done
+- Created `src/client/UI/MinimapPanel.lua` — Fusion 0.3 component that renders a circular
+  minimap frame in the bottom-left corner of the screen. Contains a player direction arrow
+  (triangle pointing up = player's forward direction), a subtle 75% range ring for distance
+  reference, and a dots container where MinimapController adds entity markers. Uses UITheme
+  design tokens, circular UICorner, and ClipsDescendants for visual containment. 160x160 pixel
+  map with semi-transparent dark background and stroke border.
+- Created `src/client/Controllers/MinimapController.lua` — Knit controller that manages all
+  minimap entity tracking and rendering. Creates its own ScreenGui (DisplayOrder 15). M keybind
+  toggles visibility. Heartbeat update loop throttled to 0.1s (10 updates/second) for
+  performance. Tracks entity dots via a pooling system (entityId → instance map) with automatic
+  stale dot cleanup each frame.
+
+### Entity rendering
+- **Other players**: White 6px circle dots. Hidden when outside 150-stud range.
+- **Bounty target**: Gold skull icon (💀), 12px. Clamped to circle edge when out of range
+  (with 0.3 transparency to indicate distance). Overrides normal player dot.
+- **Skeletons**: Red 6px circle dots. Hidden when outside range.
+- **Ghost Pirates**: Faint red 5px dots, only shown within 20 studs. Sine-based flicker
+  (~60% visibility, 8 Hz oscillation) with 0.3 transparency. Invisible beyond 20 studs.
+- **Phantom Captains**: Purple 8px circle dots. Standard range visibility.
+- **Own ship**: Cyan anchor icon (⚓), 12px. Clamped to edge when out of range.
+- **Active events**: Gold star icon (⭐), 12px. Clamped to edge when out of range.
+
+### Coordinate system
+Uses CFrame:PointToObjectSpace for world-to-minimap transform. The minimap rotates with
+the player's facing direction: "up" on the minimap always means "forward" for the player.
+Object space X maps to minimap right, object space Z maps to minimap down (since positive Z
+in object space is "behind" the player). Distance-based circular culling (not rectangular)
+ensures dots only appear within the visible circle.
+
+### Edge clamping
+Important entities (bounty target, own ship, active events) use worldToMinimapClamped()
+which normalizes the direction vector to the circle edge when out of range, with reduced
+opacity (0.3 TextTransparency) to indicate the entity is beyond the visible range.
+
+### Acceptance criteria met
+- Minimap visible in screen corner (bottom-left, 160x160) ✓
+- Players shown as white dots ✓
+- NPCs shown as red dots ✓
+- Ghost Pirates only flicker within 20 studs ✓
+- Bounty target shown as skull ✓
+- Events and own ship marked with distinct icons (star, anchor) ✓
+- Minimap updates in real-time (10 Hz Heartbeat loop) ✓
+- Scale and rotate relative to player facing direction ✓
+
+### Design decisions
+- **Standalone controller pattern**: Like LeaderboardController and PlayerStatsController,
+  the minimap uses its own ScreenGui and is fully self-contained. No HudController wiring
+  needed, which keeps the HUD clean.
+- **Instance.new for dots**: Entity dots are managed with Instance.new (not Fusion) because
+  they're highly dynamic — created, destroyed, and repositioned every 0.1s. Fusion's
+  reactive system adds overhead for elements that need imperative position updates.
+- **Dot pooling with stale cleanup**: Each update increments a counter. Dots mark themselves
+  as "seen" via getOrCreateDot(). After all entities are processed, cleanupStaleDots()
+  destroys any dot not seen this frame. This handles entity spawning, despawning, and type
+  transitions (e.g., player gaining/losing bounty) automatically.
+- **NPC type from model name prefix**: Instead of reading attributes from child Parts,
+  the NPC type is determined by the model name prefix (Skeleton_, GhostPirate_,
+  PhantomCaptain_) which is simpler and avoids iterating child parts.
+- **No north indicator**: In a rotating minimap, a fixed "N" label would need per-frame
+  rotation positioning. Omitted for simplicity — the player arrow and relative entity
+  positions provide sufficient spatial awareness.
+- **M keybind**: Intuitive ("M for Map"), unused by any other system
+  (G=shop, L=leaderboard, P=stats, Q=dash, X=lunge, C=spin, E/F/R=ship).
+
+### Notes for next developer
+- MAP_RANGE (150 studs) controls how much of the world is visible on the minimap.
+  Adjust in MinimapController.lua if the game map is larger/smaller than expected.
+- UPDATE_INTERVAL (0.1s) can be increased for better performance on low-end devices,
+  or decreased for smoother dot movement at the cost of CPU.
+- The minimap uses ClipsDescendants which clips rectangularly (Roblox limitation), but
+  circular culling in worldToMinimap prevents dots from appearing in the "corners" outside
+  the visual circle.
+- Ghost pirate flicker uses math.sin(tick() * 8) > -0.2 for a natural, irregular flicker
+  when sampled at the 10 Hz update rate.
+- Next priorities: UI-006 (event banner queuing), UI-008 (hazard warnings),
+  COSMETIC-001/002/003 (cosmetic system), EMOTE-001 (emotes)
