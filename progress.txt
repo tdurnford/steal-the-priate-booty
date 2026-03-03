@@ -3481,3 +3481,138 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
   prioritize chasing players with higher loot tiers).
 - Next priorities: NPC-008 (Phantom Captain), NPC-009 (night NPC modifiers),
   SHIP-005 (ship lock state visuals), SHIP-006 (ship tier progression)
+
+---
+
+## 2026-03-02 — NPC-008: Phantom Captain Elite NPC
+
+### What was done
+- Extended `src/shared/GameConfig.lua` with full PhantomCaptain config (HP, speed,
+  aggro, attack stats, flinch, death loot, spawn caps, display name).
+- Extended `src/server/Services/NPCService.lua` with Phantom Captain entity creation,
+  spawn/despawn logic, AI integration, tracking variables, and public API methods.
+- Extended `src/server/Services/ThreatEffectsService.lua` to wire Doomed tier
+  enter/exit to actual Phantom Captain spawn/despawn (replaced TODO stubs).
+
+### GameConfig.lua changes
+- **Expanded PhantomCaptain config** from basic 10-field stub to full config matching
+  CursedSkeleton/GhostPirate pattern:
+  - `hp = 30`, `speedMultiplier = 1.1`
+  - `aggroRange = 200` (effectively unlimited — hunts specific target across map)
+  - `slashWindup = 0.6`, `slashRange = 9` (slightly longer reach than skeletons)
+  - `slashCooldown = 1.8` (attacks faster than skeletons)
+  - `slashRagdollDuration = 3.0`, `slashLootSpillPercent = 0.30` (punishing hits)
+  - `flinchDuration = 0.15` (shorter than skeleton — more imposing)
+  - `deathBonusMin = 100`, `deathBonusMax = 200`
+  - `spawnThreatThreshold = 80`, `maxPerPlayer = 1`, `maxPerServer = 3`
+  - `displayName = "Phantom Captain"`
+
+### NPCService.lua changes
+
+#### New config and getNPCConfig()
+- Added `PHANTOM_CAPTAIN` shorthand for `GameConfig.PhantomCaptain`
+- Updated `getNPCConfig()` to return `PHANTOM_CAPTAIN` for `"phantom_captain"` type
+
+#### New client signals
+- `PhantomCaptainSpawned(playerId)` — fired when a Phantom Captain spawns for a player
+- `PhantomCaptainDespawned(playerId)` — fired when a Phantom Captain despawns/dies
+
+#### New tracking variables
+- `PhantomCaptainCount` — current server-wide count of active Phantom Captains
+- `PhantomCaptainByPlayer` — maps Player → count of their Phantom Captains
+- `PhantomCaptainNPCIds` — set of NPC IDs that are Phantom Captains
+
+#### createPhantomCaptainModel()
+- Creates a dark, imposing humanoid model with purple/black coloring
+- Larger body parts (1.2x Head, 1.1x Torso, longer limbs) for imposing silhouette
+- Dark aura ParticleEmitter on torso (purple/black particles, slow upward drift)
+- Red/purple eye glow (PointLight in Head, Color3(0.6, 0, 0.3))
+- Purple cutlass with blade glow (ParticleEmitter on blade)
+- Dark PointLight on torso for ambient glow effect
+- All parts get `NPCId` and `NPCType` attributes for hit detection
+
+#### spawnPhantomCaptain() local function
+- Enforces `maxPerServer` (3) and `maxPerPlayer` (1) caps with early returns
+- Creates NPCEntry with `npcType = "phantom_captain"`, `forcedTarget = targetPlayer`,
+  `isBonusNPC = true` (excluded from budget/respawn system)
+- Empty patrol waypoints (chase-only behavior)
+- SimplePath signals wired for chase pathfinding only
+- Tracks in PhantomCaptainByPlayer and PhantomCaptainNPCIds
+- Fires NPCSpawned + PhantomCaptainSpawned client signals
+- Spawns 25 studs away from target player
+
+#### despawnNPC() updates
+- Cleans up Phantom Captain tracking on despawn (decrements count, removes from
+  PhantomCaptainByPlayer and PhantomCaptainNPCIds tables)
+
+#### handleNPCHitPlayer() updates
+- Returns "Phantom Captain" as attacker name for phantom_captain type
+- Uses `heavyHitKnockback` (40 studs/s) instead of `lightHitKnockback` (15 studs/s)
+  for more punishing knockback
+
+#### AI state machine updates
+- CHASE state uses "captain_slash" attack type label for phantom_captain
+- KillNPC uses "Phantom Captain" display label for phantom_captain
+- Fires PhantomCaptainDespawned signal on phantom_captain death
+
+#### New public methods
+- `SpawnPhantomCaptain(targetPlayer)` — spawns 25 studs from target, returns NPCEntry
+- `DespawnPhantomCaptain(targetPlayer)` — kills and despawns the player's captain
+- `SpawnNPCAt` updated to handle phantom_captain type with warning
+
+### ThreatEffectsService.lua changes
+- Added `PhantomCaptainNPCs` tracking table (Player → NPC ID)
+- **onDoomedEnter()**: Replaced stub with `NPCService:SpawnPhantomCaptain(player)`,
+  stores NPC ID in PhantomCaptainNPCs table
+- **onDoomedExit()**: Replaced stub with `NPCService:DespawnPhantomCaptain(player)`,
+  cleans up PhantomCaptainNPCs entry
+- **onPlayerRemoving()**: Despawns Phantom Captain on disconnect via DespawnPhantomCaptain
+- **NPCDied listener**: Cleans up PhantomCaptainNPCs when captain dies naturally
+  (no respawn, unlike bonus skeletons which respawn after 10s)
+
+### Design decisions
+- Phantom Captain uses `forcedTarget` (existing field) so AI automatically skips
+  leash/aggro timeout checks and exclusively chases the assigned player
+- Phantom Captain uses `isBonusNPC = true` so it's excluded from normal budget
+  counting and respawn queues
+- 200-stud aggro range is effectively unlimited for the island — ensures the captain
+  always finds and chases its target
+- Heavy knockback (40 studs/s vs 15 studs/s for skeletons) makes combat feel dangerous
+- Shorter flinch (0.15s vs 0.3s for skeletons) makes the captain feel more imposing —
+  it barely reacts to hits
+- Faster attack cooldown (1.8s vs 2.5s for skeletons) creates pressure
+- No lunge attack (existing code only allows skeletons to lunge) — captain relies on
+  faster slashes and relentless pursuit
+- Captain does not respawn after death (unlike bonus skeletons) — killing it is a
+  genuine achievement that provides 100-200 bonus doubloons
+
+### Acceptance criteria verification
+- [x] Spawns when player threat reaches 80+ (Doomed tier)
+      (ThreatEffectsService.onDoomedEnter → NPCService:SpawnPhantomCaptain)
+- [x] 30 HP, 1.1x player speed (GameConfig.PhantomCaptain.hp/speedMultiplier)
+- [x] Attack causes 3.0s ragdoll and 30% loot spill
+      (slashRagdollDuration = 3.0, slashLootSpillPercent = 0.30)
+- [x] Hunts only the triggering player (forcedTarget = targetPlayer)
+- [x] Drops 100-200 bonus + carried doubloons on death
+      (deathBonusMin = 100, deathBonusMax = 200, existing KillNPC loot drop)
+- [x] Max 1 per player, max 3 per server (enforced in spawnPhantomCaptain caps)
+- [x] Despawns when target's threat resets
+      (ThreatEffectsService.onDoomedExit → NPCService:DespawnPhantomCaptain)
+
+### Notes for next developer
+- Roblox Studio MCP was not available for in-game testing; verified via StyLua
+  formatting check across all modified files
+- Selene linting skipped due to pre-existing rokit PATH issue
+- The Phantom Captain model is created programmatically in createPhantomCaptainModel()
+  — when proper artist models are available, replace the body construction with a
+  model clone from ReplicatedStorage
+- The PhantomCaptainSpawned/PhantomCaptainDespawned client signals can be used by
+  future client controllers for dramatic spawn VFX (dark mist, thunder sound, etc.)
+- SessionState already has `phantomCaptainActive` boolean (Types.lua line 84) — a
+  future controller could use this for UI indicators or screen effects
+- The captain's attack type is "captain_slash" in the AI state machine — this can
+  be used to differentiate animations or SFX from normal skeleton slashes
+- To make the captain even more challenging, consider adding a special "captain_lunge"
+  attack in a future iteration
+- Next priorities: NPC-009 (night NPC modifiers), SHIP-005 (ship lock visuals),
+  SHIP-006 (ship tier progression), UI-005 (minimap)

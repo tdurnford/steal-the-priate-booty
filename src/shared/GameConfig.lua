@@ -446,13 +446,29 @@ GameConfig.GhostPirate = {
 GameConfig.PhantomCaptain = {
   hp = 30,
   speedMultiplier = 1.1,
-  ragdollDuration = 3.0, -- seconds on hit
-  lootSpillPercent = 0.30, -- 30%
+  aggroRange = 200, -- effectively unlimited: hunts specific target across map
+
+  -- Captain's slash attack (enhanced)
+  slashWindup = 0.6, -- seconds (fast, dangerous)
+  slashRange = 9, -- studs (slightly longer reach)
+  slashCooldown = 1.8, -- seconds (attacks faster than skeletons)
+  slashRagdollDuration = 3.0, -- seconds (punishing ragdoll)
+  slashLootSpillPercent = 0.30, -- 30% spill on hit
+
+  -- Flinch (shorter than skeleton — more imposing)
+  flinchDuration = 0.15, -- seconds
+
+  -- Loot
   deathBonusMin = 100,
   deathBonusMax = 200,
+
+  -- Spawn rules
   spawnThreatThreshold = 80, -- spawns at Doomed threat tier
   maxPerPlayer = 1,
   maxPerServer = 3,
+
+  -- Display
+  displayName = "Phantom Captain",
 }
 
 --------------------------------------------------------------------------------

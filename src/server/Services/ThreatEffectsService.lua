@@ -11,7 +11,7 @@
     - Cursed (60-79): All NPCs within 60 studs gain +20% speed;
       30% chance containers near this player are traps (mini explosion on break);
       client shows ghostly green footprints visible to other players
-    - Doomed (80-100): Phantom Captain spawns to hunt this player (NPC-008 stub);
+    - Doomed (80-100): Phantom Captain elite NPC spawns to hunt this player (NPC-008);
       dark aura + ghostly particles visible to all players
 
   Per-player tracking:
@@ -90,8 +90,11 @@ local UneasyPlayers: { [Player]: boolean } = {} -- players at Uneasy+ tier
 -- Cursed+ player tracking for footprints
 local CursedPlayers: { [Player]: boolean } = {}
 
--- Doomed player tracking for dark aura
+-- Doomed player tracking for dark aura and Phantom Captain
 local DoomedPlayers: { [Player]: boolean } = {}
+
+-- Phantom Captain tracking per player (NPC-008)
+local PhantomCaptainNPCs: { [Player]: number } = {} -- player → npcId
 
 -- Dark aura BillboardGui tracking per player
 local DarkAuraGuis: { [Player]: BillboardGui } = {}
@@ -416,13 +419,13 @@ local function reattachGhostlyFootprints(player: Player)
 end
 
 --------------------------------------------------------------------------------
--- DOOMED TIER — PHANTOM CAPTAIN STUB
+-- DOOMED TIER — PHANTOM CAPTAIN (NPC-008)
 --------------------------------------------------------------------------------
 
 --[[
   Handles entering Doomed tier for a player.
-  When NPC-008 is implemented, this will spawn the Phantom Captain.
-  For now, sets the session state flag and logs a warning.
+  Spawns a Phantom Captain elite NPC to hunt this player.
+  Also creates dark aura visual effect.
 ]]
 local function onDoomedEnter(player: Player)
   DoomedPlayers[player] = true
@@ -438,18 +441,32 @@ local function onDoomedEnter(player: Player)
   -- Notify all clients
   ThreatEffectsService.Client.DarkAuraChanged:FireAll(player.UserId, true)
 
-  -- TODO(NPC-008): Spawn Phantom Captain here
-  -- local captainEntry = NPCService:SpawnPhantomCaptain(player)
-  warn(
-    string.format(
-      "[ThreatEffectsService] %s reached Doomed tier — Phantom Captain spawn deferred (NPC-008 not implemented)",
-      player.Name
-    )
-  )
+  -- Spawn Phantom Captain (NPC-008)
+  if NPCService then
+    local captainEntry = NPCService:SpawnPhantomCaptain(player)
+    if captainEntry then
+      PhantomCaptainNPCs[player] = captainEntry.id
+      print(
+        string.format(
+          "[ThreatEffectsService] %s reached Doomed tier — Phantom Captain #%d spawned",
+          player.Name,
+          captainEntry.id
+        )
+      )
+    else
+      warn(
+        string.format(
+          "[ThreatEffectsService] %s reached Doomed tier — Phantom Captain spawn failed (server cap?)",
+          player.Name
+        )
+      )
+    end
+  end
 end
 
 --[[
   Handles leaving Doomed tier for a player.
+  Despawns the Phantom Captain and removes dark aura.
 ]]
 local function onDoomedExit(player: Player)
   DoomedPlayers[player] = nil
@@ -465,7 +482,11 @@ local function onDoomedExit(player: Player)
   -- Notify all clients
   ThreatEffectsService.Client.DarkAuraChanged:FireAll(player.UserId, false)
 
-  -- TODO(NPC-008): Despawn Phantom Captain here
+  -- Despawn Phantom Captain (NPC-008)
+  if NPCService and PhantomCaptainNPCs[player] then
+    NPCService:DespawnPhantomCaptain(player)
+    PhantomCaptainNPCs[player] = nil
+  end
 end
 
 --------------------------------------------------------------------------------
@@ -741,11 +762,17 @@ end
 --------------------------------------------------------------------------------
 
 local function onPlayerRemoving(player: Player)
-  -- Clean up Doomed effects
+  -- Clean up Doomed effects and Phantom Captain (NPC-008)
   if DoomedPlayers[player] then
     removeDarkAura(player)
     ThreatEffectsService.Client.DarkAuraChanged:FireAll(player.UserId, false)
     DoomedPlayers[player] = nil
+
+    -- Despawn Phantom Captain
+    if NPCService and PhantomCaptainNPCs[player] then
+      NPCService:DespawnPhantomCaptain(player)
+      PhantomCaptainNPCs[player] = nil
+    end
   end
 
   -- Clean up Cursed effects
@@ -836,6 +863,7 @@ function ThreatEffectsService:KnitStart()
 
   -- Listen for bonus NPC deaths — respawn if player still Hunted
   NPCService.NPCDied:Connect(function(npcEntry, _killedByPlayer)
+    -- Check if this is a bonus skeleton death
     for player, bonus in BonusNPCs do
       if bonus.npcId == npcEntry.id then
         BonusNPCs[player] = nil
@@ -852,9 +880,29 @@ function ThreatEffectsService:KnitStart()
         break
       end
     end
+
+    -- Check if this is a Phantom Captain death (NPC-008)
+    -- Phantom Captains do NOT respawn — they are one-time spawns per Doomed entry
+    if npcEntry.npcType == "phantom_captain" then
+      for player, captainId in PhantomCaptainNPCs do
+        if captainId == npcEntry.id then
+          PhantomCaptainNPCs[player] = nil
+          print(
+            string.format(
+              "[ThreatEffectsService] Phantom Captain #%d (targeting %s) was killed — no respawn",
+              npcEntry.id,
+              player.Name
+            )
+          )
+          break
+        end
+      end
+    end
   end)
 
-  print("[ThreatEffectsService] Started — listening for threat tier transitions (tiers 1-5)")
+  print(
+    "[ThreatEffectsService] Started — listening for threat tier transitions (tiers 1-5, Phantom Captain NPC-008)"
+  )
 end
 
 return ThreatEffectsService

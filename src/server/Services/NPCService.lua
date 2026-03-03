@@ -5,6 +5,7 @@
   Handles:
     - Cursed Skeleton entity creation with Humanoid, HP, and stats
     - Ghost Pirate entity creation (NPC-007): semi-transparent, spectral slash, night-only
+    - Phantom Captain entity creation (NPC-008): elite dark-aura NPC, hunts Doomed players
     - NPC AI state machine: Idle → Patrol → Chase → Attack → Flinch → Dead
     - Skeleton slash attack (0.8s windup, 8 stud range, 2s cooldown)
     - Skeleton lunge attack (0.5s crouch telegraph, 6 stud dash + slash, 5s cooldown)
@@ -86,6 +87,12 @@ local NPCService = Knit.CreateService({
     -- Fired to ALL players when an NPC picks up doubloons (NPC-002).
     -- Args: (npcId: number, position: Vector3, amount: number, newTotal: number)
     NPCLootPickup = Knit.CreateSignal(),
+    -- Fired to ALL players when a Phantom Captain spawns (NPC-008).
+    -- Args: (npcId: number, targetUserId: number, position: Vector3)
+    PhantomCaptainSpawned = Knit.CreateSignal(),
+    -- Fired to ALL players when a Phantom Captain despawns (NPC-008).
+    -- Args: (npcId: number)
+    PhantomCaptainDespawned = Knit.CreateSignal(),
   },
 })
 
@@ -123,6 +130,7 @@ local PLAYER_BASE_SPEED = 16
 -- NPC config shorthand
 local SKELETON = GameConfig.CursedSkeleton
 local GHOST_PIRATE = GameConfig.GhostPirate
+local PHANTOM_CAPTAIN = GameConfig.PhantomCaptain
 local NPC_BEHAVIOR = GameConfig.NPCBehavior
 
 --[[
@@ -132,6 +140,8 @@ local NPC_BEHAVIOR = GameConfig.NPCBehavior
 local function getNPCConfig(npcType: string)
   if npcType == "ghost_pirate" then
     return GHOST_PIRATE
+  elseif npcType == "phantom_captain" then
+    return PHANTOM_CAPTAIN
   end
   return SKELETON
 end
@@ -232,6 +242,11 @@ local BudgetGhostPirateCount = 0
 
 -- Track all Ghost Pirate NPC IDs for Dawn despawn
 local GhostPirateNPCIds: { [number]: boolean } = {}
+
+-- Phantom Captain tracking (NPC-008)
+local PhantomCaptainCount = 0 -- active Phantom Captain count (separate from budget)
+local PhantomCaptainByPlayer: { [Player]: number } = {} -- player → npcId
+local PhantomCaptainNPCIds: { [number]: boolean } = {} -- for tracking/cleanup
 
 -- Patrol waypoints per zone (NPC-003)
 -- Key: zone name, Value: ordered list of Vector3 positions
@@ -955,6 +970,220 @@ local function createGhostPirateModel(position: Vector3, npcId: number): (Model,
   return model, humanoid, rootPart
 end
 
+--[[
+  Creates a Phantom Captain NPC model at the given position.
+  Imposing dark-aura elite NPC. Distinct from normal skeletons — larger, darker,
+  with purple/red glow and dark particle effects.
+  @param position World position
+  @param npcId Unique NPC ID
+  @return The created Model, Humanoid, and HumanoidRootPart
+]]
+local function createPhantomCaptainModel(
+  position: Vector3,
+  npcId: number
+): (Model, Humanoid, BasePart)
+  local model = Instance.new("Model")
+  model.Name = "PhantomCaptain_" .. tostring(npcId)
+
+  -- Root part (slightly larger than normal skeletons)
+  local rootPart = Instance.new("Part")
+  rootPart.Name = "HumanoidRootPart"
+  rootPart.Size = Vector3.new(2.4, 2.4, 1.2)
+  rootPart.Transparency = 1
+  rootPart.CanCollide = false
+  rootPart.Anchored = false
+  rootPart.CFrame = CFrame.new(position + Vector3.new(0, 3, 0))
+  rootPart.Parent = model
+
+  -- Dark imposing torso
+  local torso = Instance.new("Part")
+  torso.Name = "Torso"
+  torso.Size = Vector3.new(2.4, 2.4, 1.2)
+  torso.Color = Color3.fromRGB(30, 10, 40) -- near-black purple
+  torso.Material = Enum.Material.SmoothPlastic
+  torso.CanCollide = false
+  torso.Anchored = false
+  torso.CFrame = rootPart.CFrame
+  torso.Parent = model
+
+  local torsoWeld = Instance.new("Weld")
+  torsoWeld.Part0 = rootPart
+  torsoWeld.Part1 = torso
+  torsoWeld.C0 = CFrame.new()
+  torsoWeld.Parent = rootPart
+
+  -- Dark aura particle emitter on torso
+  local darkAura = Instance.new("ParticleEmitter")
+  darkAura.Name = "CaptainAura"
+  darkAura.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 20, 120)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(40, 0, 60)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(20, 0, 30)),
+  })
+  darkAura.Size = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0),
+    NumberSequenceKeypoint.new(0.3, 2.0),
+    NumberSequenceKeypoint.new(1, 0),
+  })
+  darkAura.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0.4),
+    NumberSequenceKeypoint.new(0.5, 0.6),
+    NumberSequenceKeypoint.new(1, 1),
+  })
+  darkAura.Lifetime = NumberRange.new(1.0, 2.0)
+  darkAura.Rate = 20
+  darkAura.Speed = NumberRange.new(0.5, 2.0)
+  darkAura.SpreadAngle = Vector2.new(180, 180)
+  darkAura.RotSpeed = NumberRange.new(-45, 45)
+  darkAura.Parent = torso
+
+  -- Skull head (larger, darker)
+  local head = Instance.new("Part")
+  head.Name = "Head"
+  head.Shape = Enum.PartType.Ball
+  head.Size = Vector3.new(1.5, 1.5, 1.5)
+  head.Color = Color3.fromRGB(50, 30, 60) -- dark skull
+  head.Material = Enum.Material.SmoothPlastic
+  head.CanCollide = false
+  head.Anchored = false
+  head.CFrame = rootPart.CFrame * CFrame.new(0, 1.8, 0)
+  head.Parent = model
+
+  local headWeld = Instance.new("Weld")
+  headWeld.Part0 = torso
+  headWeld.Part1 = head
+  headWeld.C0 = CFrame.new(0, 1.8, 0)
+  headWeld.Parent = torso
+
+  -- Left arm
+  local leftArm = Instance.new("Part")
+  leftArm.Name = "Left Arm"
+  leftArm.Size = Vector3.new(0.7, 2.2, 0.7)
+  leftArm.Color = Color3.fromRGB(40, 20, 50)
+  leftArm.Material = Enum.Material.SmoothPlastic
+  leftArm.CanCollide = false
+  leftArm.Anchored = false
+  leftArm.Parent = model
+
+  local leftArmWeld = Instance.new("Weld")
+  leftArmWeld.Part0 = torso
+  leftArmWeld.Part1 = leftArm
+  leftArmWeld.C0 = CFrame.new(-1.5, 0, 0)
+  leftArmWeld.Parent = torso
+
+  -- Right arm (holds imposing cutlass)
+  local rightArm = Instance.new("Part")
+  rightArm.Name = "Right Arm"
+  rightArm.Size = Vector3.new(0.7, 2.2, 0.7)
+  rightArm.Color = Color3.fromRGB(40, 20, 50)
+  rightArm.Material = Enum.Material.SmoothPlastic
+  rightArm.CanCollide = false
+  rightArm.Anchored = false
+  rightArm.Parent = model
+
+  local rightArmWeld = Instance.new("Weld")
+  rightArmWeld.Part0 = torso
+  rightArmWeld.Part1 = rightArm
+  rightArmWeld.C0 = CFrame.new(1.5, 0, 0)
+  rightArmWeld.Parent = torso
+
+  -- Left leg
+  local leftLeg = Instance.new("Part")
+  leftLeg.Name = "Left Leg"
+  leftLeg.Size = Vector3.new(0.9, 2.2, 0.9)
+  leftLeg.Color = Color3.fromRGB(30, 15, 40)
+  leftLeg.Material = Enum.Material.SmoothPlastic
+  leftLeg.CanCollide = false
+  leftLeg.Anchored = false
+  leftLeg.Parent = model
+
+  local leftLegWeld = Instance.new("Weld")
+  leftLegWeld.Part0 = torso
+  leftLegWeld.Part1 = leftLeg
+  leftLegWeld.C0 = CFrame.new(-0.6, -2.3, 0)
+  leftLegWeld.Parent = torso
+
+  -- Right leg
+  local rightLeg = Instance.new("Part")
+  rightLeg.Name = "Right Leg"
+  rightLeg.Size = Vector3.new(0.9, 2.2, 0.9)
+  rightLeg.Color = Color3.fromRGB(30, 15, 40)
+  rightLeg.Material = Enum.Material.SmoothPlastic
+  rightLeg.CanCollide = false
+  rightLeg.Anchored = false
+  rightLeg.Parent = model
+
+  local rightLegWeld = Instance.new("Weld")
+  rightLegWeld.Part0 = torso
+  rightLegWeld.Part1 = rightLeg
+  rightLegWeld.C0 = CFrame.new(0.6, -2.3, 0)
+  rightLegWeld.Parent = torso
+
+  -- Captain's imposing cutlass (larger, darker, with glow)
+  local cutlass = Instance.new("Part")
+  cutlass.Name = "Cutlass"
+  cutlass.Size = Vector3.new(0.3, 3.5, 0.5)
+  cutlass.Color = Color3.fromRGB(60, 20, 80) -- dark purple blade
+  cutlass.Material = Enum.Material.Metal
+  cutlass.CanCollide = false
+  cutlass.Anchored = false
+  cutlass.Parent = model
+
+  local cutlassWeld = Instance.new("Weld")
+  cutlassWeld.Part0 = rightArm
+  cutlassWeld.Part1 = cutlass
+  cutlassWeld.C0 = CFrame.new(0, -1.7, 0) * CFrame.Angles(0, 0, math.rad(15))
+  cutlassWeld.Parent = rightArm
+
+  -- Cutlass glow
+  local bladeGlow = Instance.new("PointLight")
+  bladeGlow.Color = Color3.fromRGB(160, 50, 200)
+  bladeGlow.Brightness = 0.6
+  bladeGlow.Range = 6
+  bladeGlow.Parent = cutlass
+
+  -- Menacing eye glow (red/purple)
+  local eyeGlow = Instance.new("PointLight")
+  eyeGlow.Color = Color3.fromRGB(200, 50, 80) -- red-purple
+  eyeGlow.Brightness = 1.5
+  eyeGlow.Range = 8
+  eyeGlow.Parent = head
+
+  -- Dark PointLight on torso
+  local darkLight = Instance.new("PointLight")
+  darkLight.Name = "CaptainGlow"
+  darkLight.Color = Color3.fromRGB(100, 30, 160)
+  darkLight.Brightness = 1.0
+  darkLight.Range = 12
+  darkLight.Parent = torso
+
+  -- Humanoid
+  local humanoid = Instance.new("Humanoid")
+  humanoid.MaxHealth = PHANTOM_CAPTAIN.hp
+  humanoid.Health = PHANTOM_CAPTAIN.hp
+  humanoid.WalkSpeed = PLAYER_BASE_SPEED * PHANTOM_CAPTAIN.speedMultiplier
+  humanoid.JumpPower = 50
+  humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
+  humanoid.HealthDisplayDistance = 50
+  humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOn
+  humanoid.NameDisplayDistance = 60
+  humanoid.DisplayName = PHANTOM_CAPTAIN.displayName
+  humanoid.Parent = model
+
+  model.PrimaryPart = rootPart
+
+  -- Store metadata as attributes for hit detection
+  for _, part in model:GetChildren() do
+    if part:IsA("BasePart") then
+      part:SetAttribute("NPCId", npcId)
+      part:SetAttribute("NPCType", "phantom_captain")
+    end
+  end
+
+  model.Parent = NPCsFolder
+  return model, humanoid, rootPart
+end
+
 --------------------------------------------------------------------------------
 -- HELPER FUNCTIONS
 --------------------------------------------------------------------------------
@@ -1395,6 +1624,145 @@ local function spawnGhostPirate(position: Vector3, zone: string, spawnPoint: Par
 end
 
 --[[
+  Spawns a Phantom Captain NPC at the given position, targeting a specific player.
+  Phantom Captains are elite NPCs that hunt only their assigned target.
+  They don't count toward normal NPC budget and don't respawn.
+  @param position World position
+  @param targetPlayer The player this Phantom Captain hunts
+  @return The NPC entry, or nil if spawn failed (at server cap)
+]]
+local function spawnPhantomCaptain(position: Vector3, targetPlayer: Player): NPCEntry?
+  -- Enforce server cap
+  if PhantomCaptainCount >= PHANTOM_CAPTAIN.maxPerServer then
+    warn(
+      string.format(
+        "[NPCService] Cannot spawn Phantom Captain: server cap reached (%d/%d)",
+        PhantomCaptainCount,
+        PHANTOM_CAPTAIN.maxPerServer
+      )
+    )
+    return nil
+  end
+
+  -- Enforce per-player cap
+  if PhantomCaptainByPlayer[targetPlayer] then
+    warn(
+      string.format(
+        "[NPCService] Cannot spawn Phantom Captain: %s already has one active",
+        targetPlayer.Name
+      )
+    )
+    return nil
+  end
+
+  local npcId = nextNPCId
+  nextNPCId = nextNPCId + 1
+
+  local model, humanoid, rootPart = createPhantomCaptainModel(position, npcId)
+
+  local entry: NPCEntry = {
+    id = npcId,
+    npcType = "phantom_captain",
+    hp = PHANTOM_CAPTAIN.hp,
+    maxHp = PHANTOM_CAPTAIN.hp,
+    model = model,
+    humanoid = humanoid,
+    rootPart = rootPart,
+    position = position,
+    spawnPosition = position,
+    spawnPoint = nil,
+    zone = "phantom_captain",
+
+    aiState = AI_STATE.IDLE,
+    aiStateStartTime = os.clock(),
+    targetPlayer = nil,
+    lastSlashTime = 0,
+    lastLungeTime = 0,
+    lastPatrolMoveTime = 0,
+    patrolTarget = nil,
+    carriedDoubloons = 0,
+
+    -- SimplePath patrol and chase
+    simplePath = nil,
+    patrolWaypoints = {},
+    patrolWaypointIndex = 0,
+
+    -- SimplePath chase tracking
+    lastChaseRecalcTime = 0,
+    chaseStuckPos = nil,
+    chaseStuckTime = 0,
+    harborWaitStart = nil,
+
+    flinchEndTime = 0,
+
+    lungeTarget = nil,
+    lungeStartTime = 0,
+
+    -- Phantom Captains don't pick up loot
+    lastLootScanTime = 0,
+    lootTargetPosition = nil,
+    coinPurseTier = 0,
+
+    respawnTime = nil,
+    alive = true,
+
+    -- Always targets the assigned player
+    forcedTarget = targetPlayer,
+    isBonusNPC = true, -- doesn't count toward normal budget
+
+    isDormant = false,
+  }
+
+  -- Create SimplePath instance for pathfinding
+  local path = SimplePath.new(model, AGENT_PARAMS)
+  entry.simplePath = path
+  -- No patrol waypoints — Phantom Captain goes straight to chase
+  entry.patrolWaypoints = {}
+  entry.patrolWaypointIndex = 0
+
+  -- Wire SimplePath signals (chase only — Phantom Captain doesn't patrol)
+  path.Reached:Connect(function()
+    if entry.aiState == AI_STATE.CHASE then
+      entry.lastChaseRecalcTime = 0
+    end
+  end)
+  path.Blocked:Connect(function()
+    if entry.aiState == AI_STATE.CHASE then
+      entry.lastChaseRecalcTime = 0
+    end
+  end)
+  path.Error:Connect(function()
+    if entry.aiState == AI_STATE.CHASE then
+      entry.lastChaseRecalcTime = 0
+    end
+  end)
+
+  ActiveNPCs[npcId] = entry
+  ActiveNPCCount = ActiveNPCCount + 1
+
+  -- Track Phantom Captain
+  PhantomCaptainCount = PhantomCaptainCount + 1
+  PhantomCaptainByPlayer[targetPlayer] = npcId
+  PhantomCaptainNPCIds[npcId] = true
+
+  -- Fire signals
+  NPCService.Client.NPCSpawned:FireAll(npcId, "phantom_captain", position)
+  NPCService.Client.PhantomCaptainSpawned:FireAll(npcId, targetPlayer.UserId, position)
+
+  print(
+    string.format(
+      "[NPCService] Spawned Phantom Captain #%d targeting %s (active: %d/%d)",
+      npcId,
+      targetPlayer.Name,
+      PhantomCaptainCount,
+      PHANTOM_CAPTAIN.maxPerServer
+    )
+  )
+
+  return entry
+end
+
+--[[
   Removes an NPC from the world. Decrements budget counters and frees spawn points.
   @param npcId The NPC instance ID
 ]]
@@ -1420,6 +1788,19 @@ local function despawnNPC(npcId: number)
 
   -- Clean up Ghost Pirate tracking
   GhostPirateNPCIds[npcId] = nil
+
+  -- Clean up Phantom Captain tracking (NPC-008)
+  if PhantomCaptainNPCIds[npcId] then
+    PhantomCaptainNPCIds[npcId] = nil
+    PhantomCaptainCount = math.max(0, PhantomCaptainCount - 1)
+    -- Remove from per-player tracking
+    for player, captainId in PhantomCaptainByPlayer do
+      if captainId == npcId then
+        PhantomCaptainByPlayer[player] = nil
+        break
+      end
+    end
+  end
 
   -- Clean up SimplePath (NPC-003)
   if entry.simplePath then
@@ -1694,7 +2075,10 @@ local function handleNPCHitPlayer(entry: NPCEntry, target: Player)
     SessionStateService:SetBlocking(target, false)
   else
     ragdollDuration = config.slashRagdollDuration
-    knockbackForce = GameConfig.Ragdoll.lightHitKnockback
+    -- Phantom Captain uses heavy knockback (elite NPC); others use light
+    knockbackForce = if entry.npcType == "phantom_captain"
+      then GameConfig.Ragdoll.heavyHitKnockback
+      else GameConfig.Ragdoll.lightHitKnockback
     spillPercent = config.slashLootSpillPercent
   end
 
@@ -1716,7 +2100,14 @@ local function handleNPCHitPlayer(entry: NPCEntry, target: Player)
   end
 
   -- Send ragdoll trigger to target via CombatService client signal
-  local attackerName = if entry.npcType == "ghost_pirate" then "Ghost Pirate" else "Cursed Skeleton"
+  local attackerName
+  if entry.npcType == "ghost_pirate" then
+    attackerName = "Ghost Pirate"
+  elseif entry.npcType == "phantom_captain" then
+    attackerName = "Phantom Captain"
+  else
+    attackerName = "Cursed Skeleton"
+  end
   local CombatService = Knit.GetService("CombatService")
   if CombatService then
     if targetIsBlocking then
@@ -2033,7 +2424,14 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
 
       if now - entry.lastSlashTime >= config.slashCooldown then
         -- Start slash attack
-        local attackType = if entry.npcType == "ghost_pirate" then "spectral_slash" else "slash"
+        local attackType
+        if entry.npcType == "ghost_pirate" then
+          attackType = "spectral_slash"
+        elseif entry.npcType == "phantom_captain" then
+          attackType = "captain_slash"
+        else
+          attackType = "slash"
+        end
         setState(entry, AI_STATE.ATTACK_SLASH)
         -- Face target
         if entry.rootPart then
@@ -2256,10 +2654,22 @@ function NPCService:KillNPC(npcId: number, killedByPlayer: Player?)
   -- Notify clients
   NPCService.Client.NPCDied:FireAll(npcId, entry.npcType, deathPosition)
 
+  -- Phantom Captain death: fire dedicated signal (NPC-008)
+  if entry.npcType == "phantom_captain" then
+    NPCService.Client.PhantomCaptainDespawned:FireAll(npcId)
+  end
+
   -- Fire server signal
   NPCService.NPCDied:Fire(entry, killedByPlayer)
 
-  local npcLabel = if entry.npcType == "ghost_pirate" then "Ghost Pirate" else "Skeleton"
+  local npcLabel
+  if entry.npcType == "ghost_pirate" then
+    npcLabel = "Ghost Pirate"
+  elseif entry.npcType == "phantom_captain" then
+    npcLabel = "Phantom Captain"
+  else
+    npcLabel = "Skeleton"
+  end
   print(
     string.format(
       "[NPCService] %s #%d killed by %s — dropped %d doubloons (%d bonus + %d carried)",
@@ -2342,6 +2752,9 @@ function NPCService:SpawnNPCAt(npcType: string, position: Vector3): any
     return spawnSkeleton(position, "manual", nil)
   elseif npcType == "ghost_pirate" then
     return spawnGhostPirate(position, "manual", nil)
+  elseif npcType == "phantom_captain" then
+    warn("[NPCService] Use SpawnPhantomCaptain(player) to spawn Phantom Captains with a target")
+    return nil
   end
   warn("[NPCService] Unknown NPC type: " .. tostring(npcType))
   return nil
@@ -2429,6 +2842,69 @@ function NPCService:DespawnBonusNPC(npcId: number)
   end)
 
   print(string.format("[NPCService] Bonus NPC #%d despawned", npcId))
+end
+
+--[[
+  Spawns a Phantom Captain elite NPC that hunts a specific player.
+  Called by ThreatEffectsService when a player reaches Doomed threat tier (80+).
+  Max 1 per player, max 3 per server.
+  @param targetPlayer The player the Phantom Captain will hunt
+  @return NPCEntry or nil if spawn failed
+]]
+function NPCService:SpawnPhantomCaptain(targetPlayer: Player): any
+  local character = targetPlayer.Character
+  if not character then
+    return nil
+  end
+  local hrp = character:FindFirstChild("HumanoidRootPart")
+  if not hrp then
+    return nil
+  end
+
+  -- Spawn 25 studs away from target in a random direction
+  local angle = math.random() * math.pi * 2
+  local offset = Vector3.new(math.cos(angle) * 25, 0, math.sin(angle) * 25)
+  local spawnPos = hrp.Position + offset
+
+  return spawnPhantomCaptain(spawnPos, targetPlayer)
+end
+
+--[[
+  Despawns the Phantom Captain assigned to a specific player.
+  Called by ThreatEffectsService when a player's threat resets (ship lock, disconnect).
+  @param targetPlayer The player whose Phantom Captain should be despawned
+]]
+function NPCService:DespawnPhantomCaptain(targetPlayer: Player)
+  local npcId = PhantomCaptainByPlayer[targetPlayer]
+  if not npcId then
+    return
+  end
+
+  local entry = ActiveNPCs[npcId]
+  if not entry then
+    PhantomCaptainByPlayer[targetPlayer] = nil
+    return
+  end
+
+  if entry.alive then
+    entry.alive = false
+    setState(entry, AI_STATE.DEAD)
+    NPCService.Client.NPCDied:FireAll(npcId, "phantom_captain", entry.position)
+    NPCService.Client.PhantomCaptainDespawned:FireAll(npcId)
+  end
+
+  -- Remove after brief delay for death VFX
+  task.delay(1, function()
+    despawnNPC(npcId)
+  end)
+
+  print(
+    string.format(
+      "[NPCService] Phantom Captain #%d despawned (target: %s threat reset)",
+      npcId,
+      targetPlayer.Name
+    )
+  )
 end
 
 --[[
