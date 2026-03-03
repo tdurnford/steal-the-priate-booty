@@ -5757,3 +5757,129 @@ Created detailed Part-based 3D models for all 6 cutlass weapon tiers, replacing 
 
 ### Next priorities
 Remaining not-started features: MODEL-002 (ships), MODEL-003 (NPCs), MODEL-005 (doubloons/purses), AUDIO-001 (audio assets)
+
+## MODEL-002: Ship 3D Models (7 Tiers) — DONE (2026-03-03)
+
+### What was done
+Created detailed Part-based 3D models for all 7 ship tiers, replacing the placeholder
+colored boxes with multi-component ships featuring hulls, masts, sails, cabins, railings,
+figureheads, and tier-specific decorations.
+
+### Files created
+- `src/server/ShipModels.lua` — ~1500 lines, dedicated module with builder functions for
+  each ship tier. Follows the same pattern as `ContainerModels.lua` and `WeaponModels.lua`
+  (makePart/makeWedge helpers, shared building-block functions, builder registry, `.build()` API).
+
+### Files modified
+- `src/server/Services/ShipService.lua` — Added `require(ShipModels)`, replaced
+  `SHIP_APPEARANCE` table with `SHIP_HULL_SIZES`, rewrote `createShipModel()` to call
+  `ShipModels.build()` with a fallback to a simple box for unknown tier IDs.
+
+### Ship tier details
+
+**Tier 1 — Rowboat** (6×2×10):
+- Hull body with WedgePart bow taper
+- 2 bench seats, single oar with blade
+- Gunwale rim, keel, deck planks
+- ~12 Parts
+
+**Tier 2 — Sloop** (8×4×16):
+- Hull with bow taper, keel
+- 1 mast ("Mast" for cosmetic compat) + patchy Fabric sail + yard crossbeam
+- Stern platform, railing posts, gunwales, bowsprit, deck planks
+- ~18 Parts
+
+**Tier 3 — Schooner** (10×5×20):
+- Hull with bow taper, keel
+- 2 masts (main "Mast" + "Mast2") + 2 sails + 2 yards
+- Small cabin at stern with roof
+- Railing posts, gunwales, bowsprit, deck planks
+- ~25 Parts
+
+**Tier 4 — Brigantine** (12×6×24):
+- Hull with bow taper, keel
+- 3 masts (main + fore + mizzen) + 3 sails + 4 yards
+- Cabin with roof + 3 windows, stern platform
+- Simple carved figurehead, crow's nest on main mast
+- Ornate railing posts, gunwales, bowsprit, deck planks
+- ~35 Parts
+
+**Tier 5 — Galleon** (14×8×30):
+- Hull with bow taper, keel, gold trim edges
+- 3 tall masts + 3 wide sails + 5 yards
+- Raised stern castle + large cabin with 4 windows
+- 5 cannon ports per side, ornate figurehead
+- Crow's nest, bowsprit, gold accent PointLight
+- ~45 Parts
+
+**Tier 6 — War Galleon** (16×9×34):
+- Hull with bow taper, keel, gold trim + gold mid-hull bands
+- 3 masts + 3 sails + 7 yards (triple-yarned main mast)
+- Grand stern cabin with 5 windows, raised stern castle
+- 7 cannon ports per side
+- Dragon figurehead (angular head + jaw + horns + neon eyes)
+- 2 crow's nests, bowsprit, gold PointLight + gold ParticleEmitter shimmer
+- ~55 Parts
+
+**Tier 7 — Ghost Ship** (16×9×34):
+- Semi-transparent Neon hull (0.35 transparency)
+- 3 ghostly masts (Neon material, transparent)
+- Tattered phantom sails (0.5 transparency)
+- Ghostly stern cabin, transparent gunwales
+- Neon cannon ports, ghostly bowsprit
+- Phantom skull figurehead with neon eye sockets
+- 3 ghost fire balls on deck with blue ParticleEmitters
+- Spectral PointLight glow + ethereal wisp ParticleEmitter
+- Crow's nest in ghostly material
+- ~50 Parts
+
+### CosmeticVisualService compatibility
+- "Mast" Part name preserved for cosmetic sail/flag attachment (Size.Y = mast height)
+- "Hull" Part name preserved for hull cosmetic overrides (Color/Material)
+- Sails named "Sail", "Sail2", "Sail3" (don't conflict with "CosmeticSail" tag)
+- BillboardGui "OwnerLabel" with NameLabel + StatusLabel preserved for SHIP-005
+
+### ShipService visual indicator (SHIP-005) compatibility
+- Hull.Size used for coin pile positioning (same sizes as old SHIP_APPEARANCE)
+- Hull accepts HoldGlow PointLight, HoldShimmer ParticleEmitter
+- StatusLabel in OwnerLabel billboard for LOCKED/LOOT ABOARD
+- CoinPiles folder created by updateCoinPiles at hull-relative positions
+
+### Architecture notes
+- Shared building-block helpers: addMast, addSail, addYard, addBow (WedgeParts),
+  addBowsprit, addKeel, addGunwales, addRailingPosts, addCabin, addCabinWindows,
+  addCannonPorts, addCrowsNest, addDeckPlanks, addGoldTrim, addFigurehead
+  (simple/dragon/phantom), addSternPlatform
+- Masts use Block Parts (not Cylinders) so CosmeticVisualService can read .Size.Y as height
+- WedgeParts used for bow taper (port + starboard wedges)
+- All decorative Parts are Anchored, CanCollide=false, CanQuery=false, CanTouch=false
+- Hull is the only Part with CanCollide=true, CanQuery=true (for raycast/physics)
+- ShipService falls back to a simple box if ShipModels.build() returns nil
+- Ghost Ship includes its own spectral PointLight + wisp ParticleEmitter (moved from
+  old createShipModel inline code)
+- Tier glow effects: Galleon gets subtle gold PointLight, War Galleon gets gold PointLight +
+  shimmer ParticleEmitter, Ghost Ship gets spectral PointLight + wisp ParticleEmitter
+
+### Design decisions
+- **Part-based models, not MeshParts**: Consistent with ContainerModels.lua and
+  WeaponModels.lua. Uses Instance.new("Part") and Instance.new("WedgePart") only.
+- **Separate module**: ShipModels.lua is standalone to keep ShipService focused on dock/raid
+  logic. Same pattern as ContainerModels and WeaponModels.
+- **Block masts, not cylinders**: CosmeticVisualService reads mast.Size.Y for sail/flag
+  positioning. Cylinder Parts have Size.X as the long axis, which would break cosmetics.
+- **Default sails included**: Ships have sails by default (named "Sail", "Sail2", etc.).
+  CosmeticVisualService creates cosmetic sails named "CosmeticSail" at the same position,
+  overlapping and visually replacing the default. When cosmetic is unequipped, default shows.
+- **Progressive visual complexity**: Part count increases with tier (12→18→25→35→45→55→50),
+  matching the escalating visual impressiveness requirement.
+
+### Notes for next person
+- ShipModels.lua is at `src/server/ShipModels.lua` → maps to `ServerScriptService.Server.ShipModels`
+- To add a new ship tier: add a builder function and register it in the `BUILDERS` table
+- Hull attributes (ShipSlotIndex, ShipTierId, etc.) are set inside makeBaseShip, not by ShipService
+- The Billboard GUI (OwnerLabel) is also created by makeBaseShip — no duplication in ShipService
+- Ghost Ship ghost fire positions use hull-relative coordinates; adjust if hull size changes
+- No Roblox Studio MCP server was available for in-game testing. Code follows established
+  patterns exactly.
+- Remaining not-started features: MODEL-003 (NPCs), MODEL-005 (doubloons/purses), AUDIO-001
+  (audio assets)

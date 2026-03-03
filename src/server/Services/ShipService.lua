@@ -41,6 +41,7 @@ local GameConfig = require(Shared:WaitForChild("GameConfig"))
 
 local Server = ServerScriptService:WaitForChild("Server")
 local RateLimiter = require(Server:WaitForChild("RateLimiter"))
+local ShipModels = require(Server:WaitForChild("ShipModels"))
 
 local ShipService = Knit.CreateService({
   Name = "ShipService",
@@ -100,45 +101,17 @@ local DataService = nil
 local SessionStateService = nil
 
 --------------------------------------------------------------------------------
--- SHIP APPEARANCE (placeholder models — simple colored boxes per tier)
+-- SHIP HULL SIZES (used by fallback model and referenced by visual indicator code)
 --------------------------------------------------------------------------------
 
-local SHIP_APPEARANCE = {
-  rowboat = {
-    size = Vector3.new(6, 2, 10),
-    color = Color3.fromRGB(139, 90, 43),
-    material = Enum.Material.Wood,
-  },
-  sloop = {
-    size = Vector3.new(8, 4, 16),
-    color = Color3.fromRGB(160, 100, 50),
-    material = Enum.Material.Wood,
-  },
-  schooner = {
-    size = Vector3.new(10, 5, 20),
-    color = Color3.fromRGB(130, 80, 40),
-    material = Enum.Material.Wood,
-  },
-  brigantine = {
-    size = Vector3.new(12, 6, 24),
-    color = Color3.fromRGB(100, 70, 35),
-    material = Enum.Material.Wood,
-  },
-  galleon = {
-    size = Vector3.new(14, 8, 30),
-    color = Color3.fromRGB(80, 55, 30),
-    material = Enum.Material.Wood,
-  },
-  war_galleon = {
-    size = Vector3.new(16, 9, 34),
-    color = Color3.fromRGB(60, 40, 25),
-    material = Enum.Material.Wood,
-  },
-  ghost_ship = {
-    size = Vector3.new(16, 9, 34),
-    color = Color3.fromRGB(120, 140, 180),
-    material = Enum.Material.Neon,
-  },
+local SHIP_HULL_SIZES = {
+  rowboat = Vector3.new(6, 2, 10),
+  sloop = Vector3.new(8, 4, 16),
+  schooner = Vector3.new(10, 5, 20),
+  brigantine = Vector3.new(12, 6, 24),
+  galleon = Vector3.new(14, 8, 30),
+  war_galleon = Vector3.new(16, 9, 34),
+  ghost_ship = Vector3.new(16, 9, 34),
 }
 
 --------------------------------------------------------------------------------
@@ -229,8 +202,8 @@ end
 --------------------------------------------------------------------------------
 
 --[[
-  Creates a placeholder ship model at the given dock position.
-  When MODEL-001 (3D models) is implemented, replace this with proper models.
+  Creates a ship model at the given dock position using ShipModels builders.
+  Falls back to a simple box if ShipModels has no builder for the tier.
   @param shipTierDef The ship tier definition from GameConfig
   @param position World position of the dock point
   @param ownerName Display name of the ship owner
@@ -245,74 +218,47 @@ local function createShipModel(
   ownerUserId: number,
   slotIndex: number
 ): Model
-  local appearance = SHIP_APPEARANCE[shipTierDef.id] or SHIP_APPEARANCE.rowboat
+  -- Try the detailed ShipModels builder first
+  local model =
+    ShipModels.build(shipTierDef.id, shipTierDef.name, position, ownerName, ownerUserId, slotIndex)
 
-  local model = Instance.new("Model")
+  if model then
+    model.Parent = ShipsFolder
+    return model
+  end
+
+  -- Fallback: simple box model for unknown tier IDs
+  local hullSize = SHIP_HULL_SIZES[shipTierDef.id] or SHIP_HULL_SIZES.rowboat
+
+  model = Instance.new("Model")
   model.Name = "Ship_" .. ownerName .. "_Slot" .. slotIndex
 
-  -- Hull (main body)
   local hull = Instance.new("Part")
   hull.Name = "Hull"
-  hull.Size = appearance.size
-  hull.Color = appearance.color
-  hull.Material = appearance.material
+  hull.Size = hullSize
+  hull.Color = Color3.fromRGB(139, 90, 43)
+  hull.Material = Enum.Material.Wood
   hull.Anchored = true
   hull.CanCollide = true
   hull.CanQuery = true
   hull.CanTouch = false
   hull.CastShadow = true
-  hull.CFrame = CFrame.new(position + Vector3.new(0, appearance.size.Y / 2, 0))
+  hull.CFrame = CFrame.new(position + Vector3.new(0, hullSize.Y / 2, 0))
   hull.Parent = model
 
   model.PrimaryPart = hull
 
-  -- Store metadata as attributes
   hull:SetAttribute("ShipSlotIndex", slotIndex)
   hull:SetAttribute("ShipTierId", shipTierDef.id)
   hull:SetAttribute("ShipTierName", shipTierDef.name)
   hull:SetAttribute("OwnerName", ownerName)
   hull:SetAttribute("OwnerUserId", ownerUserId)
 
-  -- Mast for ships above rowboat
-  if shipTierDef.tier >= 2 then
-    local mast = Instance.new("Part")
-    mast.Name = "Mast"
-    mast.Size = Vector3.new(0.5, appearance.size.Y * 2, 0.5)
-    mast.Color = Color3.fromRGB(100, 70, 35)
-    mast.Material = Enum.Material.Wood
-    mast.Anchored = true
-    mast.CanCollide = false
-    mast.CanQuery = false
-    mast.CanTouch = false
-    mast.CastShadow = true
-    mast.CFrame = CFrame.new(position + Vector3.new(0, appearance.size.Y + appearance.size.Y, 0))
-    mast.Parent = model
-  end
-
-  -- Ghost ship gets a spectral glow
-  if shipTierDef.id == "ghost_ship" then
-    local light = Instance.new("PointLight")
-    light.Color = Color3.fromRGB(100, 180, 255)
-    light.Brightness = 2
-    light.Range = 40
-    light.Parent = hull
-
-    local particles = Instance.new("ParticleEmitter")
-    particles.Color = ColorSequence.new(Color3.fromRGB(100, 180, 255))
-    particles.Size = NumberSequence.new(0.5, 0)
-    particles.Lifetime = NumberRange.new(1.5, 3)
-    particles.Rate = 8
-    particles.Speed = NumberRange.new(0.5, 1.5)
-    particles.SpreadAngle = Vector2.new(180, 180)
-    particles.Transparency = NumberSequence.new(0.4, 1)
-    particles.Parent = hull
-  end
-
-  -- Owner name + status billboard
+  -- Billboard
   local billboardGui = Instance.new("BillboardGui")
   billboardGui.Name = "OwnerLabel"
   billboardGui.Size = UDim2.new(0, 200, 0, 70)
-  billboardGui.StudsOffset = Vector3.new(0, appearance.size.Y + 2, 0)
+  billboardGui.StudsOffset = Vector3.new(0, hullSize.Y + 2, 0)
   billboardGui.AlwaysOnTop = false
   billboardGui.MaxDistance = 60
   billboardGui.Parent = hull
