@@ -4244,3 +4244,66 @@ The ship tier system was already fully functional from prior work:
   swap to TextLabel-based icons.
 - Next priorities: HAZARD-002 (tidal surge), HAZARD-003 (quicksand), EVENT-002 (shipwreck),
   UI-005 (minimap), UI-013 (player stats)
+
+---
+
+## 2026-03-02 — HAZARD-002: Tidal Surge Hazard
+
+### What was done
+- Created `src/server/Services/TidalSurgeService.lua` — Server-authoritative tidal surge
+  environmental hazard system. Loads surge zone Parts from workspace.TidalSurgeZones folder.
+  Each zone cycles independently: idle → warning (4s) → flood (5s) → recede (3s) → idle.
+  Idle intervals are day 90-120s, night 45-60s (from GameConfig.TidalSurge). Flood phase
+  detects players in AABB zone (with CFrame-aware rotation), applies 1.5s ragdoll, 10-15
+  stud inland push, 10% loot spill. Skips ragdolled/dashing/tutorial/harbor players. Per-
+  flood hit deduplication via hitPlayers dict (cleaned on PlayerRemoving). Displaces loose
+  doubloon pickups inland via DoubloonService:DisplacePickupsInRegion(). 25% chance to
+  reveal bonus container (60% Barrel, 40% Treasure Chest) after recede via ContainerService.
+  Client signals: SurgePhaseChanged, SurgeHit, BonusContainerRevealed. Late-join RPC:
+  GetZoneStates. Server signal: PlayerHitBySurge.
+- Created `src/client/Controllers/TidalSurgeController.lua` — Client-side VFX/SFX controller.
+  Warning phase: semi-transparent water plane fades in, rushing water buildup SFX (looped 3D).
+  Flood phase: water plane rises with ocean blue color, splash/foam particle emitter, wave
+  crash SFX, point light glow. Recede phase: water retreats and fades out. SurgeHit handler:
+  ragdoll via RagdollModule with push velocity, "Tidal surge!" notification. BonusContainerRevealed:
+  proximity-based "The tide revealed hidden treasure!" notification. Late-join sync via
+  GetZoneStates RPC. Character removal cleanup for ragdoll state.
+- Modified `src/server/Services/DoubloonService.lua` — Added DisplacePickupsInRegion() method:
+  OBB check (CFrame-aware, XZ plane) to find pickups inside a region, removes them, re-scatters
+  total value at a destination position. Used by TidalSurgeService for washing pickups inland.
+- GameConfig.TidalSurge already existed with all required values (added in CONFIG-001).
+
+### Acceptance criteria met
+- Surges occur at correct intervals (90-120s day, 45-60s night) ✓
+- 4-second warning with water recession and audio ✓
+- Players caught: 1.5s ragdoll, 10-15 stud push, 10% spill ✓
+- 25% chance to reveal hidden container after recede ✓
+- Surge displaces loose doubloons on the ground ✓
+- Hazard is server-authoritative ✓
+
+### Design decisions
+- **Zone Part orientation**: The Part's LookVector determines the "inland" direction (wave push
+  direction). Place Parts so their front face points away from the water / toward land. The Y
+  component is zeroed out to keep push horizontal.
+- **OBB for pickup displacement**: DisplacePickupsInRegion uses CFrame:PointToObjectSpace for
+  proper oriented bounding box checks, matching the server-side player detection pattern
+  (both use CFrame-aware local-space checks). This handles rotated zone Parts correctly.
+- **Hit deduplication**: Each flood cycle resets a hitPlayers dict. A player can only be hit once
+  per flood cycle, even though the Heartbeat loop continuously checks for new players entering.
+  This prevents the ragdoll-on-every-frame issue while still catching late entrants.
+- **Reuses ContainerService**: Bonus containers spawn via ContainerService:SpawnContainerAt(),
+  getting damage, VFX, loot scatter, and ambush mechanics for free.
+- **Self-contained VFX**: Like VolcanicVentController, sounds are created as 3D Sound instances
+  directly on the zone Parts rather than routing through SoundController. This gives proper
+  positional audio with RollOff distance settings.
+- **Staggered initial timers**: Zones start with 15-45s random idle timers so they don't all
+  surge at once on server start.
+
+### Notes for next developer
+- TidalSurgeZones folder: Place Parts in workspace.TidalSurgeZones to define surge areas.
+  Each Part's front face (LookVector) should point inland. If the folder is empty, surges
+  are disabled gracefully.
+- Night intervals are halved (45-60s vs 90-120s) via DayNightService:IsNight() check on each
+  new idle timer.
+- Next priorities: HAZARD-003 (quicksand), HAZARD-004 (rogue wave), EVENT-003 (loot surge),
+  UI-005 (minimap), UI-013 (player stats)

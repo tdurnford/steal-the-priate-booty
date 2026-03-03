@@ -298,6 +298,55 @@ function DoubloonService:CollectPickupsNear(position: Vector3, radius: number): 
   return totalValue
 end
 
+--[[
+  Displaces pickups inside a region (oriented bounding box defined by CFrame + size) by
+  destroying them and re-scattering the same total value at a destination.
+  Used by TidalSurgeService to wash loose doubloons inland.
+
+  @param regionCFrame CFrame of the region center (defines orientation)
+  @param size Region size in local space
+  @param destination Position to scatter displaced pickups around
+  @param scatterRadius Radius around destination for scattering
+  @return Number of pickups displaced
+]]
+function DoubloonService:DisplacePickupsInRegion(
+  regionCFrame: CFrame,
+  size: Vector3,
+  destination: Vector3,
+  scatterRadius: number
+): number
+  local halfSize = size / 2
+  local totalValue = 0
+  local displacedCount = 0
+  local i = 1
+
+  while i <= #ActivePickups do
+    local pickup = ActivePickups[i]
+    local localPos = regionCFrame:PointToObjectSpace(pickup.position)
+
+    -- OBB check (XZ plane, ignore Y for ground-level pickups)
+    local inRegion = math.abs(localPos.X) <= halfSize.X and math.abs(localPos.Z) <= halfSize.Z
+
+    if inRegion then
+      totalValue = totalValue + pickup.value
+      displacedCount = displacedCount + 1
+      if pickup.part and pickup.part.Parent then
+        pickup.part:Destroy()
+      end
+      table.remove(ActivePickups, i)
+    else
+      i = i + 1
+    end
+  end
+
+  -- Re-scatter the displaced value at the destination
+  if totalValue > 0 then
+    self:ScatterDoubloons(destination, totalValue, scatterRadius)
+  end
+
+  return displacedCount
+end
+
 --------------------------------------------------------------------------------
 -- DESPAWN LOGIC
 --------------------------------------------------------------------------------
