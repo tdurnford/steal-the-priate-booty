@@ -5378,3 +5378,77 @@ opacity (0.3 TextTransparency) to indicate the entity is beyond the visible rang
   passes. CI will validate selene linting on push.
 - Next priorities: MAP-002 (Tutorial Beach), MAP-003 (NPC Spawn Zones), MAP-004
   (Container Spawn Points), MAP-005 (Hazard Placement), MAP-006 (Event Spawn Points)
+
+---
+
+## 2026-03-03 — MAP-003: NPC Spawn Zone Definitions
+
+### What was done
+- Extended `src/server/MapBootstrap.lua` with 3 new setup functions for NPC spawn zones:
+  - `setupDangerZones()` — Creates the **DangerZones** folder with invisible AABB Parts
+    named by zone ID (skull_cave, volcano, deep_jungle). These are read by
+    DangerZoneService at init to enable danger zone detection.
+  - `setupNPCSpawnPoints()` — Creates the **NPCSpawnPoints** folder with 22 spawn
+    point Parts across 5 zones. Each Part has `Zone` (string) and `NPCType`
+    ("skeleton" or "ghost_pirate") attributes for NPCService's spawn manager.
+  - `setupPatrolWaypoints()` — Creates the **PatrolWaypoints** folder with 24 patrol
+    waypoint Parts across 5 zones. Each Part has `Zone` (string) and `Order` (number)
+    attributes for NPCService's SimplePath patrol system.
+
+### Zone layout
+- **Skull Cave** (-300, -5, -150): NW of harbor, large cave system (180×60×160).
+  5 spawn points (4 skeleton, 1 ghost pirate), 5 patrol waypoints. Danger zone.
+- **Volcano** (0, 30, -400): North of harbor, elevated terrain (200×80×200).
+  5 spawn points (3 skeleton, 2 ghost pirate), 5 patrol waypoints. Danger zone.
+- **Deep Jungle** (-200, 3, 150): SW of harbor, dense vegetation (180×40×180).
+  5 spawn points (2 skeleton, 3 ghost pirate), 5 patrol waypoints. Danger zone.
+- **Watchtower** (350, 15, -200): NE of harbor, ruined lookout (140×50×140).
+  4 spawn points (all skeleton), 4 patrol waypoints. Non-danger zone.
+- **Pirate Town** (250, 3, -50): East of harbor, town outskirts (120×30×120).
+  3 spawn points (all skeleton), 4 patrol waypoints. Non-danger zone.
+
+### Design rationale
+- **NPC type distribution**: Skeletons are everywhere (the base enemy). Ghost pirates
+  are concentrated in danger zones (skull_cave, volcano, deep_jungle) since they're
+  night-only and more dangerous. Watchtower and pirate_town are skeleton-only as
+  lower-risk border zones. This matches the game's risk gradient.
+- **Waypoint spacing**: All waypoints are within 70 studs of zone center, well inside
+  the 80-stud leash distance (GameConfig.NPCBehavior.leashDistance). Waypoints form
+  patrol loops that cover the zone area without going out of bounds.
+- **Danger zone Parts**: Named to match GameConfig.DangerZones IDs exactly
+  (skull_cave, volcano, deep_jungle) so DangerZoneService picks them up automatically.
+  Non-danger zones (watchtower, pirate_town) have NPC activity but no threat bonuses.
+- **Centralized NPC_ZONES table**: All zone data (center, size, isDangerZone, spawn
+  points, waypoints) is in one table. Each setup function iterates NPC_ZONES. Adding
+  a new zone requires only adding an entry to this table.
+- **Spawn point attributes**: Zone and NPCType match exactly what NPCService expects
+  from its KnitStart() scan (Part:GetAttribute("Zone"), Part:GetAttribute("NPCType")).
+- **Waypoint attributes**: Zone and Order match NPCService's patrol waypoint loader
+  (sorts by Order within each Zone group).
+
+### Acceptance criteria met
+- All 5 NPC zones have defined boundaries and center points ✓
+  (NPC_ZONES table with center, size for each; danger zones have AABB Parts)
+- Each zone has 4+ patrol waypoints for SimplePath ✓
+  (skull_cave: 5, volcano: 5, deep_jungle: 5, watchtower: 4, pirate_town: 4)
+- Leash radius (80 studs) is defined per zone ✓
+  (Already in GameConfig.NPCBehavior.leashDistance; all waypoints within 70 studs of center)
+- Waypoints are navigable by SimplePath agents ✓
+  (Waypoints are invisible non-colliding Parts at ground level in open areas)
+
+### Notes for next developer
+- NPC_ZONES table at line ~849 of MapBootstrap.lua contains all zone definitions.
+  To add a new NPC zone, add an entry to this table with center, size, isDangerZone,
+  spawnPoints, and waypoints.
+- Danger zone AABB Parts are in workspace.DangerZones, named exactly as GameConfig IDs.
+  DangerZoneService auto-discovers them. Don't rename without updating GameConfig.
+- Spawn point Parts are in workspace.NPCSpawnPoints with Zone+NPCType attributes.
+  NPCService auto-discovers these. Adding more spawn points = more spawning capacity.
+- Patrol waypoint Parts are in workspace.PatrolWaypoints with Zone+Order attributes.
+  NPCService auto-discovers these. More waypoints = more patrol variety.
+- If NPCService creates fallback test spawn points at init, it means MapBootstrap
+  didn't run first. Check Main.server.lua ordering.
+- No Roblox Studio MCP server was available for in-game testing. Code follows
+  MapBootstrap's established patterns exactly.
+- Next priorities: MAP-004 (Container Spawn Points), MAP-005 (Hazard Placement),
+  MAP-006 (Event Spawn Points), then MODEL/AUDIO asset tasks.

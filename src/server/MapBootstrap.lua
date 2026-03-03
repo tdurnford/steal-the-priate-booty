@@ -1,7 +1,7 @@
 --[[
   MapBootstrap.lua
-  Pre-Knit workspace object creation for MAP-001 (Harbor Zone Layout)
-  and MAP-002 (Tutorial Beach Area).
+  Pre-Knit workspace object creation for MAP-001 (Harbor Zone Layout),
+  MAP-002 (Tutorial Beach Area), and MAP-003 (NPC Spawn Zone Definitions).
 
   Called by Main.server.lua BEFORE any Knit services are loaded.
   Creates all required workspace objects that services expect to find:
@@ -12,6 +12,9 @@
     - Visual pier structures and boundary markers
     - TutorialBeach Part (spawn + orientation for TutorialService)
     - Beach terrain, shipwreck debris, path to Harbor
+    - DangerZones folder with AABB Parts (for DangerZoneService)
+    - NPCSpawnPoints folder with zone+type spawn markers (for NPCService)
+    - PatrolWaypoints folder with ordered zone waypoints (for NPCService)
 
   All objects are created only if they don't already exist (idempotent).
   When Roblox Studio map assets are finalized, this module can be removed
@@ -828,16 +831,249 @@ local function setupBeachToHarborPath()
 end
 
 --------------------------------------------------------------------------------
+-- NPC ZONE CONSTANTS (MAP-003)
+--------------------------------------------------------------------------------
+
+-- Zone definitions: center, size, and NPC types.
+-- Danger zones (skull_cave, volcano, deep_jungle) double as DangerZoneService
+-- AABB boundaries. Watchtower and pirate_town are NPC-only zones.
+--
+-- Island layout (top-down, harbor at origin):
+--   NW: Skull Cave (-300, -5, -150)   — underground cave, skeleton-heavy
+--   N:  Volcano (0, 30, -400)         — elevated volcanic area, mixed NPCs
+--   NE: Watchtower (350, 15, -200)    — ruined lookout, skeletons
+--   SW: Deep Jungle (-200, 3, 150)    — dense vegetation, ghost pirate territory
+--   E:  Pirate Town (250, 3, -50)     — ruins outside harbor, lighter skeleton presence
+--   SE: Tutorial Beach (200, 2, 200)  — already placed by MAP-002
+
+local NPC_ZONES = {
+  skull_cave = {
+    center = Vector3.new(-300, -5, -150),
+    size = Vector3.new(180, 60, 160), -- large cave system
+    isDangerZone = true,
+    spawnPoints = {
+      { offset = Vector3.new(0, 5, 0), npcType = "skeleton" },
+      { offset = Vector3.new(-40, 5, 30), npcType = "skeleton" },
+      { offset = Vector3.new(30, 5, -40), npcType = "skeleton" },
+      { offset = Vector3.new(-20, 5, -50), npcType = "skeleton" },
+      { offset = Vector3.new(50, 5, 20), npcType = "ghost_pirate" },
+    },
+    waypoints = {
+      { offset = Vector3.new(-60, 5, -40), order = 1 },
+      { offset = Vector3.new(-20, 5, 50), order = 2 },
+      { offset = Vector3.new(40, 5, 30), order = 3 },
+      { offset = Vector3.new(60, 5, -20), order = 4 },
+      { offset = Vector3.new(10, 5, -60), order = 5 },
+    },
+  },
+  volcano = {
+    center = Vector3.new(0, 30, -400),
+    size = Vector3.new(200, 80, 200), -- tall volcanic region
+    isDangerZone = true,
+    spawnPoints = {
+      { offset = Vector3.new(-30, 0, 20), npcType = "skeleton" },
+      { offset = Vector3.new(40, -5, -30), npcType = "skeleton" },
+      { offset = Vector3.new(-50, -10, -50), npcType = "skeleton" },
+      { offset = Vector3.new(20, 0, 60), npcType = "ghost_pirate" },
+      { offset = Vector3.new(-60, -10, 40), npcType = "ghost_pirate" },
+    },
+    waypoints = {
+      { offset = Vector3.new(-70, -5, -60), order = 1 },
+      { offset = Vector3.new(-40, 0, 50), order = 2 },
+      { offset = Vector3.new(50, -5, 40), order = 3 },
+      { offset = Vector3.new(70, -10, -30), order = 4 },
+      { offset = Vector3.new(0, 0, -70), order = 5 },
+    },
+  },
+  deep_jungle = {
+    center = Vector3.new(-200, 3, 150),
+    size = Vector3.new(180, 40, 180), -- dense jungle area
+    isDangerZone = true,
+    spawnPoints = {
+      { offset = Vector3.new(20, 0, -30), npcType = "skeleton" },
+      { offset = Vector3.new(-40, 0, 40), npcType = "ghost_pirate" },
+      { offset = Vector3.new(50, 0, 50), npcType = "ghost_pirate" },
+      { offset = Vector3.new(-60, 0, -20), npcType = "skeleton" },
+      { offset = Vector3.new(0, 0, 60), npcType = "ghost_pirate" },
+    },
+    waypoints = {
+      { offset = Vector3.new(-50, 0, -50), order = 1 },
+      { offset = Vector3.new(40, 0, -40), order = 2 },
+      { offset = Vector3.new(60, 0, 30), order = 3 },
+      { offset = Vector3.new(-30, 0, 60), order = 4 },
+      { offset = Vector3.new(-60, 0, 10), order = 5 },
+    },
+  },
+  watchtower = {
+    center = Vector3.new(350, 15, -200),
+    size = Vector3.new(140, 50, 140), -- ruined tower grounds
+    isDangerZone = false,
+    spawnPoints = {
+      { offset = Vector3.new(0, 0, 0), npcType = "skeleton" },
+      { offset = Vector3.new(-30, -5, 20), npcType = "skeleton" },
+      { offset = Vector3.new(30, -5, -30), npcType = "skeleton" },
+      { offset = Vector3.new(-20, 0, -40), npcType = "skeleton" },
+    },
+    waypoints = {
+      { offset = Vector3.new(-40, -5, -30), order = 1 },
+      { offset = Vector3.new(30, -5, -40), order = 2 },
+      { offset = Vector3.new(40, 0, 20), order = 3 },
+      { offset = Vector3.new(-30, 0, 40), order = 4 },
+    },
+  },
+  pirate_town = {
+    center = Vector3.new(250, 3, -50),
+    size = Vector3.new(120, 30, 120), -- town outskirts
+    isDangerZone = false,
+    spawnPoints = {
+      { offset = Vector3.new(-20, 0, 20), npcType = "skeleton" },
+      { offset = Vector3.new(30, 0, -20), npcType = "skeleton" },
+      { offset = Vector3.new(-10, 0, -40), npcType = "skeleton" },
+    },
+    waypoints = {
+      { offset = Vector3.new(-30, 0, -30), order = 1 },
+      { offset = Vector3.new(30, 0, -20), order = 2 },
+      { offset = Vector3.new(20, 0, 30), order = 3 },
+      { offset = Vector3.new(-30, 0, 20), order = 4 },
+    },
+  },
+}
+
+--------------------------------------------------------------------------------
+-- DANGER ZONES (MAP-003 — AABB Parts for DangerZoneService)
+--------------------------------------------------------------------------------
+
+--[[
+  Creates the DangerZones folder with invisible AABB Parts for each danger zone.
+  Part names must match GameConfig.DangerZones IDs (skull_cave, volcano, deep_jungle).
+  DangerZoneService scans this folder at init to build its zone lookup table.
+]]
+local function setupDangerZones()
+  local folder = ensureFolder(workspace, "DangerZones")
+
+  if #folder:GetChildren() > 0 then
+    print("[MapBootstrap] DangerZones already populated, skipping")
+    return
+  end
+
+  local count = 0
+  for zoneId, zoneDef in NPC_ZONES do
+    if zoneDef.isDangerZone then
+      local center = zoneDef.center + Vector3.new(0, zoneDef.size.Y / 2, 0)
+      ensurePart(folder, zoneId, {
+        size = zoneDef.size,
+        position = center,
+        transparency = ZONE_TRANSPARENCY,
+        canCollide = false,
+        canQuery = false,
+        canTouch = false,
+      })
+      count += 1
+    end
+  end
+
+  print("[MapBootstrap] Created", count, "danger zone boundary Parts")
+end
+
+--------------------------------------------------------------------------------
+-- NPC SPAWN POINTS (MAP-003 — for NPCService spawn manager)
+--------------------------------------------------------------------------------
+
+--[[
+  Creates the NPCSpawnPoints folder with Parts for each spawn location.
+  Each Part has attributes:
+    - Zone (string): zone ID for leash/patrol association
+    - NPCType (string): "skeleton" or "ghost_pirate"
+  NPCService reads these at init to build its spawn point tables.
+]]
+local function setupNPCSpawnPoints()
+  local folder = ensureFolder(workspace, "NPCSpawnPoints")
+
+  -- Check if spawn points already exist (from Studio or prior run)
+  local existingCount = 0
+  for _, child in folder:GetChildren() do
+    if child:IsA("BasePart") and child:GetAttribute("Zone") then
+      existingCount += 1
+    end
+  end
+  if existingCount > 0 then
+    print("[MapBootstrap] NPCSpawnPoints already has", existingCount, "points, skipping")
+    return
+  end
+
+  local totalCount = 0
+  for zoneId, zoneDef in NPC_ZONES do
+    for i, sp in zoneDef.spawnPoints do
+      local pos = zoneDef.center + sp.offset
+      local part = ensurePart(folder, zoneId .. "_spawn_" .. i, {
+        size = Vector3.new(3, 1, 3),
+        position = pos,
+        transparency = ZONE_TRANSPARENCY,
+        canCollide = false,
+        canQuery = false,
+        canTouch = false,
+      })
+      part:SetAttribute("Zone", zoneId)
+      part:SetAttribute("NPCType", sp.npcType)
+      totalCount += 1
+    end
+  end
+
+  print("[MapBootstrap] Created", totalCount, "NPC spawn points across", 5, "zones")
+end
+
+--------------------------------------------------------------------------------
+-- PATROL WAYPOINTS (MAP-003 — for NPCService SimplePath patrol)
+--------------------------------------------------------------------------------
+
+--[[
+  Creates the PatrolWaypoints folder with Parts for each patrol location.
+  Each Part has attributes:
+    - Zone (string): zone ID to group waypoints by zone
+    - Order (number): sort order for sequential patrol routes
+  NPCService reads these at init. NPCs patrol between waypoints in their zone.
+  Waypoints are placed within zone boundaries and outside harbor safe zone.
+]]
+local function setupPatrolWaypoints()
+  local folder = ensureFolder(workspace, "PatrolWaypoints")
+
+  if #folder:GetChildren() > 0 then
+    print("[MapBootstrap] PatrolWaypoints already populated, skipping")
+    return
+  end
+
+  local totalCount = 0
+  for zoneId, zoneDef in NPC_ZONES do
+    for i, wp in zoneDef.waypoints do
+      local pos = zoneDef.center + wp.offset
+      local part = ensurePart(folder, zoneId .. "_wp_" .. i, {
+        size = Vector3.new(2, 1, 2),
+        position = pos,
+        transparency = ZONE_TRANSPARENCY,
+        canCollide = false,
+        canQuery = false,
+        canTouch = false,
+      })
+      part:SetAttribute("Zone", zoneId)
+      part:SetAttribute("Order", wp.order)
+      totalCount += 1
+    end
+  end
+
+  print("[MapBootstrap] Created", totalCount, "patrol waypoints across", 5, "zones")
+end
+
+--------------------------------------------------------------------------------
 -- PUBLIC API
 --------------------------------------------------------------------------------
 
 --[[
-  Sets up all Harbor zone workspace objects.
+  Sets up all workspace objects for all map features.
   Called from Main.server.lua before Knit services are loaded.
   Idempotent — safe to call multiple times.
 ]]
 function MapBootstrap.setup()
-  print("[MapBootstrap] Setting up map layout (MAP-001, MAP-002)...")
+  print("[MapBootstrap] Setting up map layout (MAP-001, MAP-002, MAP-003)...")
 
   -- MAP-001: Harbor zone
   setupHarborZone()
@@ -853,6 +1089,11 @@ function MapBootstrap.setup()
   setupBeachTerrain()
   setupShipwreckDebris()
   setupBeachToHarborPath()
+
+  -- MAP-003: NPC spawn zones
+  setupDangerZones()
+  setupNPCSpawnPoints()
+  setupPatrolWaypoints()
 
   print("[MapBootstrap] Map layout setup complete")
 end
