@@ -7,7 +7,7 @@
     - Held doubloons: +1 per 50 held, checked every 30s
     - Breaking containers: +2 per break
     - Killing NPCs: +3 per kill (called by future NPC services)
-    - Being in danger zones: +3 per minute (future ZONE-001 integration)
+    - Being in danger zones: +3 per minute (via DangerZoneService)
   Night multiplier: 1.5x all threat gains.
   Threat pauses (does NOT reset) while in Harbor safe zone.
   Harbor state is managed by HarborService and read from SessionStateService.
@@ -43,6 +43,7 @@ local SessionStateService = nil
 local DayNightService = nil
 local ContainerService = nil
 local CombatService = nil
+local DangerZoneService = nil
 
 -- Threat config shortcuts
 local THREAT = GameConfig.Threat
@@ -77,18 +78,20 @@ function ThreatService:IsInHarbor(player: Player): boolean
 end
 
 --------------------------------------------------------------------------------
--- DANGER ZONE CHECK (placeholder until ZONE-001)
+-- DANGER ZONE CHECK (delegates to DangerZoneService)
 --------------------------------------------------------------------------------
 
 --[[
   Checks whether a player is in a danger zone.
-  Will be replaced when ZONE-001 implements zone tracking.
+  Delegates to DangerZoneService for actual zone detection.
   @param player The player to check
   @return true if the player is in a danger zone
 ]]
-function ThreatService:IsInDangerZone(_player: Player): boolean
-  -- Placeholder: always false until danger zones are implemented
-  return false
+function ThreatService:IsInDangerZone(player: Player): boolean
+  if not DangerZoneService then
+    return false
+  end
+  return DangerZoneService:IsInDangerZone(player)
 end
 
 --------------------------------------------------------------------------------
@@ -243,6 +246,7 @@ function ThreatService:KnitStart()
   DayNightService = Knit.GetService("DayNightService")
   ContainerService = Knit.GetService("ContainerService")
   CombatService = Knit.GetService("CombatService")
+  DangerZoneService = Knit.GetService("DangerZoneService")
 
   -- Hook into container break events: +2 threat per container broken
   ContainerService.ContainerBroken:Connect(function(_containerEntry, attackingPlayer: Player?)

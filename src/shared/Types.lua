@@ -79,6 +79,8 @@ export type SessionState = {
 
   -- Zone
   inHarbor: boolean,
+  inDangerZone: boolean,
+  dangerZoneName: string?,
 
   -- NPC
   phantomCaptainActive: boolean,
@@ -154,6 +156,8 @@ Types.DEFAULT_SESSION_STATE = {
 
   -- Zone
   inHarbor = false,
+  inDangerZone = false,
+  dangerZoneName = nil,
 
   -- NPC
   phantomCaptainActive = false,
@@ -303,6 +307,8 @@ function Types.createSessionState(tutorialCompleted: boolean): SessionState
     threatLevel = 0,
     lastLockTime = os.clock(),
     inHarbor = false,
+    inDangerZone = false,
+    dangerZoneName = nil,
     phantomCaptainActive = false,
   }
   return state

@@ -7,7 +7,7 @@
     heldDoubloons, shipHold, shipLocked, isRagdolling, ragdollEndTime,
     recoveryEndTime, dashCooldownEnd, lastHitTargets, lastRaidedShips,
     hasBounty, tutorialActive, tutorialStep, threatLevel, lastLockTime,
-    phantomCaptainActive
+    inDangerZone, dangerZoneName, phantomCaptainActive
 
   Other services read/write session state through this service's API.
   The client receives read-only snapshots of select fields via signals.
@@ -52,6 +52,8 @@ local CLIENT_VISIBLE_FIELDS = {
   tutorialActive = true,
   tutorialStep = true,
   inHarbor = true,
+  inDangerZone = true,
+  dangerZoneName = true,
 }
 
 --------------------------------------------------------------------------------
@@ -549,6 +551,38 @@ function SessionStateService:SetInHarbor(player: Player, inHarbor: boolean)
 end
 
 --------------------------------------------------------------------------------
+-- DANGER ZONE
+--------------------------------------------------------------------------------
+
+function SessionStateService:IsInDangerZone(player: Player): boolean
+  local state = SessionStates[player]
+  return if state then state.inDangerZone else false
+end
+
+function SessionStateService:GetDangerZoneName(player: Player): string?
+  local state = SessionStates[player]
+  return if state then state.dangerZoneName else nil
+end
+
+function SessionStateService:SetInDangerZone(
+  player: Player,
+  inDangerZone: boolean,
+  zoneName: string?
+)
+  local state = SessionStates[player]
+  if not state then
+    return
+  end
+  if state.inDangerZone == inDangerZone and state.dangerZoneName == zoneName then
+    return -- no change
+  end
+  state.inDangerZone = inDangerZone
+  state.dangerZoneName = zoneName
+  notifyChange(player, "inDangerZone", inDangerZone)
+  notifyChange(player, "dangerZoneName", zoneName)
+end
+
+--------------------------------------------------------------------------------
 -- CLIENT-EXPOSED METHODS (read-only)
 --------------------------------------------------------------------------------
 
@@ -584,6 +618,14 @@ function SessionStateService.Client:IsInHarbor(player: Player): boolean
   return SessionStateService:IsInHarbor(player)
 end
 
+function SessionStateService.Client:IsInDangerZone(player: Player): boolean
+  return SessionStateService:IsInDangerZone(player)
+end
+
+function SessionStateService.Client:GetDangerZoneName(player: Player): string?
+  return SessionStateService:GetDangerZoneName(player)
+end
+
 --[[
   Returns a snapshot of all client-visible session fields.
   Used by the client to initialize HUD state on load.
@@ -602,6 +644,8 @@ function SessionStateService.Client:GetSessionSnapshot(player: Player): { [strin
     tutorialActive = state.tutorialActive,
     tutorialStep = state.tutorialStep,
     inHarbor = state.inHarbor,
+    inDangerZone = state.inDangerZone,
+    dangerZoneName = state.dangerZoneName,
   }
 end
 

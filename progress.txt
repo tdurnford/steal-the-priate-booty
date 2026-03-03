@@ -3934,3 +3934,70 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Selene lint is broken due to aftman/rokit PATH conflict; StyLua works fine.
 - Next priorities: SHIP-006 (ship tier progression), UI-005 (minimap), HAZARD-001
   (volcanic vents), THREAT-005 (danger zone detection).
+
+---
+
+## 2026-03-02 — DANGER-ZONE-001: Danger Zone Detection
+
+### What was done
+- Created `src/server/Services/DangerZoneService.lua` — server-authoritative danger zone
+  detection using the same AABB check pattern as HarborService. Zones are defined by Parts
+  inside a `DangerZones` folder in workspace (named by zone ID: skull_cave, volcano, deep_jungle).
+- Added danger zone config to `src/shared/GameConfig.lua`: `DangerZones` table with 3 zone
+  definitions, `DangerZoneConfig.checkInterval`, and `DangerZoneById` lookup table.
+- Extended `src/shared/Types.lua`: added `inDangerZone: boolean` and `dangerZoneName: string?`
+  to SessionState type, DEFAULT_SESSION_STATE, and createSessionState factory.
+- Extended `src/server/Services/SessionStateService.lua`: added `IsInDangerZone()`,
+  `GetDangerZoneName()`, `SetInDangerZone()` methods, client-exposed RPCs, CLIENT_VISIBLE_FIELDS
+  entries, and GetSessionSnapshot inclusion.
+- Updated `src/server/Services/ThreatService.lua`: replaced the `IsInDangerZone()` stub
+  (always returned false) with delegation to DangerZoneService. Added DangerZoneService to
+  lazy-loaded service references. The existing danger zone accumulation loop (+3 threat/min)
+  now works with real zone detection.
+- Created `src/client/Controllers/DangerZoneController.lua` — client-side notifications
+  for entering/exiting danger zones (red warning on enter, gold on exit), with late-join
+  sync via session snapshot.
+
+### Architecture
+1. **Zone parts**: Invisible Parts in workspace under `DangerZones` folder. Each Part's AABB
+   defines the zone boundary. Part name must match a zone ID in GameConfig.DangerZones.
+2. **Detection loop**: DangerZoneService runs position checks every 0.25s on Heartbeat
+   (same cadence as HarborService). Uses per-player zone tracking to detect transitions.
+3. **Session state**: `inDangerZone` and `dangerZoneName` fields in SessionState are replicated
+   to the client via CLIENT_VISIBLE_FIELDS for HUD use.
+4. **Threat integration**: ThreatService.IsInDangerZone() now delegates to DangerZoneService
+   instead of returning false. The existing accumulation loop applies +3 threat/min
+   (GameConfig.Threat.dangerZoneRate) with night 1.5x multiplier when a player is in a zone.
+5. **Signals**: Server-side PlayerEnteredDangerZone/PlayerExitedDangerZone (GoodSignal) for
+   inter-service use. Client-side DangerZoneChanged (Knit signal) for UI notifications.
+
+### Zone transition handling
+- **Enter danger zone**: Updates SessionState, fires DangerZoneChanged to client, fires
+  PlayerEnteredDangerZone to server listeners.
+- **Exit danger zone**: Clears SessionState, fires signals.
+- **Move between zones**: Fires exit for old zone, then enter for new zone, updating
+  SessionState to the new zone.
+- **Player disconnect**: Cleans up PlayerCurrentZone tracking table.
+- **No zones in workspace**: Gracefully disabled — warns once and skips detection loop.
+
+### Public API (DangerZoneService)
+- `IsInDangerZone(player)` — reads from SessionState
+- `GetCurrentZone(player)` — returns zone ID string or nil
+- `IsPositionInDangerZone(position)` — for ContainerService/NPCService use
+- `GetZoneAtPosition(position)` — returns zone ID for a world position
+
+### Also marked as done in PRD
+14 features were verified as already implemented via other completed work and marked done:
+NIGHT-001, CONTAINER-001, RANK-003/004/005/006, NIGHT-SURVIVE-001, BOUNTY-XP-001,
+KNIT-001, TYPES-001, STATS-001, UI-009, CONTAINER-VFX-001, COMBAT-VFX-001.
+
+### Notes for next developer
+- To add danger zones to your map: create a `DangerZones` folder in workspace, add invisible
+  Parts named `skull_cave`, `volcano`, `deep_jungle` sized/positioned to cover each area.
+  Parts should have Transparency=1, CanCollide=false, Anchored=true.
+- ContainerService already filters spawn points by Zone="danger" attribute for Cursed Chests.
+  You may want to tag container spawn points inside danger zones with that attribute.
+- DangerZoneService exposes IsPositionInDangerZone() and GetZoneAtPosition() for future use
+  by NPCService (spawn preferences) and HazardService (hazard placement).
+- Next priorities: SHIP-006 (ship tier progression), HAZARD-001 (volcanic vents),
+  EVENT-002 (shipwreck world event), UI-005 (minimap)

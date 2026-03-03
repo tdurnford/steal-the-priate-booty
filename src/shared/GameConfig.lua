@@ -640,6 +640,35 @@ GameConfig.RogueWave = {
 }
 
 --------------------------------------------------------------------------------
+-- DANGER ZONES
+--------------------------------------------------------------------------------
+
+-- Danger zone IDs and display names. Actual boundaries are defined by Parts in
+-- workspace (Folder "DangerZones", children named by zone ID).
+-- Each Part's AABB is the zone boundary (same pattern as HarborZone).
+
+export type DangerZoneDef = {
+  id: string,
+  name: string,
+}
+
+GameConfig.DangerZones = {
+  { id = "skull_cave", name = "Skull Cave" },
+  { id = "volcano", name = "Volcano" },
+  { id = "deep_jungle", name = "Deep Jungle" },
+} :: { DangerZoneDef }
+
+GameConfig.DangerZoneConfig = {
+  checkInterval = 0.25, -- seconds between position checks
+}
+
+-- Lookup by ID (built at require-time)
+GameConfig.DangerZoneById = {} :: { [string]: DangerZoneDef }
+for _, zone in GameConfig.DangerZones do
+  GameConfig.DangerZoneById[zone.id] = zone
+end
+
+--------------------------------------------------------------------------------
 -- BOUNTY SYSTEM
 --------------------------------------------------------------------------------
 
