@@ -4307,3 +4307,56 @@ The ship tier system was already fully functional from prior work:
   new idle timer.
 - Next priorities: HAZARD-003 (quicksand), HAZARD-004 (rogue wave), EVENT-003 (loot surge),
   UI-005 (minimap), UI-013 (player stats)
+
+---
+
+## 2026-03-02 — UI-013: Player Stats UI
+
+### What was done
+- Created `src/client/UI/PlayerStatsPanel.lua` — Fusion 0.3 component that displays the
+  player's personal stats in a centered modal panel. Three sections:
+  1. **Doubloon Stats**: Four stat rows (Earned, Stolen, Raided, Biggest Haul) with emoji
+     icons, muted labels, and gold-colored formatted numbers with comma separators.
+  2. **Notoriety Rank**: Rank name with tier-matched color (matching NotorietyIndicator
+     palette), rank progress indicator ("Rank X of 6"), and XP progress bar showing
+     current/next threshold. Max rank shows "(MAX)".
+  3. **Ship Tier**: Ship name with tier-matched color, treasury progress to next tier.
+  Panel uses identical visual patterns to LeaderboardPanel: dark background, rounded corners,
+  panel stroke, header with title + close button, bouncy scale-in animation, transparency
+  fade, scrollable content area.
+- Created `src/client/Controllers/PlayerStatsController.lua` — Knit controller managing the
+  stats panel lifecycle. P keybind to toggle open/close. Fetches full player data via
+  DataService:GetData() RPC, extracts stats/notorietyXP/treasury fields. Auto-refreshes
+  when DataChanged signal fires for relevant fields while panel is open. Panel rebuild on
+  each data refresh (same pattern as LeaderboardController). SoundController button click
+  SFX on open/close. DisplayOrder 56 (above leaderboard at 55).
+
+### Acceptance criteria met
+- Stats screen shows all listed metrics (total earned, stolen, raided, biggest haul) ✓
+- Notoriety rank displayed with title and XP progress to next rank ✓
+- Current ship tier displayed with treasury progress ✓
+- Values update as gameplay progresses (DataChanged auto-refresh) ✓
+- Stats persist across sessions (backed by DataService/ProfileService) ✓
+- Accessible from HUD via P keybind ✓
+
+### Design decisions
+- **No new server code needed**: DataService.Client:GetData() already returns all required
+  data (stats, notorietyXP, treasury). No new RPC or service was needed.
+- **Rebuild pattern over reactive**: Like LeaderboardPanel, the panel is destroyed and
+  recreated on each data refresh rather than using reactive Fusion bindings. This keeps the
+  panel code simple and stateless — each render is a pure function of current data.
+- **Section headers**: Added visual section breaks ("DOUBLOON STATS", "NOTORIETY RANK",
+  "SHIP") to organize the three data categories clearly.
+- **Ship tier colors**: Assigned a unique color per ship tier (gray → green → blue → purple
+  → gold → orange → red) matching the progression feel of rank colors.
+- **P keybind**: Chosen because it's intuitive ("P for Player/Profile"), unused by any
+  other system (G=shop, L=leaderboard, Q=dash, X=lunge, C=spin, E/F/R=ship).
+
+### Notes for next developer
+- The panel currently shows 4 stat fields matching the PlayerStats type in Types.lua. If
+  new stats are added to PlayerStats, add corresponding entries to the STAT_ROWS table in
+  PlayerStatsPanel.lua (key, label, icon).
+- DisplayOrder 56 means the stats panel renders above the leaderboard (55). If both are open
+  simultaneously, stats panel is on top. Consider adding mutual exclusion if desired.
+- Next priorities: HAZARD-003 (quicksand), HAZARD-004 (rogue wave), EVENT-003 (loot surge),
+  UI-005 (minimap), COSMETIC-001/002/003 (cosmetic system)
