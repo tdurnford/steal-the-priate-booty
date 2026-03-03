@@ -1,3 +1,68 @@
+## 2026-03-03 — NETWORK-003: Server-Side Speed Check
+
+### What was done
+- Created `src/server/Services/SpeedCheckService.lua` — Server-authoritative speed monitoring
+  service. Samples player positions every 0.5s via Heartbeat accumulator, calculates horizontal
+  speed from position deltas, and compares against the expected maximum speed for the player's
+  current game state.
+
+### Speed detection design
+- **State-aware expected speed**: Queries `RankEffectsService:GetWalkSpeed()` for rank-based
+  speed (16 base, 16.8 at rank 3+). Applies `blockSpeedMultiplier` (0.5) when blocking.
+- **Exempt states**: Players in ragdoll, dash, lunge, or quicksand trap are fully exempt from
+  speed checks — their physics-based velocity is not player-controlled.
+- **Burst grace period**: After any exempt state ends (dash, ragdoll), a 0.5s grace period
+  allows speeds up to 60 studs/s to accommodate physics settling and deceleration.
+- **Spawn grace**: 2s exemption after character spawn/respawn to avoid false positives from
+  character loading and teleportation. Position baseline resets after grace ends.
+- **Tolerance buffer**: 8 studs/s above expected speed before counting as a violation.
+  Accounts for network latency, physics jitter, and brief desync.
+- **Violation tracking**: Per-player sliding window (30s). Warns at 10 violations, kicks at
+  25 violations. Kick message is neutral ("Connection issue detected. Please rejoin.").
+- **SessionStateService.StateChanged listener**: Marks burst timestamps when isDashing or
+  isRagdolling state changes, ensuring grace period covers state transitions.
+- **Horizontal-only**: Only XZ distance is measured; vertical movement (jumping, falling,
+  volcanic vent launch) is ignored.
+
+### Acceptance criteria met
+- Speed monitoring runs server-side (Heartbeat loop in SpeedCheckService) ✓
+- Normal gameplay not flagged: dash (exempt state), rank bonus (+5%), block (50% reduction),
+  ragdoll knockback (exempt state), quicksand (exempt), lunge (exempt via isDashing) ✓
+- Speed exploiters detected: persistent speed above expected + 8 tolerance → violations ✓
+- Tolerance buffer prevents false positives: 8 studs/s tolerance + 0.5s burst grace + 2s
+  spawn grace + exempt states for all physics-based movement ✓
+- Enforcement action: kick after 25 violations in 30s window ✓
+
+### Design decisions
+- **No teleport-back, just kick**: Teleporting players back introduces its own complexity
+  (rubber-banding, interaction with other systems). Kicking is simpler and more robust.
+  The neutral kick message avoids publicly accusing legitimate players with bad connections.
+- **0.5s check interval**: Matches DangerZoneService's pattern. Fast enough to detect sustained
+  speed hacking (2 samples/second means a speed hacker is flagged within 12.5s at worst case).
+  Slow enough to avoid excessive server load with many players.
+- **State exemption over speed cap**: Rather than trying to calculate the exact max speed during
+  dash/ragdoll (which varies with physics), we simply skip checking during those states and use
+  a generous grace period after. This avoids false positives from physics edge cases.
+- **Per-player tracker cleanup**: `Players.PlayerRemoving` clears tracker state. No stale data.
+- **No client signal needed**: This is purely a server-side monitoring service. No UI, no client
+  controller — exploiters should not know they're being monitored.
+
+### Notes for next developer
+- SpeedCheckService auto-discovers via the Main.server.lua bootstrapper. No registration needed.
+- Tunable constants at the top of the file: CHECK_INTERVAL (0.5s), SPEED_TOLERANCE (8 studs/s),
+  BURST_GRACE_PERIOD (0.5s), BURST_GRACE_MAX_SPEED (60 studs/s), VIOLATION_WARN_THRESHOLD (10),
+  VIOLATION_KICK_THRESHOLD (25), VIOLATION_WINDOW (30s).
+- If new movement modifiers are added (e.g., speed potion, mount), update `getExpectedMaxSpeed()`
+  to account for them. Query the relevant service and multiply `expectedSpeed`.
+- If new burst-movement mechanics are added (e.g., grapple hook, cannon launch), either add an
+  exempt state check or wire up `markBurst()` via the StateChanged signal.
+- No Roblox Studio MCP server was available for in-game testing. Code follows established
+  patterns exactly (DangerZoneService for Heartbeat loop, RateLimiter for violation pattern).
+- All remaining PRD features are asset-creation tasks (MODEL-001 to MODEL-005, AUDIO-001,
+  MAP-001 to MAP-006) that require 3D models, audio files, and Roblox Studio map placement.
+
+---
+
 ## 2026-03-03 — NETWORK-001 + NETWORK-002: Network Architecture & Input Validation
 
 ### What was done
