@@ -1,3 +1,56 @@
+## 2026-03-02 — HAZARD-004: Rogue Wave Hazard (Night Only)
+
+### What was done
+- Created `src/server/Services/RogueWaveService.lua` — Server-authoritative night-only rogue wave
+  hazard. Loads Parts from workspace.RogueWaveZones folder. Each Part's LookVector defines the
+  inland push direction. Night-only activation: listens to DayNightService.PhaseChanged, schedules
+  1-2 waves per night at random times (minimum 15s spacing). Wave lifecycle: idle → warning (6s)
+  → impact (2s) → recede (3s) → idle. During impact phase, continuously checks players in zone
+  (AABB detection). Hit players: 3.0s ragdoll via SessionStateService, pushed 20-25 studs inland
+  with upward scatter, 20% loot spill via GameConfig.calculateSpill + DoubloonService:ScatterDoubloons.
+  Displaces loose pickups inland via DoubloonService:DisplacePickupsInRegion. After each wave
+  recedes: spawns 2-3 bonus containers (50% Crate, 35% Barrel, 15% Treasure Chest) at random
+  positions within the zone via ContainerService:SpawnContainerAt. Skips: ragdolled, dashing
+  (i-frame bypass), tutorial, harbor. Client signals for VFX/SFX. Server signal
+  PlayerHitByWave for inter-service communication. Night end: cancels scheduled waves, resets
+  active zones to idle. Disconnect cleanup.
+- Created `src/client/Controllers/RogueWaveController.lua` — Client-side rogue wave VFX/SFX.
+  Warning phase: water wall rises from zone edge (Glass material tween), deep roaring SFX
+  (pitched down for ominous effect, volume ramps up), screen-edge water vignette overlay
+  (UIGradient for transparent center, blue edges). Impact phase: wave crashes down (fast
+  exponential tween), massive spray + foam particle emitters, glow PointLight, loud wave crash
+  SFX, screen overlay flash. Recede phase: water retreats and fades. "ROGUE WAVE!" notification
+  on hit. Physics ragdoll via RagdollModule with push velocity. "The wave washed treasure
+  ashore!" notification for nearby players when bonus containers spawn. Late-join sync via
+  GetZoneStates RPC. Character removal cleanup.
+- GameConfig.RogueWave already existed with correct values (perNightCount 1-2, warningDuration 6s,
+  ragdollDuration 3.0s, pushDistance 20-25, lootSpillPercent 0.20, bonusContainerCount 2-3).
+- No Types.lua changes needed — reuses existing ragdoll/doubloon SessionState fields.
+
+### Acceptance criteria met
+- 1-2 rogue waves per night cycle (random timing with 15s minimum spacing) ✓
+- 6-second warning with roaring SFX, screen-edge water VFX, and ocean visibly rising ✓
+- Players caught: 3.0s ragdoll, 20-25 stud push inland, 20% spill ✓
+- 2-3 bonus containers wash ashore after each wave ✓
+- Night-only; does not occur during day (PhaseChanged listener, dawn cancels all) ✓
+- Server-authoritative (all detection, ragdoll, spill on server) ✓
+
+### Design decisions
+- **Event-driven night scheduling**: Instead of continuous cycling like TidalSurge, RogueWave
+  listens to DayNightService.PhaseChanged and schedules 1-2 waves at random times during each
+  night. Waves are spaced at least 15s apart to prevent stacking. On dawn, all pending waves
+  are cancelled and active zones reset to idle.
+- **Separate zone folder**: Uses workspace.RogueWaveZones (not TidalSurgeZones) to allow map
+  designers to place rogue wave zones on exposed coastlines independently from tidal surge zones.
+- **Stronger effects than TidalSurge**: Rogue waves are rarer (1-2/night vs continuous) but
+  more impactful: 3.0s ragdoll (vs 1.5s), 20-25 stud push (vs 10-15), 20% spill (vs 10%),
+  and guaranteed 2-3 bonus containers (vs 25% chance of 1).
+- **Screen overlay vignette**: Unlike tidal surge, rogue wave uses a full-screen blue vignette
+  overlay during warning phase to alert nearby players. The overlay uses UIGradient for a
+  subtle transparent-center effect and flashes brighter on impact.
+- **Idle at math.huge**: Zones stay idle with phaseTimer = math.huge until explicitly triggered
+  by the night scheduling system, preventing any unintended cycling during day.
+
 ## 2026-03-02 — HAZARD-003: Quicksand Hazard
 
 ### What was done
