@@ -1,3 +1,67 @@
+## 2026-03-02 — RANK-001: Notoriety XP Tracking
+
+### What was done
+- Created `src/server/Services/NotorietyService.lua` — server-authoritative notoriety XP
+  tracking that listens to gameplay events and awards XP via `DataService:AddNotorietyXP()`.
+- Created `src/client/Controllers/NotorietyController.lua` — client-side controller that
+  syncs XP/rank state from server and exposes reactive signals for HUD updates.
+- Created `src/client/UI/NotorietyIndicator.lua` — Fusion 0.3 HUD component showing rank
+  icon, rank name, and XP progress bar with hover tooltip.
+- Integrated the notoriety indicator into `HudController.lua` as a fifth HUD element.
+
+### All 11 XP event hooks connected
+1. **deposit_100** (10 XP): `ShipService.DepositCompleted` → only when ≥ 100 deposited
+2. **hit_player** (5 XP): `CombatService.PlayerHitPlayer` → awarded to attacker
+3. **pickup_spilled_loot** (3 XP): `DoubloonService.DoubloonCollected` → 5s cooldown per player
+4. **break_container** (2 XP): `ContainerService.ContainerBroken` → only if player caused it
+5. **kill_skeleton** (8 XP): `NPCService.NPCDied` → checks npcType == "skeleton"
+6. **kill_ghost_pirate** (6 XP): `NPCService.NPCDied` → checks npcType == "ghost_pirate"
+7. **kill_phantom_captain** (20 XP): `NPCService.NPCDied` → checks npcType == "phantom_captain"
+8. **survive_full_night** (15 XP): `DayNightService.PhaseChanged` → records outside-harbor
+   players at Night start, awards at Dawn to those still connected
+9. **raid_ship** (10 XP): `ShipService.RaidCompleted` → awarded to raider
+10. **hit_bounty_target** (15 XP): `CombatService.PlayerHitPlayer` → checks target has bounty
+    (stub until EVENT-001 bounty system is implemented)
+11. **survive_bounty** (25 XP): `ShipService.LockCompleted` → checks player has bounty
+    (stub until EVENT-001 bounty system is implemented)
+
+### Client-side features
+- NotorietyController tracks current XP and rank, exposes `GetXP()`, `GetRank()`,
+  `GetProgressToNextRank()` — used by HudController for the indicator
+- `XPChanged` and `RankChanged` signals for reactive UI updates
+- `XPAwarded` signal available for future XP toast/popup notifications
+- NotorietyIndicator HUD element with rank-specific colors and icons per tier:
+  Deckhand (gray ⚓), Buccaneer (green ⚔), Raider (blue 🗡), Captain (gold 👑),
+  Pirate Lord (pink 🔱), Dread Pirate (purple 💀)
+- XP progress bar fills toward next rank, formatted as "XP: 1.2k / 2k" in tooltip
+
+### Design decisions
+- **Pickup XP cooldown**: 5-second per-player cooldown to prevent XP spam from bulk
+  collecting (a Captain's Vault creates up to 15 pickups, would be 45 XP without throttle)
+- **Night survival**: records candidates at Night start, awards at Dawn. Players who
+  enter harbor during night are still eligible if they were outside at Night start.
+  This can be refined later if needed.
+- **Bounty hooks**: hit_bounty_target and survive_bounty are connected but won't fire
+  until EVENT-001 (bounty system) is implemented. The hooks check
+  `SessionStateService:HasBounty()` which currently always returns false.
+- **HUD position**: Notoriety indicator at Y=274, below the day/night indicator chain
+  (doubloons→ship hold→threat→day/night→notoriety)
+
+### Notes for next developer
+- All 11 XP actions use `GameConfig.getNotorietyXP(actionId)` for values — change
+  amounts in GameConfig.NotorietyXP, not in NotorietyService
+- Rank calculation uses `GameConfig.getRankForXP()` which returns the RankDef
+- DataService.AddNotorietyXP already handles rank change detection and fires
+  DataChanged "notorietyRank" when rank tier changes
+- The NotorietyController.XPAwarded signal passes (actionId, xpAmount, newTotalXP) —
+  ready for a future XP toast/popup UI component
+- RANK-002 (rank unlocks: lunge, speed, spin, pickup radius, title) builds on this —
+  it needs to read the player's rank and apply gameplay effects
+- Next priorities to consider: RANK-002 (rank unlocks), EVENT-001 (bounty system),
+  NPC-003 (SimplePath patrol), NPC-006 (spawn manager)
+
+---
+
 ## 2026-03-02 — DAYNIGHT-004: Night Loot Modifiers
 
 ### What was done

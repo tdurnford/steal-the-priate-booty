@@ -6,6 +6,7 @@
     - Ship hold indicator with lock state and treasury (UI-002)
     - Threat level indicator with color-coded tier icon (UI-003)
     - Day/night phase indicator with progress bar (UI-004)
+    - Notoriety rank indicator with XP progress (RANK-001)
 ]]
 
 local Players = game:GetService("Players")
@@ -24,6 +25,7 @@ local HudDoubloonsCounter = require(UIFolder:WaitForChild("HudDoubloonsCounter")
 local ShipHoldIndicator = require(UIFolder:WaitForChild("ShipHoldIndicator"))
 local ThreatLevelIndicator = require(UIFolder:WaitForChild("ThreatLevelIndicator"))
 local DayNightIndicator = require(UIFolder:WaitForChild("DayNightIndicator"))
+local NotorietyIndicator = require(UIFolder:WaitForChild("NotorietyIndicator"))
 
 local HudController = Knit.CreateController({
   Name = "HudController",
@@ -36,6 +38,7 @@ local DoubloonService = nil
 local ShipService = nil
 local SoundController = nil
 local DayNightController = nil
+local NotorietyController = nil
 
 -- Fusion state
 local FusionScope = nil
@@ -46,6 +49,8 @@ local Treasury = nil -- Fusion.Value<number>
 local ThreatLevel = nil -- Fusion.Value<number>
 local DayNightPhase = nil -- Fusion.Value<string>
 local DayNightProgress = nil -- Fusion.Value<number>
+local NotorietyXP = nil -- Fusion.Value<number>
+local NotorietyProgress = nil -- Fusion.Value<number>
 
 -- UI references
 local ScreenGui = nil
@@ -53,6 +58,7 @@ local DoubloonsPulseFn = nil -- function to trigger doubloons pulse animation
 local ShipHoldPulseFn = nil -- function to trigger ship hold pulse animation
 local ThreatPulseFn = nil -- function to trigger threat tier change pulse animation
 local DayNightPulseFn = nil -- function to trigger day/night phase change pulse animation
+local NotorietyPulseFn = nil -- function to trigger notoriety rank-up pulse animation
 local ProgressConnection = nil -- Heartbeat connection for progress bar updates
 
 -- Local player
@@ -70,6 +76,8 @@ local function createHud()
   ThreatLevel = FusionScope:Value(0)
   DayNightPhase = FusionScope:Value("Day")
   DayNightProgress = FusionScope:Value(0)
+  NotorietyXP = FusionScope:Value(0)
+  NotorietyProgress = FusionScope:Value(0)
 
   ScreenGui = Instance.new("ScreenGui")
   ScreenGui.Name = "HudGui"
@@ -99,6 +107,12 @@ local function createHud()
     DayNightIndicator.create(FusionScope, DayNightPhase, DayNightProgress)
   dayNightIndicator.Parent = ScreenGui
   DayNightPulseFn = triggerDayNightPulse
+
+  -- Create the notoriety indicator (RANK-001)
+  local notorietyIndicator, triggerNotorietyPulse =
+    NotorietyIndicator.create(FusionScope, NotorietyXP, NotorietyProgress)
+  notorietyIndicator.Parent = ScreenGui
+  NotorietyPulseFn = triggerNotorietyPulse
 end
 
 --[[
@@ -176,6 +190,29 @@ local function updateThreatLevel(newValue: number)
 end
 
 --[[
+  Updates the notoriety XP display and progress bar, triggers pulse on rank change.
+  @param newXP The new notoriety XP total
+]]
+local function updateNotorietyXP(newXP: number)
+  if NotorietyXP then
+    local oldXP = Fusion.peek(NotorietyXP)
+    NotorietyXP:set(newXP)
+
+    -- Update progress to next rank
+    if NotorietyController and NotorietyProgress then
+      NotorietyProgress:set(NotorietyController:GetProgressToNextRank())
+    end
+
+    -- Pulse on rank change
+    local oldRank = GameConfig.getRankForXP(oldXP)
+    local newRank = GameConfig.getRankForXP(newXP)
+    if oldRank.rank ~= newRank.rank and NotorietyPulseFn then
+      NotorietyPulseFn()
+    end
+  end
+end
+
+--[[
   Called when Knit initializes. Creates the HUD GUI.
 ]]
 function HudController:KnitInit()
@@ -193,6 +230,7 @@ function HudController:KnitStart()
   ShipService = Knit.GetService("ShipService")
   SoundController = Knit.GetController("SoundController")
   DayNightController = Knit.GetController("DayNightController")
+  NotorietyController = Knit.GetController("NotorietyController")
 
   -- Get initial values from session snapshot
   SessionStateService:GetSessionSnapshot()
@@ -240,10 +278,12 @@ function HudController:KnitStart()
     end
   end)
 
-  -- Listen for treasury changes from DataService
+  -- Listen for treasury and notoriety changes from DataService
   DataService.DataChanged:Connect(function(fieldName: string, value: any)
     if fieldName == "treasury" and type(value) == "number" then
       updateTreasury(value)
+    elseif fieldName == "notorietyXP" and type(value) == "number" then
+      updateNotorietyXP(value)
     end
   end)
 
@@ -255,6 +295,20 @@ function HudController:KnitStart()
       SoundController:PlayCoinPickupSound()
     end
   end)
+
+  -- Get initial notoriety XP from NotorietyController
+  if NotorietyController then
+    -- XP is fetched async by NotorietyController; listen for updates
+    NotorietyController.XPChanged:Connect(function(newXP: number, _rank: any)
+      updateNotorietyXP(newXP)
+    end)
+
+    -- Set initial value if already available
+    local initialXP = NotorietyController:GetXP()
+    if initialXP > 0 then
+      updateNotorietyXP(initialXP)
+    end
+  end
 
   -- Set initial day/night phase from DayNightController
   if DayNightController then
