@@ -31,6 +31,7 @@ BountyController.BountyEnded = Signal.new() -- (targetUserId: number, reason: st
 local BountyService = nil
 local NotificationController = nil
 local SoundController = nil
+local BannerQueueController = nil
 
 -- Local player
 local LocalPlayer = Players.LocalPlayer
@@ -89,9 +90,29 @@ local function onBountyStarted(targetUserId: number, targetDisplayName: string)
   -- Fire local signal for UI components
   BountyController.BountyStarted:Fire(targetUserId, targetDisplayName, IsLocalPlayerBounty)
 
-  -- Show appropriate notification
+  -- Show top-center banner announcement for all players
+  if BannerQueueController then
+    if IsLocalPlayerBounty then
+      BannerQueueController:ShowBanner({
+        text = "\u{1F480} BOUNTY ON YOU!",
+        subtitle = "Other pirates can see your location!",
+        color = Color3.fromRGB(255, 50, 50),
+        glowColor = Color3.fromRGB(180, 20, 20),
+        duration = 5,
+      })
+    else
+      BannerQueueController:ShowBanner({
+        text = "\u{1F480} BOUNTY PLACED!",
+        subtitle = targetDisplayName .. " has a bounty on their head!",
+        color = Color3.fromRGB(255, 170, 50),
+        glowColor = Color3.fromRGB(200, 120, 20),
+        duration = 4,
+      })
+    end
+  end
+
+  -- Show toast notification as well
   if IsLocalPlayerBounty then
-    -- The local player has a bounty on them!
     if NotificationController then
       NotificationController:ShowNotification(
         "\u{1F480} BOUNTY ON YOU! Other pirates can see you!",
@@ -104,7 +125,6 @@ local function onBountyStarted(targetUserId: number, targetDisplayName: string)
       SoundController:PlayUISound("bounty_warning")
     end
   else
-    -- Another player got the bounty
     if NotificationController then
       NotificationController:ShowNotification(
         "\u{1F480} Bounty placed on " .. targetDisplayName .. "!",
@@ -183,6 +203,7 @@ end
 function BountyController:KnitStart()
   BountyService = Knit.GetService("BountyService")
   NotificationController = Knit.GetController("NotificationController")
+  BannerQueueController = Knit.GetController("BannerQueueController")
 
   -- SoundController may not have bounty sounds yet; safe to try
   local ok, sound = pcall(function()

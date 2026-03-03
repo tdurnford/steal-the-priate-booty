@@ -1,3 +1,67 @@
+## 2026-03-03 — UI-006: Event Banner Queuing
+
+### What was done
+- Created `src/client/Controllers/BannerQueueController.lua` — Centralized top-center banner
+  queue controller. Manages a single ScreenGui (DisplayOrder 110) and shows banners one at a
+  time in FIFO order. When a banner is already showing, new banners are queued and displayed
+  sequentially after the current one fades out. Supports two banner variants: single-line
+  (for day/night transitions) and two-line with subtitle (for events, bounty). Visual style
+  matches existing banner patterns: dark background with UIGradient, colored UIStroke, scale-in
+  animation (0.85-0.9 → 1.0), tween fade-out with scale-out (1.05), auto-dismiss after
+  configurable duration (default 5s). Public API: ShowBanner(config), IsBannerActive(),
+  GetQueueLength().
+- Refactored `src/client/Controllers/DayNightBannerController.lua` — Removed local ScreenGui,
+  banner frame construction, TweenService animations, and tween tracking. Now delegates to
+  BannerQueueController:ShowBanner() for Dawn/Dusk phase banners. Retains phase transition
+  sound playback via SoundController. File reduced from 289 to 106 lines.
+- Refactored `src/client/Controllers/EventController.lua` — Removed local ScreenGui,
+  banner frame construction, TweenService animations, and tween tracking. Now delegates to
+  BannerQueueController:ShowBanner() for Shipwreck and Loot Surge banners. Retains zone
+  highlight (surge boundary + beacon + particles + label), event state tracking, local signals,
+  late-join sync, and sound playback. Removed unused Players and TweenService imports.
+- Modified `src/client/Controllers/BountyController.lua` — Added top-center banner announcements
+  for bounty activation via BannerQueueController. Local player sees red "BOUNTY ON YOU!" banner
+  with subtitle. Other players see orange "BOUNTY PLACED!" banner with target name. Existing
+  toast notifications via NotificationController preserved alongside banners for dual notification.
+
+### Acceptance criteria met
+- Banners appear for Shipwreck, Loot Surge, night/dawn transitions, and bounty events ✓
+- Shown at top center of screen (Position UDim2.new(0.5, 0, 0, 60), AnchorPoint 0.5, 0) ✓
+- Fade after 5 seconds (configurable per banner; day/night 5s, events 6s, bounty 4-5s) ✓
+- Multiple close banners queue properly (FIFO queue, sequential display) ✓
+
+### Design decisions
+- **Centralized queue vs distributed**: Created a new BannerQueueController that owns the
+  single ScreenGui, rather than having each controller manage its own. This eliminates the
+  DisplayOrder conflicts (was 100 vs 105) and ensures banners never overlap.
+- **FIFO queue, no priority**: Simple first-in-first-out queue. All banner types are treated
+  equally. The spec says "queue properly" — priority would add complexity for minimal benefit
+  since events rarely overlap.
+- **Dual notification for bounty**: Bounty events now show both a top-center banner (via
+  BannerQueueController) and a right-side toast (via NotificationController). The banner is
+  the prominent server-wide announcement; the toast persists in the notification stack for
+  reference.
+- **Preserved existing visual styles**: Single-line banners (day/night) use 420x60 with 26px
+  text. Two-line banners (events, bounty) use 480x80 with 28px title + 16px subtitle. Colors
+  and glow gradients match the original implementations exactly.
+- **DisplayOrder 110**: Above the old DayNightBannerGui (100) and EventBannerGui (105) which
+  are now removed. Consistent with the established hierarchy.
+- **DayNightBannerController/EventController remain as thin wrappers**: These controllers still
+  exist and listen to their respective signals. They just delegate banner display to
+  BannerQueueController instead of managing their own UI. This keeps the signal routing and
+  sound playback in their natural home.
+
+### Notes for next developer
+- BannerQueueController exposes ShowBanner(config) where config has: text (required),
+  subtitle (optional), color (required), glowColor (optional), duration (optional, default 5).
+- The old separate ScreenGuis (DayNightBannerGui, EventBannerGui) are no longer created. All
+  banners flow through BannerQueueGui (DisplayOrder 110).
+- EventController still creates the surge zone highlight model (world-space, not UI) — that's
+  independent of the banner system.
+- Next priorities: UI-008 (hazard warning indicators), NETWORK-001/002/003 (network hardening)
+
+---
+
 ## 2026-03-02 — EMOTE-001: Emote System
 
 ### What was done
