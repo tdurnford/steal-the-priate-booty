@@ -206,6 +206,11 @@ type NPCEntry = {
 
   -- Dormant mode (NPC-005)
   isDormant: boolean, -- true if NPC is frozen due to no players nearby
+
+  -- Pack hunting (NPC-009): night-only skeleton pairing
+  packId: number?, -- shared pack ID (nil if not in a pack)
+  packPartnerId: number?, -- NPC ID of pack partner
+  isPackFlanker: boolean, -- true if this skeleton flanks instead of leading
 }
 
 local ActiveNPCs: { [number]: NPCEntry } = {}
@@ -247,6 +252,10 @@ local GhostPirateNPCIds: { [number]: boolean } = {}
 local PhantomCaptainCount = 0 -- active Phantom Captain count (separate from budget)
 local PhantomCaptainByPlayer: { [Player]: number } = {} -- player → npcId
 local PhantomCaptainNPCIds: { [number]: boolean } = {} -- for tracking/cleanup
+
+-- Pack hunting tracking (NPC-009)
+local nextPackId = 1
+local ActivePackCount = 0
 
 -- Patrol waypoints per zone (NPC-003)
 -- Key: zone name, Value: ordered list of Vector3 positions
@@ -576,6 +585,153 @@ local function despawnAllGhostPirates()
   end
 end
 
+--------------------------------------------------------------------------------
+-- PACK HUNTING (NPC-009)
+--------------------------------------------------------------------------------
+
+--[[
+  Forms skeleton packs of 2 at nightfall.
+  Pairs nearby alive budget skeletons (within packFormationRadius).
+  Capped at packMaxPacks simultaneous packs.
+]]
+local function formSkeletonPacks()
+  -- Dissolve any stale packs first
+  for _, entry in ActiveNPCs do
+    if entry.packId then
+      entry.packId = nil
+      entry.packPartnerId = nil
+      entry.isPackFlanker = false
+    end
+  end
+  ActivePackCount = 0
+
+  -- Collect eligible skeletons: alive budget skeletons only
+  local eligible: { NPCEntry } = {}
+  for _, entry in ActiveNPCs do
+    if
+      entry.alive
+      and entry.npcType == "skeleton"
+      and not entry.isBonusNPC
+      and not entry.isDormant
+    then
+      table.insert(eligible, entry)
+    end
+  end
+
+  -- Sort by zone so nearby skeletons are adjacent
+  table.sort(eligible, function(a, b)
+    if a.zone == b.zone then
+      return a.id < b.id
+    end
+    return a.zone < b.zone
+  end)
+
+  local maxPacks = NPC_BEHAVIOR.packMaxPacks
+  local formRadius = NPC_BEHAVIOR.packFormationRadius
+  local formRadiusSq = formRadius * formRadius
+  local paired: { [number]: boolean } = {}
+
+  for i = 1, #eligible do
+    if ActivePackCount >= maxPacks then
+      break
+    end
+    local a = eligible[i]
+    if paired[a.id] then
+      continue
+    end
+
+    -- Find closest unpaired skeleton
+    local bestPartner: NPCEntry? = nil
+    local bestDistSq = formRadiusSq + 1
+
+    for j = i + 1, #eligible do
+      local b = eligible[j]
+      if paired[b.id] then
+        continue
+      end
+      local dx = a.position.X - b.position.X
+      local dz = a.position.Z - b.position.Z
+      local distSq = dx * dx + dz * dz
+      if distSq < bestDistSq then
+        bestDistSq = distSq
+        bestPartner = b
+      end
+    end
+
+    if bestPartner then
+      local packId = nextPackId
+      nextPackId = nextPackId + 1
+      ActivePackCount = ActivePackCount + 1
+
+      a.packId = packId
+      a.packPartnerId = bestPartner.id
+      a.isPackFlanker = false -- leader
+
+      bestPartner.packId = packId
+      bestPartner.packPartnerId = a.id
+      bestPartner.isPackFlanker = true -- flanker
+
+      paired[a.id] = true
+      paired[bestPartner.id] = true
+    end
+  end
+
+  if ActivePackCount > 0 then
+    print(
+      string.format("[NPCService] NPC-009: Formed %d skeleton packs at nightfall", ActivePackCount)
+    )
+  end
+end
+
+--[[
+  Dissolves all skeleton packs (called at Dawn).
+  Clears pack fields on all NPCs.
+]]
+local function dissolveAllPacks()
+  local dissolved = ActivePackCount
+  for _, entry in ActiveNPCs do
+    if entry.packId then
+      entry.packId = nil
+      entry.packPartnerId = nil
+      entry.isPackFlanker = false
+    end
+  end
+  ActivePackCount = 0
+
+  if dissolved > 0 then
+    print(string.format("[NPCService] NPC-009: Dissolved %d skeleton packs at Dawn", dissolved))
+  end
+end
+
+-- Forward declaration: alertPackPartner is defined after setState (needs it)
+local alertPackPartner: (entry: NPCEntry, target: Player) -> ()
+
+--[[
+  Calculates the flank position for a flanking pack skeleton.
+  Returns a position offset perpendicular to the leader→target line.
+]]
+local function getFlankPosition(flankerEntry: NPCEntry, targetPos: Vector3): Vector3
+  local partner = ActiveNPCs[flankerEntry.packPartnerId :: number]
+  local referencePos: Vector3
+  if partner and partner.alive then
+    referencePos = partner.position
+  else
+    referencePos = flankerEntry.position
+  end
+
+  local toTarget = targetPos - referencePos
+  toTarget = Vector3.new(toTarget.X, 0, toTarget.Z)
+
+  if toTarget.Magnitude < 0.01 then
+    -- Fallback: offset in a fixed direction
+    return targetPos + Vector3.new(NPC_BEHAVIOR.packFlankOffset, 0, 0)
+  end
+
+  -- Perpendicular vector (rotate 90 degrees in XZ plane)
+  local perpendicular = Vector3.new(-toTarget.Z, 0, toTarget.X).Unit
+  return targetPos + perpendicular * NPC_BEHAVIOR.packFlankOffset
+end
+
 --[[
   Handles phase transitions for spawn budget management.
   Called by DayNightService.PhaseChanged signal.
@@ -590,6 +746,9 @@ local function onPhaseChanged(newPhase: string, _previousPhase: string)
     local skeletonsFilled = fillSkeletonBudget()
     local ghostPiratesFilled = fillGhostPirateBudget()
 
+    -- NPC-009: Form skeleton packs for night (after new skeletons are spawned)
+    formSkeletonPacks()
+
     print(
       string.format(
         "[NPCService] Night budget: %d skeletons (spawned %d new), %d ghost pirates (spawned %d)",
@@ -600,6 +759,9 @@ local function onPhaseChanged(newPhase: string, _previousPhase: string)
       )
     )
   elseif newPhase == "Dawn" or newPhase == "Day" then
+    -- NPC-009: Dissolve all skeleton packs at Dawn
+    dissolveAllPacks()
+
     -- Despawn all Ghost Pirates at Dawn
     despawnAllGhostPirates()
 
@@ -1455,6 +1617,11 @@ local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?)
     isBonusNPC = false,
 
     isDormant = false,
+
+    -- Pack hunting (NPC-009)
+    packId = nil,
+    packPartnerId = nil,
+    isPackFlanker = false,
   }
 
   -- Create SimplePath instance for pathfinding (NPC-003)
@@ -1579,6 +1746,11 @@ local function spawnGhostPirate(position: Vector3, zone: string, spawnPoint: Par
     isBonusNPC = false,
 
     isDormant = false,
+
+    -- Pack hunting (NPC-009) — Ghost Pirates don't pack, but fields needed for type
+    packId = nil,
+    packPartnerId = nil,
+    isPackFlanker = false,
   }
 
   -- Create SimplePath instance for pathfinding
@@ -1711,6 +1883,11 @@ local function spawnPhantomCaptain(position: Vector3, targetPlayer: Player): NPC
     isBonusNPC = true, -- doesn't count toward normal budget
 
     isDormant = false,
+
+    -- Pack hunting (NPC-009) — Phantom Captains don't pack, but fields needed for type
+    packId = nil,
+    packPartnerId = nil,
+    isPackFlanker = false,
   }
 
   -- Create SimplePath instance for pathfinding
@@ -1802,6 +1979,17 @@ local function despawnNPC(npcId: number)
     end
   end
 
+  -- Clean up pack (NPC-009)
+  if entry.packId and entry.packPartnerId then
+    local partner = ActiveNPCs[entry.packPartnerId]
+    if partner and partner.packId == entry.packId then
+      partner.packId = nil
+      partner.packPartnerId = nil
+      partner.isPackFlanker = false
+    end
+    ActivePackCount = math.max(0, ActivePackCount - 1)
+  end
+
   -- Clean up SimplePath (NPC-003)
   if entry.simplePath then
     entry.simplePath:Destroy()
@@ -1858,6 +2046,40 @@ local function setState(entry: NPCEntry, newState: string)
 
   entry.aiState = newState
   entry.aiStateStartTime = os.clock()
+end
+
+--[[
+  NPC-009: When a pack member aggros a player, alert its partner to chase the same target.
+  Called when a skeleton enters CHASE state from patrol.
+]]
+alertPackPartner = function(entry: NPCEntry, target: Player)
+  if not entry.packId or not entry.packPartnerId then
+    return
+  end
+  local partner = ActiveNPCs[entry.packPartnerId]
+  if not partner or not partner.alive or partner.packId ~= entry.packId then
+    -- Partner is dead or pack broke — dissolve this skeleton's pack
+    entry.packId = nil
+    entry.packPartnerId = nil
+    entry.isPackFlanker = false
+    return
+  end
+
+  -- Only alert if partner is in patrol or idle (not already chasing/attacking someone)
+  if
+    partner.aiState == AI_STATE.PATROL
+    or partner.aiState == AI_STATE.IDLE
+    or partner.aiState == AI_STATE.LOOT_PICKUP
+  then
+    partner.targetPlayer = target
+    setState(partner, AI_STATE.CHASE)
+    partner.lastChaseRecalcTime = 0 -- force immediate path
+    partner.chaseStuckPos = nil
+    partner.harborWaitStart = nil
+    if partner.simplePath and partner.simplePath:IsRunning() then
+      partner.simplePath:Stop()
+    end
+  end
 end
 
 --------------------------------------------------------------------------------
@@ -2211,6 +2433,10 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
     if target then
       entry.targetPlayer = target
       setState(entry, AI_STATE.CHASE)
+      -- NPC-009: Alert pack partner to chase the same target
+      if entry.npcType == "skeleton" and entry.packId then
+        alertPackPartner(entry, target)
+      end
       return
     end
 
@@ -2476,11 +2702,20 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
       entry.simplePath and now - entry.lastChaseRecalcTime >= NPC_BEHAVIOR.chasePathRecalcInterval
     then
       entry.lastChaseRecalcTime = now
-      budgetedPathRun(entry, targetPos)
+      -- NPC-009: Pack flankers path to flank position instead of directly to target
+      local chaseDestination = targetPos
+      if entry.isPackFlanker and entry.packPartnerId then
+        local partner = ActiveNPCs[entry.packPartnerId]
+        if partner and partner.alive and partner.packId == entry.packId then
+          chaseDestination = getFlankPosition(entry, targetPos)
+        end
+      end
+      budgetedPathRun(entry, chaseDestination)
     end
 
-    -- Re-evaluate: check if another player is closer (skip for forced-target NPCs)
-    if not entry.forcedTarget then
+    -- Re-evaluate: check if another player is closer
+    -- Skip for forced-target NPCs and pack members (pack members stick to their shared target)
+    if not entry.forcedTarget and not entry.packId then
       local closerTarget, closerDist = findClosestTarget(entry, aggroRange)
       if closerTarget and closerTarget ~= target and closerDist < distToTarget * 0.6 then
         entry.targetPlayer = closerTarget
@@ -2633,6 +2868,20 @@ function NPCService:KillNPC(npcId: number, killedByPlayer: Player?)
 
   entry.alive = false
   setState(entry, AI_STATE.DEAD)
+
+  -- NPC-009: Dissolve pack when a member dies
+  if entry.packId and entry.packPartnerId then
+    local partner = ActiveNPCs[entry.packPartnerId]
+    if partner and partner.packId == entry.packId then
+      partner.packId = nil
+      partner.packPartnerId = nil
+      partner.isPackFlanker = false
+    end
+    entry.packId = nil
+    entry.packPartnerId = nil
+    entry.isPackFlanker = false
+    ActivePackCount = math.max(0, ActivePackCount - 1)
+  end
 
   local deathPosition = entry.position
   local npcConfig = getNPCConfig(entry.npcType)

@@ -500,6 +500,11 @@ GameConfig.NPCBehavior = {
   -- Night modifiers (applied to ALL NPCs)
   nightSpeedBonus = 0.25, -- +25% movement speed
   nightAggroRangeBonus = 0.30, -- +30% aggro range
+
+  -- Pack hunting (NPC-009): skeletons pair up at night
+  packFormationRadius = 60, -- studs: max distance between skeletons to form a pack
+  packFlankOffset = 10, -- studs: perpendicular offset for flanking skeleton
+  packMaxPacks = 5, -- max simultaneous packs active at once
 }
 
 --------------------------------------------------------------------------------

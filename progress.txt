@@ -1,3 +1,85 @@
+## 2026-03-02 — NPC-009: Night NPC Behavior Modifiers
+
+### What was done
+- Added skeleton pack hunting AI to `src/server/Services/NPCService.lua`. At nightfall,
+  nearby budget skeletons pair up into packs of 2. When one pack member aggros a player,
+  it alerts its partner to chase the same target. The flanking skeleton paths to an offset
+  position perpendicular to the leader-to-target vector instead of directly to the target.
+- Added pack hunting config to `src/shared/GameConfig.lua` (formation radius, flank offset,
+  max packs).
+- The +25% night speed bonus and +30% night aggro range bonus were already implemented in
+  `getEffectiveSpeed()` and `getEffectiveAggroRange()` functions (from prior work). This
+  feature adds the pack coordination layer on top.
+
+### Pack formation system
+1. **Night transition**: `formSkeletonPacks()` called during Dusk/Night phase. Collects all
+   alive, non-bonus, non-dormant budget skeletons. Sorts by zone. Pairs closest skeletons
+   within `packFormationRadius` (60 studs). Capped at `packMaxPacks` (5) simultaneous packs.
+2. **Pack structure**: Each pack has a leader and a flanker. Leader is the first to aggro.
+   Flanker is assigned `isPackFlanker = true`.
+3. **Dawn cleanup**: `dissolveAllPacks()` clears all pack fields on all NPCs.
+
+### Pack chase behavior
+1. **Target sharing**: When a pack skeleton enters CHASE from patrol, `alertPackPartner()`
+   wakes the partner (if in patrol/idle/loot_pickup) and sets it to CHASE the same player.
+2. **Flanking**: During chase pathfinding, flankers compute a flank position: perpendicular
+   offset (`packFlankOffset` = 10 studs) from the leader-to-target line. This positions them
+   on the opposite side of the target from the leader.
+3. **Target stickiness**: Pack members don't re-evaluate for closer targets (normal skeletons
+   switch to a 60% closer target). Pack members stick to their shared target.
+4. **Attack**: Once in attack range, flankers attack normally (slash/lunge). The coordination
+   is in approach direction, not attack timing.
+
+### Pack lifecycle handling
+- **Death cleanup**: When a pack member is killed (`KillNPC`), partner's pack fields are
+  cleared and `ActivePackCount` decremented. Partner becomes a solo skeleton.
+- **Despawn cleanup**: `despawnNPC` also clears partner pack fields.
+- **Stale check**: `formSkeletonPacks()` dissolves any stale packs before forming new ones.
+- **Partner validation**: `alertPackPartner()` validates partner is alive and shares the
+  same packId before alerting. If invalid, dissolves the broken pack.
+
+### Config additions (`GameConfig.NPCBehavior`)
+- `packFormationRadius = 60` — max distance for pairing
+- `packFlankOffset = 10` — perpendicular offset for flanker pathfinding
+- `packMaxPacks = 5` — max simultaneous packs
+
+### NPCEntry new fields
+- `packId: number?` — shared pack identifier (nil if solo)
+- `packPartnerId: number?` — NPC ID of pack partner
+- `isPackFlanker: boolean` — true for flanking skeleton, false for leader
+
+### Night modifier summary (all acceptance criteria met)
+- All NPCs +25% speed at night — already in `getEffectiveSpeed()` via `nightSpeedBonus`
+- All NPCs +30% aggro range at night — already in `getEffectiveAggroRange()` via `nightAggroRangeBonus`
+- Skeletons form packs and coordinate via flanking — new pack hunting system
+- All modifiers revert at Dawn — speed/aggro are dynamic (check IsNight each tick),
+  packs dissolved by `dissolveAllPacks()`
+
+### Design decisions
+- **Only budget skeletons pack**: Bonus NPCs (from ThreatEffectsService) and dormant NPCs
+  are excluded from pack formation. They have specialized behavior already.
+- **Forward-declared alertPackPartner**: Uses `local alertPackPartner` forward declaration
+  (defined after `setState`) because it needs `setState()` which is defined later in the file.
+- **Max 5 packs**: Limits pack coordination overhead. With 9-15 night skeletons, this means
+  5 packs (10 paired) + some solo skeletons for variety.
+- **Flanking via perpendicular offset**: Simple but effective. The flanker approaches from
+  the side instead of directly behind the leader. Distance-based, not angle-based.
+- **Ghost Pirates and Phantom Captains don't pack**: Ghost Pirates are ambush predators
+  (short 15-stud aggro). Phantom Captains hunt specific players. Pack fields exist on their
+  entries for type consistency but are always nil.
+
+### Notes for next developer
+- `alertPackPartner` uses a forward declaration pattern. If you need to add more pack
+  behavior that calls setState, add it near `alertPackPartner` (after setState definition).
+- Pack formation only happens at Dusk/Night transition. Newly spawned skeletons mid-night
+  won't automatically join existing packs.
+- The flank offset is always to the left (perpendicular rotation). For more varied flanking,
+  you could alternate sides based on NPC ID parity.
+- Next priorities: SHIP-005 (ship lock visuals), SHIP-006 (ship tier progression),
+  UI-005 (minimap), TUTORIAL-001/002
+
+---
+
 ## 2026-03-02 — NPC-002: Cursed Skeleton Loot Pickup Behavior
 
 ### What was done
