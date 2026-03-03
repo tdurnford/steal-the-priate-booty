@@ -77,6 +77,9 @@ local NPCService = Knit.CreateService({
     -- Fired to ALL players when a Ghost Pirate materializes (enters chase).
     -- Args: (npcId: number, position: Vector3)
     GhostPirateMaterialized = Knit.CreateSignal(),
+    -- Fired to ALL players when an NPC picks up doubloons (NPC-002).
+    -- Args: (npcId: number, position: Vector3, amount: number, newTotal: number)
+    NPCLootPickup = Knit.CreateSignal(),
   },
 })
 
@@ -105,6 +108,7 @@ local AI_STATE = {
   ATTACK_LUNGE = "attack_lunge",
   FLINCH = "flinch",
   DEAD = "dead",
+  LOOT_PICKUP = "loot_pickup", -- skeleton pathing to a loose doubloon pickup (NPC-002)
 }
 
 -- Player base walk speed (Roblox default)
@@ -174,6 +178,11 @@ type NPCEntry = {
   -- Respawn
   respawnTime: number?,
   alive: boolean,
+
+  -- Loot pickup behavior (NPC-002)
+  lastLootScanTime: number, -- last time this NPC scanned for loose pickups
+  lootTargetPosition: Vector3?, -- position of the pickup we're pathing to
+  coinPurseTier: number, -- current coin purse visual tier (0=none, 1=small, 2=medium, 3=large)
 
   -- Threat effects (bonus NPCs)
   forcedTarget: Player?, -- if set, this NPC always chases this player
@@ -1064,6 +1073,11 @@ local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?)
     lungeTarget = nil,
     lungeStartTime = 0,
 
+    -- Loot pickup (NPC-002)
+    lastLootScanTime = 0,
+    lootTargetPosition = nil,
+    coinPurseTier = 0,
+
     respawnTime = nil,
     alive = true,
 
@@ -1082,6 +1096,9 @@ local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?)
     if entry.aiState == AI_STATE.CHASE then
       -- During chase, reaching destination means recalculate immediately
       entry.lastChaseRecalcTime = 0
+    elseif entry.aiState == AI_STATE.LOOT_PICKUP then
+      -- Arrived at pickup location — mark for collection on next tick
+      entry.lastPatrolMoveTime = os.clock()
     else
       -- Patrol: mark arrival time so patrol state pauses before next waypoint
       entry.lastPatrolMoveTime = os.clock()
@@ -1091,6 +1108,10 @@ local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?)
     if entry.aiState == AI_STATE.CHASE then
       -- During chase, blocked path → force immediate recalculation
       entry.lastChaseRecalcTime = 0
+    elseif entry.aiState == AI_STATE.LOOT_PICKUP then
+      -- Can't reach pickup — give up and return to patrol
+      entry.lootTargetPosition = nil
+      setState(entry, AI_STATE.PATROL)
     else
       -- Patrol: skip to next waypoint on next tick
       entry.lastPatrolMoveTime = os.clock() - 2
@@ -1100,6 +1121,10 @@ local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?)
     if entry.aiState == AI_STATE.CHASE then
       -- During chase, path error → force immediate recalculation
       entry.lastChaseRecalcTime = 0
+    elseif entry.aiState == AI_STATE.LOOT_PICKUP then
+      -- Can't reach pickup — give up and return to patrol
+      entry.lootTargetPosition = nil
+      setState(entry, AI_STATE.PATROL)
     else
       -- Patrol: skip to next waypoint on next tick
       entry.lastPatrolMoveTime = os.clock() - 2
@@ -1169,6 +1194,11 @@ local function spawnGhostPirate(position: Vector3, zone: string, spawnPoint: Par
 
     lungeTarget = nil,
     lungeStartTime = 0,
+
+    -- Loot pickup (NPC-002) — Ghost Pirates don't pick up loot, but fields needed for type
+    lastLootScanTime = 0,
+    lootTargetPosition = nil,
+    coinPurseTier = 0,
 
     respawnTime = nil,
     alive = true,
@@ -1272,11 +1302,19 @@ end
 local function setState(entry: NPCEntry, newState: string)
   local oldState = entry.aiState
 
-  -- Stop SimplePath when leaving patrol or chase (NPC-003, NPC-004)
-  if (oldState == AI_STATE.PATROL or oldState == AI_STATE.CHASE) and newState ~= oldState then
+  -- Stop SimplePath when leaving patrol, chase, or loot_pickup (NPC-003, NPC-004, NPC-002)
+  if
+    (oldState == AI_STATE.PATROL or oldState == AI_STATE.CHASE or oldState == AI_STATE.LOOT_PICKUP)
+    and newState ~= oldState
+  then
     if entry.simplePath and entry.simplePath:IsRunning() then
       entry.simplePath:Stop()
     end
+  end
+
+  -- Clear loot pickup target when leaving loot_pickup state (NPC-002)
+  if oldState == AI_STATE.LOOT_PICKUP and newState ~= AI_STATE.LOOT_PICKUP then
+    entry.lootTargetPosition = nil
   end
 
   -- Reset chase tracking when entering chase (NPC-004)
@@ -1294,6 +1332,177 @@ local function setState(entry: NPCEntry, newState: string)
 
   entry.aiState = newState
   entry.aiStateStartTime = os.clock()
+end
+
+--------------------------------------------------------------------------------
+-- COIN PURSE VISUAL (NPC-002)
+--------------------------------------------------------------------------------
+
+-- Coin purse tier thresholds (same thresholds as LOOT-006 player visibility)
+local COIN_PURSE_THRESHOLDS = {
+  { min = 50, tier = 1, size = Vector3.new(0.6, 0.6, 0.6), color = Color3.fromRGB(139, 90, 43) },
+  { min = 200, tier = 2, size = Vector3.new(0.8, 0.8, 0.8), color = Color3.fromRGB(184, 134, 11) },
+  { min = 500, tier = 3, size = Vector3.new(1.0, 1.0, 1.0), color = Color3.fromRGB(255, 200, 50) },
+}
+
+--[[
+  Returns the coin purse visual tier for a given carried amount.
+  0 = no purse, 1 = small, 2 = medium, 3 = large.
+]]
+local function getCoinPurseTier(carriedDoubloons: number): number
+  local tier = 0
+  for _, def in COIN_PURSE_THRESHOLDS do
+    if carriedDoubloons >= def.min then
+      tier = def.tier
+    end
+  end
+  return tier
+end
+
+--[[
+  Updates the coin purse visual on an NPC model.
+  Creates, upgrades, or removes the purse Part as needed.
+]]
+local function updateCoinPurseVisual(entry: NPCEntry)
+  local newTier = getCoinPurseTier(entry.carriedDoubloons)
+  if newTier == entry.coinPurseTier then
+    return -- no change
+  end
+
+  entry.coinPurseTier = newTier
+
+  -- Remove existing purse
+  local model = entry.model
+  if model then
+    local existing = model:FindFirstChild("CoinPurse")
+    if existing then
+      existing:Destroy()
+    end
+  end
+
+  -- Create new purse if needed
+  if newTier == 0 or not model then
+    return
+  end
+
+  local def = COIN_PURSE_THRESHOLDS[newTier]
+  local rootPart = entry.rootPart
+  if not rootPart then
+    return
+  end
+
+  local purse = Instance.new("Part")
+  purse.Name = "CoinPurse"
+  purse.Shape = Enum.PartType.Ball
+  purse.Size = def.size
+  purse.Color = def.color
+  purse.Material = Enum.Material.Fabric
+  purse.CanCollide = false
+  purse.CanQuery = false
+  purse.CanTouch = false
+  purse.CastShadow = false
+  purse.Massless = true
+
+  -- Weld to the NPC's lower torso area (belt)
+  local weld = Instance.new("Weld")
+  weld.Part0 = rootPart
+  weld.Part1 = purse
+  -- Offset to the side of the hip (belt area)
+  weld.C0 = CFrame.new(-0.8, -0.5, 0.3)
+  weld.Parent = purse
+
+  -- Add gold glow for medium/large purses
+  if newTier >= 2 then
+    local light = Instance.new("PointLight")
+    light.Color = Color3.fromRGB(255, 200, 50)
+    light.Brightness = if newTier == 3 then 0.8 else 0.4
+    light.Range = if newTier == 3 then 8 else 5
+    light.Parent = purse
+  end
+
+  -- Add shimmer particles for large purses
+  if newTier == 3 then
+    local emitter = Instance.new("ParticleEmitter")
+    emitter.Color = ColorSequence.new(Color3.fromRGB(255, 200, 50))
+    emitter.Size = NumberSequence.new(0.1, 0)
+    emitter.Lifetime = NumberRange.new(0.5, 1.0)
+    emitter.Rate = 8
+    emitter.Speed = NumberRange.new(0.5, 1.5)
+    emitter.SpreadAngle = Vector2.new(180, 180)
+    emitter.Parent = purse
+  end
+
+  purse.Parent = model
+end
+
+--------------------------------------------------------------------------------
+-- LOOT PICKUP AI HELPERS (NPC-002)
+--------------------------------------------------------------------------------
+
+--[[
+  Scans for nearby loose doubloon pickups and returns the nearest one's position.
+  Only skeletons pick up loot, not Ghost Pirates.
+  @return pickup position or nil
+]]
+local function scanForNearbyPickup(entry: NPCEntry): Vector3?
+  if not DoubloonService or entry.npcType ~= "skeleton" then
+    return nil
+  end
+
+  -- Don't pick up more than the carry cap
+  if entry.carriedDoubloons >= SKELETON.maxCarriedDoubloons then
+    return nil
+  end
+
+  local pickup = DoubloonService:FindNearestPickup(entry.position, SKELETON.lootScanRadius)
+  if pickup then
+    return pickup.position
+  end
+  return nil
+end
+
+--[[
+  Attempts to collect pickups near the NPC's current position.
+  Adds collected doubloons to the NPC's carriedDoubloons.
+  @return amount collected
+]]
+local function collectNearbyPickups(entry: NPCEntry): number
+  if not DoubloonService or entry.npcType ~= "skeleton" then
+    return 0
+  end
+
+  local maxCollect = SKELETON.maxCarriedDoubloons - entry.carriedDoubloons
+  if maxCollect <= 0 then
+    return 0
+  end
+
+  local collected = DoubloonService:CollectPickupsNear(entry.position, SKELETON.lootPickupRadius)
+  if collected <= 0 then
+    return 0
+  end
+
+  -- Cap at max carry
+  if collected > maxCollect then
+    -- Drop the excess back (shouldn't happen often)
+    local excess = collected - maxCollect
+    DoubloonService:ScatterDoubloons(entry.position, excess, 2)
+    collected = maxCollect
+  end
+
+  entry.carriedDoubloons = entry.carriedDoubloons + collected
+
+  -- Update visual
+  updateCoinPurseVisual(entry)
+
+  -- Notify clients for VFX
+  NPCService.Client.NPCLootPickup:FireAll(
+    entry.id,
+    entry.position,
+    collected,
+    entry.carriedDoubloons
+  )
+
+  return collected
 end
 
 --[[
@@ -1461,12 +1670,39 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
       return
     end
 
-    -- Check for players in aggro range
+    -- Check for players in aggro range (priority over loot pickup)
     local target, targetDist = findClosestTarget(entry, aggroRange)
     if target then
       entry.targetPlayer = target
       setState(entry, AI_STATE.CHASE)
       return
+    end
+
+    -- Scan for loose doubloon pickups during patrol (NPC-002)
+    -- Only skeletons, on a timer, and only if not at carry cap
+    if
+      entry.npcType == "skeleton"
+      and now - entry.lastLootScanTime >= SKELETON.lootScanInterval
+    then
+      entry.lastLootScanTime = now
+      local pickupPos = scanForNearbyPickup(entry)
+      if pickupPos then
+        -- First try to collect if already close enough
+        local distToPickup = (entry.position - pickupPos).Magnitude
+        if distToPickup <= SKELETON.lootPickupRadius then
+          collectNearbyPickups(entry)
+        else
+          -- Path to the pickup
+          entry.lootTargetPosition = pickupPos
+          setState(entry, AI_STATE.LOOT_PICKUP)
+          if entry.simplePath then
+            entry.simplePath:Run(pickupPos)
+          elseif entry.humanoid then
+            entry.humanoid:MoveTo(pickupPos)
+          end
+          return
+        end
+      end
     end
 
     -- SimplePath-based patrol (NPC-003)
@@ -1505,6 +1741,51 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
         end
       end
     end
+    return
+  end
+
+  -- Loot pickup state: skeleton is pathing to a loose doubloon pickup (NPC-002)
+  if entry.aiState == AI_STATE.LOOT_PICKUP then
+    -- Combat takes priority: if a player enters aggro range, switch to chase
+    local aggroTarget = findClosestTarget(entry, aggroRange)
+    if aggroTarget then
+      entry.targetPlayer = aggroTarget
+      setState(entry, AI_STATE.CHASE)
+      return
+    end
+
+    -- Check if we've arrived close enough to collect
+    if entry.lootTargetPosition then
+      local distToLoot = (entry.position - entry.lootTargetPosition).Magnitude
+      if distToLoot <= SKELETON.lootPickupRadius then
+        local collected = collectNearbyPickups(entry)
+        if collected > 0 then
+          print(
+            string.format(
+              "[NPCService] Skeleton #%d picked up %d doubloons (total: %d)",
+              entry.id,
+              collected,
+              entry.carriedDoubloons
+            )
+          )
+        end
+        -- Return to patrol after collecting (or if nothing was there)
+        setState(entry, AI_STATE.PATROL)
+        return
+      end
+    else
+      -- No target position — return to patrol
+      setState(entry, AI_STATE.PATROL)
+      return
+    end
+
+    -- Timeout: if we've been trying to reach the pickup for too long, give up
+    if now - entry.aiStateStartTime > 8 then
+      setState(entry, AI_STATE.PATROL)
+      return
+    end
+
+    -- SimplePath handles the movement; just wait for Reached/Blocked/Error signals
     return
   end
 

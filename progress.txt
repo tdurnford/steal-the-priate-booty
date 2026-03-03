@@ -1,3 +1,91 @@
+## 2026-03-02 — NPC-002: Cursed Skeleton Loot Pickup Behavior
+
+### What was done
+- Extended `src/server/Services/NPCService.lua` with loot pickup AI behavior for
+  Cursed Skeletons. Skeletons now detect and collect loose doubloon pickups during
+  patrol, carry them, and display a coin purse visual that scales with carried amount.
+- Extended `src/server/Services/DoubloonService.lua` with `FindNearestPickup()` and
+  `CollectPickupsNear()` APIs for NPC-driven pickup collection.
+- Added loot pickup config to `src/shared/GameConfig.lua` (scan radius, pickup radius,
+  scan interval, carry cap).
+
+### New AI state: LOOT_PICKUP
+1. **Scan during patrol**: Every `lootScanInterval` (2s), skeleton scans for loose
+   doubloon pickups within `lootScanRadius` (25 studs) using
+   `DoubloonService:FindNearestPickup()`.
+2. **Path to pickup**: If a pickup is found, skeleton transitions to LOOT_PICKUP state
+   and uses SimplePath to navigate to the pickup position.
+3. **Collect on arrival**: When within `lootPickupRadius` (3 studs), skeleton calls
+   `DoubloonService:CollectPickupsNear()` which removes pickup entities and returns
+   their total value. Value is added to `entry.carriedDoubloons`.
+4. **Return to patrol**: After collecting (or if blocked/timed out after 8s), returns
+   to PATROL state.
+5. **Combat priority**: LOOT_PICKUP state checks aggro range each tick. If a player
+   enters aggro range, skeleton immediately transitions to CHASE (combat > loot).
+
+### Coin purse visual system
+1. **3 tiers**: Small (50+ doubloons, brown), Medium (200+, dark gold with glow),
+   Large (500+, gold with glow + shimmer particles).
+2. **Server-replicated**: Coin purse is a Part welded to HumanoidRootPart at belt
+   offset (-0.8, -0.5, 0.3). Automatically visible to all clients.
+3. **Auto-update**: `updateCoinPurseVisual()` called after every collection. Old purse
+   destroyed, new tier-appropriate purse created only when tier changes.
+4. **PointLight**: Medium/large purses have gold PointLight (range 5-8 studs).
+5. **Particles**: Large purse has gold shimmer ParticleEmitter.
+
+### DoubloonService new public APIs
+1. **`FindNearestPickup(position, radius)`**: Returns the nearest pickup entry and its
+   index within the given radius. Uses squared-distance for performance.
+2. **`CollectPickupsNear(position, radius)`**: Removes all pickups within radius,
+   destroys their Parts, returns total doubloon value collected.
+
+### Carry cap and overflow handling
+- `maxCarriedDoubloons = 500`: Skeleton stops scanning when at cap.
+- If `CollectPickupsNear()` returns more than remaining capacity, excess doubloons
+  are scattered back at the skeleton's position (prevents value loss).
+
+### SimplePath signal integration
+- `Reached` during LOOT_PICKUP: marks arrival time for collection on next tick.
+- `Blocked` during LOOT_PICKUP: gives up, clears target, returns to patrol.
+- `Error` during LOOT_PICKUP: same as blocked — returns to patrol.
+
+### Client signal added
+- `NPCLootPickup(npcId, position, amount, newTotal)` — fired to all players when a
+  skeleton collects doubloons. Can be used for pickup SFX/VFX on client.
+
+### What was already implemented (no changes needed)
+- `carriedDoubloons` field already existed in NPCEntry.
+- `KillNPC()` already drops `carriedDoubloons + bonusDoubloons` on death.
+- `despawnAllGhostPirates()` already drops carried doubloons at Dawn.
+
+### Design decisions
+- **Only skeletons pick up loot**: Ghost Pirates are spectral ambush predators and
+  don't interact with physical objects. `scanForNearbyPickup()` skips non-skeleton NPCs.
+- **Scan interval (2s) prevents perf impact**: Only one scan per skeleton every 2 seconds,
+  not every frame. The scan uses DoubloonService's O(n) pickup list.
+- **8s timeout**: If a skeleton can't reach a pickup within 8 seconds, it gives up and
+  returns to patrol. Prevents pathfinding softlocks.
+- **Coin purse thresholds match LOOT-006**: Uses the same 50/200/500 tiers planned for
+  player loot visibility, keeping visual language consistent.
+- **Belt weld offset**: Purse is offset to the left hip, slightly forward — visible from
+  most camera angles without clipping into the NPC's body.
+
+### Notes for next developer
+- The `NPCLootPickup` client signal is ready for a client-side controller to play
+  collection SFX/VFX (e.g., coin jingle, brief gold particle burst at NPC position).
+- Coin purse Part uses `Enum.PartType.Ball` + `Enum.Material.Fabric` — replace with
+  a proper Mesh when art assets are available.
+- The scan radius (25 studs) means skeletons can detect pickups about half their aggro
+  range away. This keeps loot pickup as an "opportunistic" behavior during patrol.
+- Carry cap (500) ensures a single skeleton doesn't accumulate game-breaking amounts.
+  A skeleton carrying 500+ is already a high-value kill target.
+- Ghost Pirate NPCEntry has the loot pickup fields (set to 0/nil) for type consistency
+  but they are never used by the loot pickup logic.
+- Next priorities: NPC-008 (Phantom Captain), NPC-005 (dormant mode),
+  NPC-009 (night NPC modifiers)
+
+---
+
 ## 2026-03-02 — NPC-004: SimplePath Chase Behavior
 
 ### What was done

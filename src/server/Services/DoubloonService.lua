@@ -236,6 +236,68 @@ function DoubloonService:GetActivePickupCount(): number
   return #ActivePickups
 end
 
+--[[
+  Finds the nearest pickup within the given radius of a position.
+  Returns the pickup entry and its index, or nil if none found.
+  Used by NPCService for skeleton loot pickup behavior.
+
+  @param position The center position to search around
+  @param radius The search radius in studs
+  @return (pickup entry, index) or (nil, nil)
+]]
+function DoubloonService:FindNearestPickup(position: Vector3, radius: number): (any?, number?)
+  local bestDist = radius * radius
+  local bestPickup = nil
+  local bestIndex = nil
+
+  for i, pickup in ActivePickups do
+    local dx = position.X - pickup.position.X
+    local dz = position.Z - pickup.position.Z
+    local distSq = dx * dx + dz * dz
+    if distSq < bestDist then
+      bestDist = distSq
+      bestPickup = pickup
+      bestIndex = i
+    end
+  end
+
+  return bestPickup, bestIndex
+end
+
+--[[
+  Collects all pickups within the given radius of a position.
+  Removes the collected pickups and returns their total value.
+  Used by NPCService for skeleton loot collection.
+
+  @param position The center position
+  @param radius The collection radius in studs
+  @return The total doubloon value collected
+]]
+function DoubloonService:CollectPickupsNear(position: Vector3, radius: number): number
+  local radiusSq = radius * radius
+  local totalValue = 0
+  local i = 1
+
+  while i <= #ActivePickups do
+    local pickup = ActivePickups[i]
+    local dx = position.X - pickup.position.X
+    local dz = position.Z - pickup.position.Z
+    local distSq = dx * dx + dz * dz
+
+    if distSq <= radiusSq then
+      totalValue = totalValue + pickup.value
+      if pickup.part and pickup.part.Parent then
+        pickup.part:Destroy()
+      end
+      table.remove(ActivePickups, i)
+    else
+      i = i + 1
+    end
+  end
+
+  return totalValue
+end
+
 --------------------------------------------------------------------------------
 -- DESPAWN LOGIC
 --------------------------------------------------------------------------------

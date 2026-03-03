@@ -390,6 +390,12 @@ GameConfig.CursedSkeleton = {
   deathBonusMax = 80,
   respawnTime = 90, -- seconds
 
+  -- Loot pickup behavior (NPC-002)
+  lootScanRadius = 25, -- studs: how far skeleton scans for loose pickups
+  lootPickupRadius = 3, -- studs: how close skeleton must be to collect a pickup
+  lootScanInterval = 2, -- seconds between pickup scans during patrol
+  maxCarriedDoubloons = 500, -- cap on doubloons a skeleton can carry
+
   -- Spawn budget (day)
   dayCountMin = 6,
   dayCountMax = 10,
