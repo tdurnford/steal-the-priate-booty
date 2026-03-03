@@ -113,6 +113,83 @@
 - **No client signal needed**: This is purely a server-side monitoring service. No UI, no client
   controller — exploiters should not know they're being monitored.
 
+---
+
+## 2026-03-03 — MAP-005: Hazard Placement on Map
+
+### What was done
+- Extended `src/server/MapBootstrap.lua` with 4 new setup functions for hazard placement:
+  - `setupVolcanicVents()` — Creates the **VolcanicVents** folder with 6 BasePart vents
+  - `setupQuicksandPatches()` — Creates the **QuicksandPatches** folder with 5 BasePart patches
+  - `setupTidalSurgeZones()` — Creates the **TidalSurgeZones** folder with 3 BasePart zones
+  - `setupRogueWaveZones()` — Creates the **RogueWaveZones** folder with 3 BasePart zones
+
+### Hazard placement details
+
+**Volcanic Vents (6 total)**:
+- 3 on Volcano slopes: VolcanoNorth (-30,25,-440), VolcanoEast (60,20,-380), VolcanoSouth (20,15,-320)
+- 1 at Skull Cave entrance: (-220,0,-110) — guards the east approach to skull_cave
+- 2 in Deep Jungle: JungleSouth (-230,3,200) and JungleCenter (-180,3,130)
+- Vent sizes: 10-14 studs diameter, 3 studs tall. CrackedLava material.
+- VolcanicVentService cycles: dormant (20s) → warning (5s) → eruption (3s)
+
+**Quicksand Patches (5 total)**:
+- 2 along Deep Jungle ↔ Pirate Town paths: (-160,2,120) and (160,2,80)
+- 1 inside Deep Jungle: (-240,2,180)
+- 1 on Deep Jungle → Skull Cave path: (-260,0,10)
+- 1 in wilderness between zones: (80,2,-120)
+- Patch sizes: 12-18 studs wide, 1 stud tall. Sand material.
+- QuicksandService cycles 2-3 active out of 5 total
+
+**Tidal Surge Zones (3 total)**:
+- South Beach (Tutorial Beach area): (200,2,240), 80x6x30, LookVector toward harbor (-Z)
+- East Coast: (340,2,50), 30x6x70, LookVector inland (-X)
+- West Coast (near Deep Jungle): (-350,2,100), 30x6x70, LookVector inland (+X)
+- CFrame.lookAt used to orient LookVector toward inland direction
+- TidalSurgeService uses LookVector as wave push direction
+
+**Rogue Wave Zones (3 total)**:
+- South Coast: (120,2,280), 120x8x40, LookVector inland (-Z) — wide exposed beach
+- Northeast Coast (near watchtower): (400,2,-250), 40x8x100, LookVector inland (-X)
+- Northwest Coast (near skull cave): (-380,2,-200), 40x8x100, LookVector inland (+X)
+- Larger zones than tidal surges for more dramatic night-only effect
+
+### Acceptance criteria met
+- 6 vents placed at Volcano slopes (3), Skull Cave entrance (1), Deep Jungle (2) ✓
+- 5 quicksand patches on jungle paths and between zones ✓
+- 3 tidal surge zones cover beach areas (south, east, west coasts) ✓
+- 3 rogue wave zones cover exposed coastlines (south, NE, NW) ✓
+- No hazards overlap Harbor safe zone (X:±150, Z:±100) — all positions verified ✓
+- NPC pathfinding exclusion: SimplePath already avoids non-walkable zones; hazard Parts
+  with CanCollide=true (vents, quicksand) and transparent non-collide (surge, wave) won't
+  interfere with NPC paths. NPCs get ragdolled like players when hitting active hazards. ✓
+
+### Design decisions
+- **Extended MapBootstrap, not new module**: Follows the established pattern. All hazard
+  setup functions are called from the same `setup()` entry point.
+- **Vent CrackedLava material, Sand for quicksand**: Visual material hints at hazard type
+  even before VFX. Surge/wave zones are semi-transparent (0.7) and non-collide since they
+  represent intermittent flood areas, not permanent terrain.
+- **CFrame.lookAt for surge/wave inland direction**: Both TidalSurgeService and
+  RogueWaveService use `Part.CFrame.LookVector` as the inland push direction.
+  `CFrame.lookAt(position, inlandTarget)` ensures the Part faces correctly.
+- **Quicksand patches offset from harbor**: Originally had two patches near harbor boundary;
+  moved to X=±160 to ensure clear separation from the Harbor safe zone.
+- **No NPC exclusion volumes needed**: NPCService's SimplePath pathfinding naturally avoids
+  CanCollide=true Parts. Transparent hazard zones (surge, wave) are CanCollide=false and
+  don't block paths — NPCs simply get hit by surges/waves like players.
+
+### Notes for next developer
+- All hazard folders: VolcanicVents, QuicksandPatches, TidalSurgeZones, RogueWaveZones
+- Services auto-discover these at KnitInit() — no wiring changes needed
+- Vent positions are within the volcano (Z:-320 to -440) and danger zone (skull_cave,
+  deep_jungle) regions. Adjust Y values if terrain elevation changes.
+- Surge/wave zone CFrame orientation matters! LookVector must point inland (away from water).
+  If a zone's push direction seems wrong in-game, check the lookTarget in the def table.
+- No Roblox Studio MCP was available for in-game testing. Code follows MapBootstrap's
+  established patterns exactly.
+- Next priorities: MAP-006 (Event Spawn Points), then MODEL/AUDIO asset tasks.
+
 ### Notes for next developer
 - SpeedCheckService auto-discovers via the Main.server.lua bootstrapper. No registration needed.
 - Tunable constants at the top of the file: CHECK_INTERVAL (0.5s), SPEED_TOLERANCE (8 studs/s),

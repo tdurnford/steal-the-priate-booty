@@ -2,7 +2,7 @@
   MapBootstrap.lua
   Pre-Knit workspace object creation for MAP-001 (Harbor Zone Layout),
   MAP-002 (Tutorial Beach Area), MAP-003 (NPC Spawn Zone Definitions),
-  and MAP-004 (Container Spawn Point Placement).
+  MAP-004 (Container Spawn Point Placement), and MAP-005 (Hazard Placement).
 
   Called by Main.server.lua BEFORE any Knit services are loaded.
   Creates all required workspace objects that services expect to find:
@@ -17,6 +17,10 @@
     - NPCSpawnPoints folder with zone+type spawn markers (for NPCService)
     - PatrolWaypoints folder with ordered zone waypoints (for NPCService)
     - ContainerSpawnPoints folder with zone-tagged markers (for ContainerService)
+    - VolcanicVents folder with vent Parts (for VolcanicVentService)
+    - QuicksandPatches folder with patch Parts (for QuicksandService)
+    - TidalSurgeZones folder with zone Parts (for TidalSurgeService)
+    - RogueWaveZones folder with zone Parts (for RogueWaveService)
 
   All objects are created only if they don't already exist (idempotent).
   When Roblox Studio map assets are finalized, this module can be removed
@@ -1264,6 +1268,291 @@ local function setupContainerSpawnPoints()
 end
 
 --------------------------------------------------------------------------------
+-- VOLCANIC VENTS (MAP-005 — for VolcanicVentService)
+--------------------------------------------------------------------------------
+
+--[[
+  Volcanic vent locations: 6 vents across 3 zones.
+  Each vent is a BasePart defining the eruption zone (AABB).
+  VolcanicVentService loads these from workspace.VolcanicVents.
+
+  Placement rationale:
+    - 3 on Volcano slopes (primary hazard zone)
+    - 1 at Skull Cave entrance (gateway danger)
+    - 2 in Deep Jungle (scattered through dense areas)
+  All placed outside Harbor safe zone.
+]]
+local VOLCANIC_VENT_DEFS = {
+  -- Volcano slopes (3 vents): spread across the volcanic region
+  {
+    name = "Vent_VolcanoNorth",
+    position = Vector3.new(-30, 25, -440), -- north slope
+    size = Vector3.new(12, 3, 12),
+  },
+  {
+    name = "Vent_VolcanoEast",
+    position = Vector3.new(60, 20, -380), -- east slope, lower
+    size = Vector3.new(10, 3, 10),
+  },
+  {
+    name = "Vent_VolcanoSouth",
+    position = Vector3.new(20, 15, -320), -- south slope, near path
+    size = Vector3.new(14, 3, 14),
+  },
+
+  -- Skull Cave entrance (1 vent): just outside the cave mouth
+  {
+    name = "Vent_SkullCaveEntrance",
+    position = Vector3.new(-220, 0, -110), -- east side of skull_cave, near approach
+    size = Vector3.new(10, 3, 10),
+  },
+
+  -- Deep Jungle (2 vents): hidden among vegetation
+  {
+    name = "Vent_JungleSouth",
+    position = Vector3.new(-230, 3, 200), -- southern edge of jungle
+    size = Vector3.new(11, 3, 11),
+  },
+  {
+    name = "Vent_JungleCenter",
+    position = Vector3.new(-180, 3, 130), -- central jungle clearing
+    size = Vector3.new(10, 3, 10),
+  },
+}
+
+local function setupVolcanicVents()
+  local folder = ensureFolder(workspace, "VolcanicVents")
+
+  if #folder:GetChildren() > 0 then
+    print("[MapBootstrap] VolcanicVents already populated, skipping")
+    return
+  end
+
+  for _, def in VOLCANIC_VENT_DEFS do
+    ensurePart(folder, def.name, {
+      size = def.size,
+      position = def.position,
+      color = Color3.fromRGB(80, 40, 20), -- dark volcanic brown
+      material = Enum.Material.CrackedLava,
+      transparency = 0,
+      canCollide = true,
+    })
+  end
+
+  print("[MapBootstrap] Created", #VOLCANIC_VENT_DEFS, "volcanic vent Parts")
+end
+
+--------------------------------------------------------------------------------
+-- QUICKSAND PATCHES (MAP-005 — for QuicksandService)
+--------------------------------------------------------------------------------
+
+--[[
+  Quicksand patch locations: 5 patches along jungle paths.
+  Each patch is a BasePart defining the quicksand zone (AABB).
+  QuicksandService loads these from workspace.QuicksandPatches.
+  Only 2-3 are active at once; patches cycle active/dormant.
+
+  Placement rationale:
+    - Along paths between Deep Jungle, Pirate Town, and Skull Cave
+    - On jungle trails and clearings
+    - Not near Harbor safe zone or tutorial beach
+]]
+local QUICKSAND_PATCH_DEFS = {
+  -- Deep Jungle → Pirate Town path (outside harbor safe zone X:±150, Z:±100)
+  {
+    name = "Quicksand_JunglePath1",
+    position = Vector3.new(-160, 2, 120), -- between deep_jungle and harbor outskirts
+    size = Vector3.new(16, 1, 14),
+  },
+  {
+    name = "Quicksand_JunglePath2",
+    position = Vector3.new(160, 2, 80), -- east side, pirate_town approach
+    size = Vector3.new(14, 1, 12),
+  },
+
+  -- Deep Jungle interior
+  {
+    name = "Quicksand_JungleInterior",
+    position = Vector3.new(-240, 2, 180), -- inside deep jungle
+    size = Vector3.new(18, 1, 16),
+  },
+
+  -- Deep Jungle → Skull Cave path
+  {
+    name = "Quicksand_JungleToCave",
+    position = Vector3.new(-260, 0, 10), -- between deep_jungle and skull_cave
+    size = Vector3.new(14, 1, 14),
+  },
+
+  -- Skull Cave → Watchtower wilderness
+  {
+    name = "Quicksand_Wilderness",
+    position = Vector3.new(80, 2, -120), -- wilderness between zones
+    size = Vector3.new(16, 1, 12),
+  },
+}
+
+local function setupQuicksandPatches()
+  local folder = ensureFolder(workspace, "QuicksandPatches")
+
+  if #folder:GetChildren() > 0 then
+    print("[MapBootstrap] QuicksandPatches already populated, skipping")
+    return
+  end
+
+  for _, def in QUICKSAND_PATCH_DEFS do
+    ensurePart(folder, def.name, {
+      size = def.size,
+      position = def.position,
+      color = Color3.fromRGB(194, 178, 128), -- sandy tan
+      material = Enum.Material.Sand,
+      transparency = 0,
+      canCollide = true,
+    })
+  end
+
+  print("[MapBootstrap] Created", #QUICKSAND_PATCH_DEFS, "quicksand patch Parts")
+end
+
+--------------------------------------------------------------------------------
+-- TIDAL SURGE ZONES (MAP-005 — for TidalSurgeService)
+--------------------------------------------------------------------------------
+
+--[[
+  Tidal surge zone locations: 3 zones on beach/coastal areas.
+  Each zone is a BasePart whose AABB defines the flood area.
+  The Part's LookVector must point INLAND (direction the surge pushes players).
+  TidalSurgeService loads these from workspace.TidalSurgeZones.
+
+  Placement rationale:
+    - Tutorial Beach south coast (water is on the +Z edge)
+    - East coastline (between tutorial beach and harbor waterfront)
+    - West coastline (near deep jungle coast)
+  All outside Harbor safe zone. LookVector oriented toward map center.
+]]
+local TIDAL_SURGE_ZONE_DEFS = {
+  -- Tutorial Beach area: water on +Z side, inland is -Z (toward harbor)
+  {
+    name = "TidalSurge_SouthBeach",
+    position = Vector3.new(200, 2, 240),
+    size = Vector3.new(80, 6, 30), -- 80 wide along coast, 30 deep flood zone
+    -- CFrame faces -Z (inland toward harbor from the south beach)
+    lookTarget = Vector3.new(200, 2, 200), -- inland direction
+  },
+
+  -- East coastline: between tutorial beach and harbor, water on +X side
+  {
+    name = "TidalSurge_EastCoast",
+    position = Vector3.new(340, 2, 50),
+    size = Vector3.new(30, 6, 70), -- narrow flood strip, long along coast
+    lookTarget = Vector3.new(300, 2, 50), -- inland toward map center (-X)
+  },
+
+  -- West coastline: near deep jungle, water on -X side
+  {
+    name = "TidalSurge_WestCoast",
+    position = Vector3.new(-350, 2, 100),
+    size = Vector3.new(30, 6, 70), -- narrow flood strip
+    lookTarget = Vector3.new(-310, 2, 100), -- inland toward map center (+X)
+  },
+}
+
+local function setupTidalSurgeZones()
+  local folder = ensureFolder(workspace, "TidalSurgeZones")
+
+  if #folder:GetChildren() > 0 then
+    print("[MapBootstrap] TidalSurgeZones already populated, skipping")
+    return
+  end
+
+  for _, def in TIDAL_SURGE_ZONE_DEFS do
+    -- Build CFrame looking from zone position toward the inland target
+    local cf = CFrame.lookAt(def.position, def.lookTarget)
+    ensurePart(folder, def.name, {
+      size = def.size,
+      cframe = cf,
+      color = Color3.fromRGB(70, 130, 180), -- steel blue (water)
+      material = Enum.Material.SmoothPlastic,
+      transparency = 0.7,
+      canCollide = false,
+      canQuery = false,
+      canTouch = false,
+    })
+  end
+
+  print("[MapBootstrap] Created", #TIDAL_SURGE_ZONE_DEFS, "tidal surge zone Parts")
+end
+
+--------------------------------------------------------------------------------
+-- ROGUE WAVE ZONES (MAP-005 — for RogueWaveService)
+--------------------------------------------------------------------------------
+
+--[[
+  Rogue wave zone locations: 3 zones on exposed coastlines.
+  Each zone is a BasePart whose AABB defines the wave impact area.
+  The Part's LookVector must point INLAND (direction the wave pushes players).
+  RogueWaveService loads these from workspace.RogueWaveZones.
+  Rogue waves are night-only and more powerful than tidal surges.
+
+  Placement rationale:
+    - Southern exposed coastline (wide open beach)
+    - Northeast coastline (near watchtower, cliffs)
+    - Northwest coastline (near skull cave, rocky shore)
+  All outside Harbor safe zone. Larger zones than tidal surges for dramatic effect.
+]]
+local ROGUE_WAVE_ZONE_DEFS = {
+  -- South coast: wide exposed beach (covers more than tidal surge zone)
+  {
+    name = "RogueWave_SouthCoast",
+    position = Vector3.new(120, 2, 280),
+    size = Vector3.new(120, 8, 40), -- very wide impact zone
+    lookTarget = Vector3.new(120, 2, 240), -- inland (-Z)
+  },
+
+  -- Northeast coast: near watchtower cliffs
+  {
+    name = "RogueWave_NECoast",
+    position = Vector3.new(400, 2, -250),
+    size = Vector3.new(40, 8, 100), -- along the coastline
+    lookTarget = Vector3.new(360, 2, -250), -- inland (-X)
+  },
+
+  -- Northwest coast: near skull cave, rocky shore
+  {
+    name = "RogueWave_NWCoast",
+    position = Vector3.new(-380, 2, -200),
+    size = Vector3.new(40, 8, 100), -- along the coastline
+    lookTarget = Vector3.new(-340, 2, -200), -- inland (+X)
+  },
+}
+
+local function setupRogueWaveZones()
+  local folder = ensureFolder(workspace, "RogueWaveZones")
+
+  if #folder:GetChildren() > 0 then
+    print("[MapBootstrap] RogueWaveZones already populated, skipping")
+    return
+  end
+
+  for _, def in ROGUE_WAVE_ZONE_DEFS do
+    -- Build CFrame looking from zone position toward the inland target
+    local cf = CFrame.lookAt(def.position, def.lookTarget)
+    ensurePart(folder, def.name, {
+      size = def.size,
+      cframe = cf,
+      color = Color3.fromRGB(30, 80, 140), -- deep ocean blue
+      material = Enum.Material.SmoothPlastic,
+      transparency = 0.7,
+      canCollide = false,
+      canQuery = false,
+      canTouch = false,
+    })
+  end
+
+  print("[MapBootstrap] Created", #ROGUE_WAVE_ZONE_DEFS, "rogue wave zone Parts")
+end
+
+--------------------------------------------------------------------------------
 -- PUBLIC API
 --------------------------------------------------------------------------------
 
@@ -1273,7 +1562,7 @@ end
   Idempotent — safe to call multiple times.
 ]]
 function MapBootstrap.setup()
-  print("[MapBootstrap] Setting up map layout (MAP-001, MAP-002, MAP-003, MAP-004)...")
+  print("[MapBootstrap] Setting up map layout (MAP-001 through MAP-005)...")
 
   -- MAP-001: Harbor zone
   setupHarborZone()
@@ -1297,6 +1586,12 @@ function MapBootstrap.setup()
 
   -- MAP-004: Container spawn points
   setupContainerSpawnPoints()
+
+  -- MAP-005: Hazard placement
+  setupVolcanicVents()
+  setupQuicksandPatches()
+  setupTidalSurgeZones()
+  setupRogueWaveZones()
 
   print("[MapBootstrap] Map layout setup complete")
 end
