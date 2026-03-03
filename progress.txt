@@ -1,3 +1,58 @@
+## 2026-03-02 — EMOTE-001: Emote System
+
+### What was done
+- Created `src/server/Services/EmoteService.lua` — Server-authoritative emote playback system.
+  Validates emote requests (equipped state, player state: not ragdolled/blocking/dashing/in-tutorial/
+  quicksand-trapped). Plays animations on the server Animator, which Roblox auto-replicates to all
+  clients. Movement interruption via Heartbeat MoveDirection check (0.1s throttled). Jump/freefall
+  interruption via Humanoid.StateChanged. Combat interruption via SessionStateService.StateChanged
+  (ragdoll, block, dash, quicksand). 1s cooldown between emote attempts. 8s auto-stop timeout.
+  Cleanup on CharacterRemoving and PlayerRemoving. Public API: IsPlayerEmoting, StopEmote. Server
+  signals: EmoteStarted, EmoteStopped. Placeholder animation config per emote ID (different speeds
+  and looping to distinguish: pirate dance 0.7x looped, laugh taunt 1.5x looped, coin flip 1.0x
+  one-shot, telescope pose 0.3x looped).
+- Created `src/client/Controllers/EmoteController.lua` — Client-side emote input handler. Keybinds:
+  1 = emote_1 slot, 2 = emote_2 slot. Local 0.8s cooldown to prevent spam. Checks CosmeticController
+  for equipped emote in slot before sending request. Tracks IsEmoting and CurrentEmoteId local state.
+  EmoteStateChanged signal for other controllers. CharacterRemoving cleanup.
+- No existing files modified — both files are auto-discovered by the Knit bootstrappers.
+
+### Acceptance criteria met
+- Players can equip and trigger 2 emotes via keybinds (1 and 2) ✓
+- Emote animations play on the character visible to all players (server-side Animator) ✓
+- Emotes are interruptible by gameplay actions (movement, jump, ragdoll, block, dash, quicksand) ✓
+- Cannot emote while ragdolled, blocking, or attacking (SessionState validation) ✓
+
+### Design decisions
+- **Server-side animation playback**: Animations play on the server Animator, which Roblox
+  automatically replicates to all clients. This avoids needing per-client broadcast signals and
+  ensures consistent animation state across all players.
+- **SessionStateService-based interruption**: Instead of directly listening to CombatService signals,
+  EmoteService listens to SessionStateService.StateChanged. This catches all combat state changes
+  (ragdoll, block, dash, quicksand) through a single listener, keeping the code simple and decoupled.
+- **MoveDirection-based movement detection**: Checks Humanoid.MoveDirection on a throttled Heartbeat
+  (every 0.1s) to detect player movement. This is more reliable on the server than Humanoid.Running
+  and works with all movement methods (keyboard, mobile, gamepad).
+- **1 and 2 keybinds**: Natural mapping (emote_1 → key 1, emote_2 → key 2). Does not conflict with
+  any existing keybinds (Q/X/C for combat, E/F/R for ship, G/J/L/P/M for UI panels).
+- **Placeholder animations**: Uses the same "rbxassetid://522635514" placeholder as CombatController,
+  with different speeds (0.3x to 1.5x) and looping behavior to visually distinguish emotes until
+  real animation assets are created (AUDIO-001).
+
+### Notes for next developer
+- Emote animation IDs are placeholders. Update EMOTE_ANIM_CONFIG in EmoteService.lua when
+  AUDIO-001 animation assets are created. Each emote should have a unique animation.
+- The EmoteController exposes EmoteStateChanged signal — useful for UI indicators or disabling
+  combat controls during emotes if desired.
+- EmoteService exposes IsPlayerEmoting(player) and StopEmote(player) public API for other
+  services to check/interrupt emotes programmatically.
+- The cosmetic shop (UI-011) already handles emote purchase and equip. The emote system is now
+  fully functional end-to-end: buy emote → equip to slot → press 1/2 to play.
+- Next priorities: UI-006 (event banner queuing), UI-008 (hazard warnings), NETWORK-001/002/003
+  (network architecture and validation hardening)
+
+---
+
 ## 2026-03-02 — UI-011: Cosmetic Shop UI
 
 ### What was done
