@@ -3698,3 +3698,92 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
   attack in a future iteration
 - Next priorities: NPC-009 (night NPC modifiers), SHIP-005 (ship lock visuals),
   SHIP-006 (ship tier progression), UI-005 (minimap)
+
+---
+
+## 2026-03-02 — TUTORIAL-001: Shipwrecked Tutorial Sequence (Steps 1-5)
+
+### What was done
+- Created `src/server/Services/TutorialService.lua` — server-authoritative tutorial
+  sequence manager. Handles the full 5-step new-player tutorial: spawn on tutorial beach,
+  find driftwood weapon, smash a crate, collect doubloons, fight a weakened skeleton.
+- Created `src/client/Controllers/TutorialController.lua` — client-side tutorial UI
+  controller. Manages tutorial prompts, camera intro effect, step transition audio cues,
+  skip tutorial button, and late-join sync.
+- Created `src/client/UI/TutorialPrompt.lua` — Fusion 0.3 component for the tutorial
+  step prompt display. Gold-bordered panel at bottom of screen with step counter, message
+  text, fade animations, and skip button.
+- Modified `src/server/Services/CombatService.lua` — added tutorial PvP protection.
+  Tutorial players cannot attack or be attacked by other players. They can still hit
+  containers and NPCs.
+- Modified `src/server/Services/NPCService.lua` — added `SpawnTutorialSkeleton()` method.
+  Spawns a skeleton with reduced HP (5 from GameConfig.Tutorial.tutorialSkeletonHp),
+  forced target on the tutorial player, marked as bonus NPC (no budget/respawn).
+- Modified `src/server/Services/GearService.lua` — skip auto-equipping gear on data load
+  for tutorial players. TutorialService handles their gear (driftwood first, then rusty
+  cutlass on completion).
+- Modified `src/server/Services/ThreatService.lua` — skip threat accumulation for tutorial
+  players via IsTutorialActive check.
+
+### Tutorial flow
+1. **Step 1**: Player spawns on TutorialBeach (or default position). Camera intro lowers
+   briefly. Prompt: "Find something to defend yourself..." Glowing driftwood Part placed
+   10 studs ahead with PointLight + ParticleEmitter + "Pick Up" BillboardGui.
+2. **Step 2**: Player walks within 4 studs of driftwood → pickup destroyed, driftwood
+   weapon equipped via DataService (bypasses shop), Tool created on character. Prompt:
+   "A driftwood club! That'll work." Auto-advances to step 3 after 1.5s.
+3. **Step 3**: Tutorial crate spawned via ContainerService:SpawnContainerAt("crate") at
+   15 studs ahead. HP overridden to tutorialCrateHits (3). Prompt: "Smash the crate open!"
+   Server listens for ContainerBroken signal.
+4. **Step 4**: Doubloons scatter from crate break (normal ContainerService behavior).
+   Prompt: "Grab the doubloons!" Server listens for SessionStateService.StateChanged on
+   heldDoubloons > 0.
+5. **Step 5**: Tutorial skeleton spawned via NPCService:SpawnTutorialSkeleton() at 20
+   studs ahead + offset. 5 HP, forced target. Prompt: "Watch out! Hit it before it gets
+   you!" Server listens for NPCService.NPCDied. On kill, 1.5s delay for death VFX, then
+   tutorial completes.
+
+### Tutorial completion
+- DataService:CompleteTutorial() sets persistent flag
+- SessionStateService:CompleteTutorialSession() clears transient state
+- Driftwood removed from owned gear, rusty cutlass equipped
+- Player teleported to HarborSpawn (or default 0,10,0)
+- Client shows "Welcome to Pirate Island, sailor!" for 3 seconds
+
+### Tutorial protection (soft safe zone)
+- CombatService: both attacker and target checked for tutorialActive — if either is in
+  tutorial, PvP hit detection skips them entirely. NPCs/containers still hittable.
+- ThreatService: AddThreatWithMultiplier skips tutorial players
+- GearService: PlayerDataLoaded and CharacterAdded skip gear equip for tutorial players
+
+### Skip tutorial
+- Client-exposed SkipTutorial RPC calls completeTutorial() immediately
+- Skip button shown in TutorialPrompt UI
+
+### Signal wiring
+- ContainerService.ContainerBroken (server signal) → step 3→4 transition
+- SessionStateService.StateChanged → step 4→5 transition (heldDoubloons > 0)
+- NPCService.NPCDied → step 5→complete transition
+- TutorialService.Client.TutorialStepChanged → client prompt updates
+- TutorialService.Client.TutorialCompleted → client completion message
+
+### Config used (GameConfig.Tutorial)
+- driftwoodDistance = 10 (studs from spawn to driftwood)
+- crateDistance = 15 (studs from driftwood to crate)
+- tutorialCrateHits = 3 (hits to break with driftwood damage=1)
+- tutorialSkeletonHp = 5 (weakened skeleton HP)
+
+### Map requirements (for MAP-002)
+- Place a Part named "TutorialBeach" in workspace for spawn position + facing direction
+- Place a Part named "HarborSpawn" for post-tutorial teleport destination
+- Without these, defaults to position (200,10,200) and (0,10,0)
+
+### Notes for next developer
+- Tutorial entities are created in a "TutorialEntities" folder in workspace.
+- Tutorial containers and NPCs don't affect global budgets/caps.
+- If player disconnects during tutorial, all entities are cleaned up.
+- CharacterAdded re-spawning during tutorial does NOT re-trigger tutorial — only initial
+  data load triggers it.
+- TUTORIAL-002 (steps 6-10) should extend TutorialService with additional steps after
+  the skeleton kill, before calling completeTutorial.
+- Next priorities: TUTORIAL-002 (steps 6-10), SHIP-005 (ship lock visuals), UI-005 (minimap)

@@ -3069,6 +3069,45 @@ function NPCService:SpawnBonusSkeleton(position: Vector3, targetPlayer: Player):
 end
 
 --[[
+  Spawns a weakened tutorial skeleton for the tutorial sequence (TUTORIAL-001).
+  Has reduced HP (from GameConfig.Tutorial.tutorialSkeletonHp), forced target,
+  and does NOT count toward NPC budget or respawn queue.
+  @param position World position to spawn at
+  @param targetPlayer The tutorial player this skeleton should attack
+  @return NPCEntry or nil
+]]
+function NPCService:SpawnTutorialSkeleton(position: Vector3, targetPlayer: Player): any
+  local entry = spawnSkeleton(position, "tutorial", nil)
+  if entry then
+    -- Override HP to tutorial-level weakness
+    local tutorialHP = GameConfig.Tutorial.tutorialSkeletonHp
+    entry.hp = tutorialHP
+    entry.maxHp = tutorialHP
+    entry.forcedTarget = targetPlayer
+    entry.isBonusNPC = true -- don't count toward budget or respawn
+    -- Correct budget count: tutorial NPCs don't count toward budget
+    BudgetSkeletonCount = math.max(0, BudgetSkeletonCount - 1)
+
+    -- Update the model's attribute for debugging
+    local body = entry.model and entry.model:FindFirstChild("Torso")
+    if body then
+      body:SetAttribute("MaxHP", tutorialHP)
+      body:SetAttribute("CurrentHP", tutorialHP)
+    end
+
+    print(
+      string.format(
+        "[NPCService] Tutorial skeleton #%d spawned (%d HP) targeting %s",
+        entry.id,
+        tutorialHP,
+        targetPlayer.Name
+      )
+    )
+  end
+  return entry
+end
+
+--[[
   Despawns a bonus NPC by ID. Used by ThreatEffectsService when
   a player's threat drops below Hunted tier.
   @param npcId The NPC instance ID to despawn

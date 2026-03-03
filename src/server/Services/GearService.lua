@@ -279,8 +279,12 @@ function GearService:KnitStart()
   DataService = Knit.GetService("DataService")
 
   -- Give gear tool when player data is loaded
+  -- Skip for tutorial players — TutorialService handles their gear
   DataService.PlayerDataLoaded:Connect(function(player: Player, data)
     if data and data.equippedGear then
+      if not data.tutorialCompleted then
+        return -- tutorial player; TutorialService will handle gear
+      end
       -- Wait for character to exist
       if not player.Character then
         player.CharacterAdded:Wait()
@@ -289,33 +293,34 @@ function GearService:KnitStart()
     end
   end)
 
-  -- Re-give gear tool on respawn
+  -- Re-give gear tool on respawn (skip for active tutorial players)
+  local SessionStateService = Knit.GetService("SessionStateService")
+  local function onCharacterAdded(player: Player)
+    if not DataService:IsDataLoaded(player) then
+      return
+    end
+    -- During tutorial, TutorialService handles gear
+    if SessionStateService and SessionStateService:IsTutorialActive(player) then
+      return
+    end
+    local gearId = DataService:GetEquippedGear(player)
+    if gearId then
+      task.defer(function()
+        giveGearTool(player, gearId)
+      end)
+    end
+  end
+
   Players.PlayerAdded:Connect(function(player: Player)
     player.CharacterAdded:Connect(function()
-      if not DataService:IsDataLoaded(player) then
-        return
-      end
-      local gearId = DataService:GetEquippedGear(player)
-      if gearId then
-        task.defer(function()
-          giveGearTool(player, gearId)
-        end)
-      end
+      onCharacterAdded(player)
     end)
   end)
 
   -- Handle players already in game (studio edge case)
   for _, player in Players:GetPlayers() do
     player.CharacterAdded:Connect(function()
-      if not DataService:IsDataLoaded(player) then
-        return
-      end
-      local gearId = DataService:GetEquippedGear(player)
-      if gearId then
-        task.defer(function()
-          giveGearTool(player, gearId)
-        end)
-      end
+      onCharacterAdded(player)
     end)
   end
 

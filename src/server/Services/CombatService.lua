@@ -98,6 +98,7 @@ local DoubloonService = nil
 local HarborService = nil
 local NPCService = nil
 local RankEffectsService = nil
+local TutorialService = nil
 
 -- Per-player last attack timestamp for rate limiting
 local LastAttackTime: { [Player]: number } = {}
@@ -271,15 +272,21 @@ local function performHitDetection(attacker: Player, range: number, arc: number)
 
   -- Check player targets first (PvP priority)
   -- Harbor safe zone: skip PvP if attacker is in harbor
+  -- Tutorial safe zone: skip PvP if attacker or target is in tutorial
   local attackerInHarbor = SessionStateService and SessionStateService:IsInHarbor(attacker)
+  local attackerInTutorial = TutorialService and TutorialService:IsInTutorial(attacker)
   local closestPlayerDist = math.huge
   local closestPlayer: Player? = nil
 
-  if not attackerInHarbor then
+  if not attackerInHarbor and not attackerInTutorial then
     for _, otherPlayer in Players:GetPlayers() do
       if otherPlayer ~= attacker then
         -- Skip targets that are in the Harbor safe zone
         if SessionStateService:IsInHarbor(otherPlayer) then
+          continue
+        end
+        -- Skip targets that are in the tutorial
+        if TutorialService and TutorialService:IsInTutorial(otherPlayer) then
           continue
         end
         local otherHRP = getHRP(otherPlayer)
@@ -961,6 +968,7 @@ function CombatService:KnitStart()
   HarborService = Knit.GetService("HarborService")
   NPCService = Knit.GetService("NPCService")
   RankEffectsService = Knit.GetService("RankEffectsService")
+  TutorialService = Knit.GetService("TutorialService")
 
   -- Listen for client attack requests
   self.Client.AttackRequest:Connect(function(player: Player)

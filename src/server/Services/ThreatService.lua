@@ -121,6 +121,11 @@ function ThreatService:AddThreatWithMultiplier(player: Player, baseAmount: numbe
     return
   end
 
+  -- Tutorial players don't accumulate threat
+  if SessionStateService:IsTutorialActive(player) then
+    return
+  end
+
   -- Harbor pauses threat accumulation
   if self:IsInHarbor(player) then
     return
