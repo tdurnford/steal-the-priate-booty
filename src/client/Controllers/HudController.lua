@@ -8,6 +8,8 @@
     - Day/night phase indicator with progress bar (UI-004)
     - Notoriety rank indicator with XP progress (RANK-001)
     - Bounty status integration (EVENT-001)
+    - Bounty alert overlay: pulsing skull + "BOUNTY ON YOU!" (UI-007)
+    - Raid alert overlay: "YOUR SHIP IS BEING RAIDED!" with raider name (UI-007)
 ]]
 
 local Players = game:GetService("Players")
@@ -27,6 +29,8 @@ local ShipHoldIndicator = require(UIFolder:WaitForChild("ShipHoldIndicator"))
 local ThreatLevelIndicator = require(UIFolder:WaitForChild("ThreatLevelIndicator"))
 local DayNightIndicator = require(UIFolder:WaitForChild("DayNightIndicator"))
 local NotorietyIndicator = require(UIFolder:WaitForChild("NotorietyIndicator"))
+local BountyAlertOverlay = require(UIFolder:WaitForChild("BountyAlertOverlay"))
+local RaidAlertOverlay = require(UIFolder:WaitForChild("RaidAlertOverlay"))
 
 local HudController = Knit.CreateController({
   Name = "HudController",
@@ -53,6 +57,9 @@ local DayNightPhase = nil -- Fusion.Value<string>
 local DayNightProgress = nil -- Fusion.Value<number>
 local NotorietyXP = nil -- Fusion.Value<number>
 local NotorietyProgress = nil -- Fusion.Value<number>
+local BountyAlertVisible = nil -- Fusion.Value<boolean>
+local RaidAlertVisible = nil -- Fusion.Value<boolean>
+local RaidAlertRaiderName = nil -- Fusion.Value<string>
 
 -- UI references
 local ScreenGui = nil
@@ -80,6 +87,9 @@ local function createHud()
   DayNightProgress = FusionScope:Value(0)
   NotorietyXP = FusionScope:Value(0)
   NotorietyProgress = FusionScope:Value(0)
+  BountyAlertVisible = FusionScope:Value(false)
+  RaidAlertVisible = FusionScope:Value(false)
+  RaidAlertRaiderName = FusionScope:Value("")
 
   ScreenGui = Instance.new("ScreenGui")
   ScreenGui.Name = "HudGui"
@@ -115,6 +125,14 @@ local function createHud()
     NotorietyIndicator.create(FusionScope, NotorietyXP, NotorietyProgress)
   notorietyIndicator.Parent = ScreenGui
   NotorietyPulseFn = triggerNotorietyPulse
+
+  -- Create the bounty alert overlay (UI-007)
+  local bountyAlert = BountyAlertOverlay.create(FusionScope, BountyAlertVisible)
+  bountyAlert.Parent = ScreenGui
+
+  -- Create the raid alert overlay (UI-007)
+  local raidAlert = RaidAlertOverlay.create(FusionScope, RaidAlertVisible, RaidAlertRaiderName)
+  raidAlert.Parent = ScreenGui
 end
 
 --[[
@@ -350,6 +368,44 @@ function HudController:KnitStart()
       end
     end)
   end
+
+  -- Wire up bounty alert overlay (UI-007)
+  if BountyController then
+    BountyController.BountyStarted:Connect(
+      function(_targetUserId: number, _targetName: string, isLocalPlayer: boolean)
+        if BountyAlertVisible and isLocalPlayer then
+          BountyAlertVisible:set(true)
+        end
+      end
+    )
+
+    BountyController.BountyEnded:Connect(
+      function(_targetUserId: number, _reason: string, wasLocalPlayer: boolean)
+        if BountyAlertVisible and wasLocalPlayer then
+          BountyAlertVisible:set(false)
+        end
+      end
+    )
+
+    -- Check if local player already has a bounty (late join)
+    if BountyAlertVisible and BountyController:IsLocalPlayerBounty() then
+      BountyAlertVisible:set(true)
+    end
+  end
+
+  -- Wire up raid alert overlay (UI-007)
+  ShipService.RaidAlert:Connect(function(raiderName: string, _slotIndex: number)
+    if RaidAlertVisible and RaidAlertRaiderName then
+      RaidAlertRaiderName:set(raiderName)
+      RaidAlertVisible:set(true)
+    end
+  end)
+
+  ShipService.RaidEndedForOwner:Connect(function(_slotIndex: number, _reason: string)
+    if RaidAlertVisible then
+      RaidAlertVisible:set(false)
+    end
+  end)
 
   print("[HudController] Started")
 end

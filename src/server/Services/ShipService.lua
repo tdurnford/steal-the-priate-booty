@@ -68,6 +68,9 @@ local ShipService = Knit.CreateService({
     -- Fired to the raider when their raid is interrupted.
     -- Args: (reason: string)
     RaidInterrupted = Knit.CreateSignal(),
+    -- Fired to the ship owner when a raid on their ship ends (completed or cancelled).
+    -- Args: (slotIndex: number, reason: string)
+    RaidEndedForOwner = Knit.CreateSignal(),
   },
 })
 
@@ -1039,11 +1042,19 @@ function ShipService:CancelRaid(raider: Player, reason: string?)
   if raid.thread then
     task.cancel(raid.thread)
   end
+  local targetSlotIndex = raid.targetSlotIndex
+  local ownerUserId = raid.ownerUserId
   ActiveRaids[raider] = nil
 
   -- Notify the raider
   local cancelReason = reason or "Interrupted"
   self.Client.RaidInterrupted:Fire(raider, cancelReason)
+
+  -- Notify the ship owner that the raid ended
+  local owner = Players:GetPlayerByUserId(ownerUserId)
+  if owner and owner.Parent then
+    self.Client.RaidEndedForOwner:Fire(owner, targetSlotIndex, "cancelled")
+  end
 
   print("[ShipService]", raider.Name, "raid cancelled:", cancelReason)
 end
@@ -1157,6 +1168,9 @@ function ShipService.Client:StartRaid(player: Player, targetSlotIndex: number): 
     local currentOwner = entry.owner
     if currentOwner and SessionStateService:IsShipLocked(currentOwner) then
       ShipService.Client.RaidInterrupted:Fire(player, "Ship was locked")
+      if currentOwner.Parent then
+        ShipService.Client.RaidEndedForOwner:Fire(currentOwner, targetSlotIndex, "cancelled")
+      end
       return
     end
 
@@ -1166,6 +1180,9 @@ function ShipService.Client:StartRaid(player: Player, targetSlotIndex: number): 
     end
     if currentHold <= 0 then
       ShipService.Client.RaidInterrupted:Fire(player, "Hold is empty")
+      if currentOwner and currentOwner.Parent then
+        ShipService.Client.RaidEndedForOwner:Fire(currentOwner, targetSlotIndex, "cancelled")
+      end
       return
     end
 
@@ -1185,6 +1202,11 @@ function ShipService.Client:StartRaid(player: Player, targetSlotIndex: number): 
 
     -- Fire client signals
     ShipService.Client.RaidCompleted:Fire(player, targetSlotIndex, stealAmount)
+
+    -- Notify the ship owner that the raid ended
+    if currentOwner and currentOwner.Parent then
+      ShipService.Client.RaidEndedForOwner:Fire(currentOwner, targetSlotIndex, "completed")
+    end
 
     -- Fire server-side signal
     ShipService.RaidCompleted:Fire(player, currentOwner, stealAmount)

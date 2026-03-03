@@ -1,3 +1,59 @@
+## 2026-03-02 — UI-007: HUD Bounty & Raid Alerts
+
+### What was done
+- Created `src/client/UI/BountyAlertOverlay.lua` — Fusion 0.3 component: persistent
+  pulsing skull icon + "BOUNTY ON YOU!" warning text. Appears at top-center when the
+  local player has an active bounty. Red glowing border with continuous pulse animation.
+  Fades in/out smoothly via animated transparency. Pulse loop starts/stops via Observer
+  to avoid Heartbeat cost when hidden.
+- Created `src/client/UI/RaidAlertOverlay.lua` — Fusion 0.3 component: persistent
+  "YOUR SHIP IS BEING RAIDED!" warning with raider name. Positioned below bounty alert.
+  Orange-red theme with pulsing border. Two-row layout (title + raider name).
+- Modified `src/server/Services/ShipService.lua` — Added `RaidEndedForOwner` client
+  signal that fires to the ship owner when a raid on their ship ends (completed or
+  cancelled). Fired in: raid completion (after steal), CancelRaid (any reason), and
+  mid-raid validation failures (ship locked, hold empty).
+- Modified `src/client/Controllers/HudController.lua` — Added BountyAlertOverlay and
+  RaidAlertOverlay imports, Fusion state values (BountyAlertVisible, RaidAlertVisible,
+  RaidAlertRaiderName), mounted both components in ScreenGui. Wired BountyController
+  BountyStarted/BountyEnded signals to toggle bounty alert (with late-join check).
+  Wired ShipService RaidAlert/RaidEndedForOwner signals to toggle raid alert.
+
+### Acceptance criteria met
+- Bounty warning shows with pulsing skull when player has bounty ✓
+- Bounty warning disappears when bounty clears ✓
+- Raid alert appears when someone starts raiding the player's ship ✓
+- Raid alert dismisses when the raid ends (completed, interrupted, cancelled) ✓
+- Alerts are prominent and readable (top-center, large text, pulsing glow) ✓
+
+### Design decisions
+- **Persistent overlays, not toasts**: Existing toast notifications via NotificationController
+  still fire for initial announcements. The new overlays are persistent HUD elements that
+  stay visible for the entire duration of the bounty/raid. This ensures players always know
+  their current danger state.
+- **Pulse animation via RunService**: Continuous sine-wave scale animation (0.85-1.05 for
+  bounty, 0.9-1.05 for raid). Connection starts/stops via Fusion Observer to save CPU
+  when alerts are hidden.
+- **RaidEndedForOwner signal**: The ship owner previously had no way to know when a raid
+  ended. Added a new Knit client signal that fires in all raid-end scenarios: successful
+  steal, cancel by raider, cancel by ragdoll/disconnect/movement, and mid-raid validation
+  failures (ship locked, hold emptied).
+- **Positioning**: Bounty alert at Y=52 (below top edge), raid alert at Y=106 (below bounty).
+  Both alerts can show simultaneously if a bounty player's ship is being raided.
+- **Scope cleanup**: Heartbeat connections are cleaned up via `table.insert(scope, fn)`
+  to ensure proper disposal when the HUD is destroyed.
+
+### Notes for next developer
+- The BountyController toasts (lines 93-115 in BountyController.lua) still fire alongside
+  the persistent overlay. If you want to remove the toast for the local player when they
+  get a bounty, modify the `onBountyStarted` function to skip the toast when isLocalPlayer.
+- The raid alert position is fixed below the bounty alert. If both show simultaneously,
+  they don't overlap. If you add more top-center alerts, offset them below Y=158.
+- Next priorities: HAZARD-002 (tidal surge), HAZARD-003 (quicksand), EVENT-002 (shipwreck),
+  UI-005 (minimap), UI-012 (leaderboard)
+
+---
+
 ## 2026-03-02 — NPC-009: Night NPC Behavior Modifiers
 
 ### What was done
