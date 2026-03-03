@@ -1,3 +1,59 @@
+## 2026-03-02 — UI-011: Cosmetic Shop UI
+
+### What was done
+- Created `src/client/UI/CosmeticShopPanel.lua` — Fusion 0.3 component: cosmetic shop modal
+  with 6 category tabs (Cutlass Skins, Hats, Outfits, Pets, Emotes, Ship Customization).
+  Follows GearShopPanel + LeaderboardPanel patterns. Each item row shows name, description,
+  cost (with affordability check), and status badges (OWNED, EQUIPPED). Three button states:
+  BUY (green, disabled if insufficient treasury), EQUIP (cyan), UNEQUIP (red). Scrollable
+  content area (max 5 visible items). Tab change triggers full rebuild (same as LeaderboardPanel).
+  Animated open/close (scale + transparency tween). Treasury display in footer. Conditional
+  child rendering for badges (if/then/else nil pattern).
+- Created `src/client/Controllers/CosmeticShopController.lua` — Client-side Knit controller
+  for the cosmetic shop modal. J keybind to toggle. Follows GearShopController pattern:
+  fetches catalog from CosmeticService, tracks treasury via DataService, routes buy/equip/unequip
+  actions through CosmeticController. Tab state stored in controller. Smart emote slot resolution:
+  for multi-slot items (emotes), picks first empty slot (emote_1 first, then emote_2), defaults
+  to first slot if both occupied. Listens to CosmeticController.CosmeticChanged and
+  DataService.DataChanged for live state updates while shop is open. DisplayOrder 51 (above
+  gear shop 50, below critical alerts).
+- No existing files modified — the controller is auto-discovered by Main.client.lua and the
+  UI component is required by the controller.
+
+### Acceptance criteria met
+- 6 category tabs with correct items (filtered from server catalog) ✓
+- Buy/Equip/Unequip states work correctly (three-state button with visual feedback) ✓
+- Buy disabled if insufficient treasury (grey button, muted text, red cost) ✓
+- Purchases and equip changes processed correctly (via CosmeticController RPCs) ✓
+
+### Design decisions
+- **GearShopPanel + LeaderboardPanel hybrid**: The panel combines the item row layout from
+  GearShopPanel (name, cost, action button) with the tab navigation from LeaderboardPanel
+  (rebuild-on-tab-change pattern). This keeps both patterns consistent.
+- **Three button states (buy/equip/unequip)**: Unlike gear shop which only has buy/equip/equipped,
+  cosmetics can be unequipped. The UNEQUIP button uses red (CloseRed) to visually distinguish
+  it from EQUIP (cyan) and BUY (green).
+- **Smart emote slot resolution**: When equipping an emote, the controller automatically picks
+  the first empty emote slot. If both emote_1 and emote_2 are occupied, it defaults to emote_1
+  (replacing the existing emote). This avoids requiring a slot picker modal.
+- **Scrollable content**: Ship Customization has 9 items, so the content area is capped at 5
+  visible items with a ScrollingFrame for overflow. Other categories with 3-4 items show without
+  scrolling.
+- **J keybind**: Chosen to complement existing UI keybinds (G=gear, L=leaderboard, P=stats,
+  M=minimap) without conflicting with combat keys (Q=dash, X=lunge, C=spin, Mouse2=block).
+
+### Notes for next developer
+- CosmeticShopPanel receives the full catalog from the server and filters by active tab locally.
+  This means a single GetCosmeticCatalog RPC serves all 6 tabs (no per-tab fetching).
+- The panel is rebuilt on every tab change and every state change (purchase/equip/unequip).
+  This is the same pattern as LeaderboardPanel — simple and reliable.
+- Visual application of cosmetics (seeing them on character/ship) is COSMETIC-003.
+- The emote system (playing emote animations) is EMOTE-001.
+- Next priorities: COSMETIC-003 (visual application), EMOTE-001 (emote system), UI-006
+  (event banner queuing), UI-008 (hazard warnings)
+
+---
+
 ## 2026-03-02 — COSMETIC-002: Cosmetic Purchase & Equip System
 
 ### What was done
