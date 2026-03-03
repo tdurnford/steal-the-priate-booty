@@ -1,6 +1,6 @@
 --[[
   ThreatEffectsService.lua
-  Server-authoritative threat tier effects (THREAT-003).
+  Server-authoritative threat tier effects (THREAT-003 / THREAT-004).
 
   Activates gameplay effects based on each player's threat tier:
     - Calm (0-19): No effects
@@ -8,6 +8,11 @@
       client plays eerie ambient audio
     - Hunted (40-59): Bonus Cursed Skeleton spawns targeting this player;
       aggro range extended to 60 studs; client shows fog vignette
+    - Cursed (60-79): All NPCs within 60 studs gain +20% speed;
+      30% chance containers near this player are traps (mini explosion on break);
+      client shows ghostly green footprints visible to other players
+    - Doomed (80-100): Phantom Captain spawns to hunt this player (NPC-008 stub);
+      dark aura + ghostly particles visible to all players
 
   Per-player tracking:
     - Listens to SessionStateService.StateChanged for "threatLevel" changes
@@ -18,6 +23,8 @@
     - GetSpeedBonusNearPosition(pos) — NPC speed bonus from nearby Uneasy+ players
     - GetAggroRangeForPlayer(player) — aggro range override for Hunted+ players
     - IsBonusNPC(npcId) — whether an NPC was spawned by threat effects
+    - ShouldTrapContainer(player) — whether a container broken by this player is a trap
+    - IsPlayerCursedOrAbove(player) — whether player is at Cursed+ tier
 ]]
 
 local Players = game:GetService("Players")
@@ -27,6 +34,7 @@ local Packages = ReplicatedStorage:WaitForChild("Packages")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 
 local Knit = require(Packages:WaitForChild("Knit"))
+local Signal = require(Packages:WaitForChild("GoodSignal"))
 local GameConfig = require(Shared:WaitForChild("GameConfig"))
 
 local ThreatEffectsService = Knit.CreateService({
@@ -35,13 +43,26 @@ local ThreatEffectsService = Knit.CreateService({
     -- Fired to a specific player when their threat tier changes.
     -- Args: (tierId: string, tierName: string, isUpward: boolean)
     ThreatTierChanged = Knit.CreateSignal(),
+    -- Fired to ALL players when a Cursed+ player's footprints should show/hide.
+    -- Args: (targetUserId: number, active: boolean)
+    GhostlyFootprintsChanged = Knit.CreateSignal(),
+    -- Fired to ALL players when a Doomed player's dark aura should show/hide.
+    -- Args: (targetUserId: number, active: boolean)
+    DarkAuraChanged = Knit.CreateSignal(),
+    -- Fired to a specific player when their container explodes as a trap.
+    -- Args: (containerId: string, position: Vector3)
+    TrapContainerExploded = Knit.CreateSignal(),
   },
 })
+
+-- Server-side signals for inter-service communication
+ThreatEffectsService.TrapTriggered = Signal.new() -- (player, containerId, position)
 
 -- Lazy-loaded service references (set in KnitStart)
 local SessionStateService = nil
 local NPCService = nil
 local DayNightService = nil
+local DoubloonService = nil
 
 -- Config shortcuts
 local THREAT = GameConfig.Threat
@@ -65,6 +86,15 @@ local BonusNPCs: { [Player]: { npcId: number } } = {}
 -- Uneasy+ player positions cached each tick for NPC speed lookups
 -- Updated lazily (NPCService queries when needed)
 local UneasyPlayers: { [Player]: boolean } = {} -- players at Uneasy+ tier
+
+-- Cursed+ player tracking for footprints
+local CursedPlayers: { [Player]: boolean } = {}
+
+-- Doomed player tracking for dark aura
+local DoomedPlayers: { [Player]: boolean } = {}
+
+-- Dark aura BillboardGui tracking per player
+local DarkAuraGuis: { [Player]: BillboardGui } = {}
 
 --------------------------------------------------------------------------------
 -- BONUS NPC MANAGEMENT
@@ -128,6 +158,317 @@ local function despawnBonusSkeleton(player: Player)
 end
 
 --------------------------------------------------------------------------------
+-- DARK AURA (DOOMED TIER)
+--------------------------------------------------------------------------------
+
+--[[
+  Creates a dark aura BillboardGui on the player's character.
+  The aura is a server-side BillboardGui replicated to all clients.
+  Also adds a dark PointLight and particle emitter on the character.
+]]
+local function createDarkAura(player: Player)
+  if DarkAuraGuis[player] then
+    return -- already has aura
+  end
+
+  local character = player.Character
+  if not character then
+    return
+  end
+  local head = character:FindFirstChild("Head")
+  local hrp = character:FindFirstChild("HumanoidRootPart")
+  if not head or not hrp then
+    return
+  end
+
+  -- BillboardGui: dark skull icon above head
+  local billboard = Instance.new("BillboardGui")
+  billboard.Name = "DoomedDarkAura"
+  billboard.Size = UDim2.new(3, 0, 3, 0)
+  billboard.StudsOffset = Vector3.new(0, 3.5, 0)
+  billboard.AlwaysOnTop = false
+  billboard.MaxDistance = 80
+  billboard.ResetOnSpawn = false
+
+  local icon = Instance.new("TextLabel")
+  icon.Name = "DoomedIcon"
+  icon.Size = UDim2.new(1, 0, 1, 0)
+  icon.BackgroundTransparency = 1
+  icon.Text = "\u{2620}" -- skull and crossbones
+  icon.TextColor3 = Color3.fromRGB(180, 80, 255) -- purple
+  icon.TextScaled = true
+  icon.Font = Enum.Font.GothamBold
+  icon.Parent = billboard
+
+  billboard.Parent = head
+  DarkAuraGuis[player] = billboard
+
+  -- Dark PointLight on HumanoidRootPart (purple/dark glow)
+  local darkLight = Instance.new("PointLight")
+  darkLight.Name = "DoomedLight"
+  darkLight.Color = Color3.fromRGB(100, 30, 160)
+  darkLight.Brightness = 0.8
+  darkLight.Range = THREAT.doomedDarkAuraRange
+  darkLight.Parent = hrp
+
+  -- Dark particle emitter on HumanoidRootPart
+  local particles = Instance.new("ParticleEmitter")
+  particles.Name = "DoomedParticles"
+  particles.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(60, 0, 100)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(120, 40, 180)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(30, 0, 50)),
+  })
+  particles.Size = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0),
+    NumberSequenceKeypoint.new(0.3, 1.5),
+    NumberSequenceKeypoint.new(1, 0),
+  })
+  particles.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0.5),
+    NumberSequenceKeypoint.new(0.5, 0.3),
+    NumberSequenceKeypoint.new(1, 1),
+  })
+  particles.Lifetime = NumberRange.new(1.5, 3)
+  particles.Rate = 12
+  particles.Speed = NumberRange.new(0.5, 2)
+  particles.SpreadAngle = Vector2.new(180, 180)
+  particles.RotSpeed = NumberRange.new(-30, 30)
+  particles.Parent = hrp
+
+  print(string.format("[ThreatEffectsService] Dark aura created for %s (Doomed tier)", player.Name))
+end
+
+--[[
+  Removes the dark aura from a player's character.
+]]
+local function removeDarkAura(player: Player)
+  local billboard = DarkAuraGuis[player]
+  if billboard and billboard.Parent then
+    billboard:Destroy()
+  end
+  DarkAuraGuis[player] = nil
+
+  local character = player.Character
+  if character then
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+      local light = hrp:FindFirstChild("DoomedLight")
+      if light then
+        light:Destroy()
+      end
+      local particles = hrp:FindFirstChild("DoomedParticles")
+      if particles then
+        particles:Destroy()
+      end
+    end
+  end
+
+  print(string.format("[ThreatEffectsService] Dark aura removed for %s", player.Name))
+end
+
+--[[
+  Re-attaches dark aura when a Doomed player's character respawns.
+]]
+local function reattachDarkAura(player: Player)
+  if not DoomedPlayers[player] then
+    return
+  end
+
+  -- Remove old, create new
+  DarkAuraGuis[player] = nil
+  createDarkAura(player)
+end
+
+--------------------------------------------------------------------------------
+-- GHOSTLY FOOTPRINTS (CURSED TIER)
+--------------------------------------------------------------------------------
+
+--[[
+  Enables ghostly footprints for a Cursed+ player.
+  Server-side: attaches a green footprint particle emitter to the character.
+  The emitter is on HumanoidRootPart and is replicated to all clients.
+]]
+local function enableGhostlyFootprints(player: Player)
+  if CursedPlayers[player] then
+    return
+  end
+  CursedPlayers[player] = true
+
+  local character = player.Character
+  if not character then
+    return
+  end
+  local hrp = character:FindFirstChild("HumanoidRootPart")
+  if not hrp then
+    return
+  end
+
+  -- Green footprint trail particle emitter (server-replicated)
+  local footprints = Instance.new("ParticleEmitter")
+  footprints.Name = "CursedFootprints"
+  footprints.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 255, 80)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(40, 200, 60)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(20, 100, 30)),
+  })
+  footprints.Size = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0.8),
+    NumberSequenceKeypoint.new(0.2, 1.2),
+    NumberSequenceKeypoint.new(1, 0),
+  })
+  footprints.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0.3),
+    NumberSequenceKeypoint.new(0.5, 0.5),
+    NumberSequenceKeypoint.new(1, 1),
+  })
+  footprints.Lifetime = NumberRange.new(2, 4)
+  footprints.Rate = 6
+  footprints.Speed = NumberRange.new(0, 0.2)
+  footprints.SpreadAngle = Vector2.new(30, 30)
+  footprints.EmissionDirection = Enum.NormalId.Bottom
+  -- Emit from below the character for a "footstep" look
+  footprints.Parent = hrp
+
+  -- Notify all clients for any additional client-side effects
+  ThreatEffectsService.Client.GhostlyFootprintsChanged:FireAll(player.UserId, true)
+
+  print(
+    string.format(
+      "[ThreatEffectsService] Ghostly footprints enabled for %s (Cursed tier)",
+      player.Name
+    )
+  )
+end
+
+--[[
+  Disables ghostly footprints for a player.
+]]
+local function disableGhostlyFootprints(player: Player)
+  if not CursedPlayers[player] then
+    return
+  end
+  CursedPlayers[player] = nil
+
+  local character = player.Character
+  if character then
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+      local footprints = hrp:FindFirstChild("CursedFootprints")
+      if footprints then
+        footprints:Destroy()
+      end
+    end
+  end
+
+  ThreatEffectsService.Client.GhostlyFootprintsChanged:FireAll(player.UserId, false)
+
+  print(string.format("[ThreatEffectsService] Ghostly footprints disabled for %s", player.Name))
+end
+
+--[[
+  Re-attaches ghostly footprints when a Cursed+ player's character respawns.
+]]
+local function reattachGhostlyFootprints(player: Player)
+  if not CursedPlayers[player] then
+    return
+  end
+
+  local character = player.Character
+  if not character then
+    return
+  end
+  local hrp = character:FindFirstChild("HumanoidRootPart")
+  if not hrp then
+    return
+  end
+
+  -- Remove existing if any
+  local existing = hrp:FindFirstChild("CursedFootprints")
+  if existing then
+    existing:Destroy()
+  end
+
+  -- Re-create
+  local footprints = Instance.new("ParticleEmitter")
+  footprints.Name = "CursedFootprints"
+  footprints.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 255, 80)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(40, 200, 60)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(20, 100, 30)),
+  })
+  footprints.Size = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0.8),
+    NumberSequenceKeypoint.new(0.2, 1.2),
+    NumberSequenceKeypoint.new(1, 0),
+  })
+  footprints.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0.3),
+    NumberSequenceKeypoint.new(0.5, 0.5),
+    NumberSequenceKeypoint.new(1, 1),
+  })
+  footprints.Lifetime = NumberRange.new(2, 4)
+  footprints.Rate = 6
+  footprints.Speed = NumberRange.new(0, 0.2)
+  footprints.SpreadAngle = Vector2.new(30, 30)
+  footprints.EmissionDirection = Enum.NormalId.Bottom
+  footprints.Parent = hrp
+end
+
+--------------------------------------------------------------------------------
+-- DOOMED TIER — PHANTOM CAPTAIN STUB
+--------------------------------------------------------------------------------
+
+--[[
+  Handles entering Doomed tier for a player.
+  When NPC-008 is implemented, this will spawn the Phantom Captain.
+  For now, sets the session state flag and logs a warning.
+]]
+local function onDoomedEnter(player: Player)
+  DoomedPlayers[player] = true
+
+  -- Set session state for Phantom Captain tracking
+  if SessionStateService then
+    SessionStateService:SetPhantomCaptainActive(player, true)
+  end
+
+  -- Create dark aura (visible to all players)
+  createDarkAura(player)
+
+  -- Notify all clients
+  ThreatEffectsService.Client.DarkAuraChanged:FireAll(player.UserId, true)
+
+  -- TODO(NPC-008): Spawn Phantom Captain here
+  -- local captainEntry = NPCService:SpawnPhantomCaptain(player)
+  warn(
+    string.format(
+      "[ThreatEffectsService] %s reached Doomed tier — Phantom Captain spawn deferred (NPC-008 not implemented)",
+      player.Name
+    )
+  )
+end
+
+--[[
+  Handles leaving Doomed tier for a player.
+]]
+local function onDoomedExit(player: Player)
+  DoomedPlayers[player] = nil
+
+  -- Clear session state
+  if SessionStateService then
+    SessionStateService:SetPhantomCaptainActive(player, false)
+  end
+
+  -- Remove dark aura
+  removeDarkAura(player)
+
+  -- Notify all clients
+  ThreatEffectsService.Client.DarkAuraChanged:FireAll(player.UserId, false)
+
+  -- TODO(NPC-008): Despawn Phantom Captain here
+end
+
+--------------------------------------------------------------------------------
 -- TIER CHANGE DETECTION
 --------------------------------------------------------------------------------
 
@@ -164,6 +505,20 @@ local function onThreatChanged(player: Player, newThreatLevel: number)
   elseif newOrder < TIER_ORDER.hunted and oldOrder >= TIER_ORDER.hunted then
     -- Left Hunted: despawn bonus skeleton
     despawnBonusSkeleton(player)
+  end
+
+  -- Handle Cursed ghostly footprints
+  if newOrder >= TIER_ORDER.cursed and oldOrder < TIER_ORDER.cursed then
+    enableGhostlyFootprints(player)
+  elseif newOrder < TIER_ORDER.cursed and oldOrder >= TIER_ORDER.cursed then
+    disableGhostlyFootprints(player)
+  end
+
+  -- Handle Doomed dark aura + Phantom Captain
+  if newOrder >= TIER_ORDER.doomed and oldOrder < TIER_ORDER.doomed then
+    onDoomedEnter(player)
+  elseif newOrder < TIER_ORDER.doomed and oldOrder >= TIER_ORDER.doomed then
+    onDoomedExit(player)
   end
 
   -- Notify client for VFX/audio
@@ -217,7 +572,7 @@ function ThreatEffectsService:GetSpeedBonusNearPosition(npcPosition: Vector3): n
     local tierOrder = TIER_ORDER[tierId] or 1
 
     if tierOrder >= TIER_ORDER.cursed then
-      -- Cursed/Doomed: +20% speed (handled by THREAT-004, but prepped here)
+      -- Cursed/Doomed: +20% NPC speed
       bestBonus = math.max(bestBonus, THREAT.cursedNpcSpeedBonus)
     elseif tierOrder >= TIER_ORDER.uneasy then
       -- Uneasy/Hunted: +10% speed
@@ -271,6 +626,71 @@ function ThreatEffectsService:GetPlayerThreatTier(player: Player): string
   return PlayerThreatTiers[player] or "calm"
 end
 
+--[[
+  Checks if a player is at Cursed tier or above.
+  @param player The player to check
+  @return true if the player is at Cursed (60-79) or Doomed (80-100)
+]]
+function ThreatEffectsService:IsPlayerCursedOrAbove(player: Player): boolean
+  local tierId = PlayerThreatTiers[player] or "calm"
+  return (TIER_ORDER[tierId] or 1) >= TIER_ORDER.cursed
+end
+
+--[[
+  Rolls whether a container broken by this player should be a trap.
+  Only applies to Cursed+ players. 30% chance per GameConfig.
+  @param player The player who broke the container
+  @return true if the container should explode as a trap
+]]
+function ThreatEffectsService:ShouldTrapContainer(player: Player): boolean
+  if not self:IsPlayerCursedOrAbove(player) then
+    return false
+  end
+  return math.random() < THREAT.cursedTrapContainerChance
+end
+
+--[[
+  Executes the trap container explosion on a player.
+  Called by ContainerService when a trap triggers.
+  Applies ragdoll and loot spill.
+  @param player The player hit by the trap
+  @param position The container's position (for VFX)
+  @param containerId The container's ID (for client notification)
+]]
+function ThreatEffectsService:ExecuteTrap(player: Player, position: Vector3, containerId: string)
+  -- Ragdoll the player
+  if SessionStateService and not SessionStateService:IsRagdolling(player) then
+    SessionStateService:StartRagdoll(player, THREAT.cursedTrapRagdollDuration)
+  end
+
+  -- Spill loot
+  local heldDoubloons = SessionStateService and SessionStateService:GetHeldDoubloons(player) or 0
+  if heldDoubloons > 0 then
+    local spillAmount = math.max(1, math.floor(heldDoubloons * THREAT.cursedTrapSpillPercent))
+    SessionStateService:AddHeldDoubloons(player, -spillAmount)
+
+    -- Scatter the spilled doubloons
+    if DoubloonService then
+      DoubloonService:ScatterDoubloons(position, spillAmount, 5)
+    end
+  end
+
+  -- Notify the player for client-side VFX
+  ThreatEffectsService.Client.TrapContainerExploded:Fire(player, containerId, position)
+
+  -- Fire server-side signal
+  ThreatEffectsService.TrapTriggered:Fire(player, containerId, position)
+
+  print(
+    string.format(
+      "[ThreatEffectsService] Trap container triggered on %s — ragdoll %.1fs, %.0f%% loot spill",
+      player.Name,
+      THREAT.cursedTrapRagdollDuration,
+      THREAT.cursedTrapSpillPercent * 100
+    )
+  )
+end
+
 --------------------------------------------------------------------------------
 -- CLIENT-EXPOSED METHODS
 --------------------------------------------------------------------------------
@@ -291,17 +711,69 @@ function ThreatEffectsService.Client:GetThreatTier(player: Player): (string, str
   return tierId, tierName
 end
 
+--[[
+  Returns info about all players with active Cursed/Doomed effects (for late-join sync).
+  @return { cursedPlayerIds: {number}, doomedPlayerIds: {number} }
+]]
+function ThreatEffectsService.Client:GetActiveEffects(_player: Player): { [string]: { number } }
+  local cursedIds = {}
+  local doomedIds = {}
+
+  for p, _ in CursedPlayers do
+    if p.Parent then
+      table.insert(cursedIds, p.UserId)
+    end
+  end
+  for p, _ in DoomedPlayers do
+    if p.Parent then
+      table.insert(doomedIds, p.UserId)
+    end
+  end
+
+  return {
+    cursedPlayerIds = cursedIds,
+    doomedPlayerIds = doomedIds,
+  }
+end
+
 --------------------------------------------------------------------------------
 -- CLEANUP
 --------------------------------------------------------------------------------
 
 local function onPlayerRemoving(player: Player)
+  -- Clean up Doomed effects
+  if DoomedPlayers[player] then
+    removeDarkAura(player)
+    ThreatEffectsService.Client.DarkAuraChanged:FireAll(player.UserId, false)
+    DoomedPlayers[player] = nil
+  end
+
+  -- Clean up Cursed effects
+  if CursedPlayers[player] then
+    disableGhostlyFootprints(player)
+  end
+
   -- Despawn any bonus NPCs for this player
   despawnBonusSkeleton(player)
 
   -- Clean up tracking
   PlayerThreatTiers[player] = nil
   UneasyPlayers[player] = nil
+end
+
+--------------------------------------------------------------------------------
+-- CHARACTER RESPAWN HANDLING
+--------------------------------------------------------------------------------
+
+local function onCharacterAdded(player: Player)
+  -- Re-attach Cursed footprints if player is Cursed+
+  task.delay(0.5, function()
+    if not player.Parent then
+      return
+    end
+    reattachGhostlyFootprints(player)
+    reattachDarkAura(player)
+  end)
 end
 
 --------------------------------------------------------------------------------
@@ -316,6 +788,7 @@ function ThreatEffectsService:KnitStart()
   SessionStateService = Knit.GetService("SessionStateService")
   NPCService = Knit.GetService("NPCService")
   DayNightService = Knit.GetService("DayNightService")
+  DoubloonService = Knit.GetService("DoubloonService")
 
   -- Listen for threat level changes via SessionStateService
   SessionStateService.StateChanged:Connect(
@@ -332,10 +805,30 @@ function ThreatEffectsService:KnitStart()
       local threatLevel = SessionStateService:GetThreatLevel(player)
       local tier = GameConfig.getThreatTier(threatLevel)
       PlayerThreatTiers[player] = tier.id
-      if TIER_ORDER[tier.id] >= TIER_ORDER.uneasy then
+      local tierOrder = TIER_ORDER[tier.id]
+      if tierOrder >= TIER_ORDER.uneasy then
         UneasyPlayers[player] = true
       end
+      if tierOrder >= TIER_ORDER.cursed then
+        enableGhostlyFootprints(player)
+      end
+      if tierOrder >= TIER_ORDER.doomed then
+        onDoomedEnter(player)
+      end
     end
+  end
+
+  -- Handle character respawns for re-attaching effects
+  Players.PlayerAdded:Connect(function(player)
+    player.CharacterAdded:Connect(function()
+      onCharacterAdded(player)
+    end)
+  end)
+  -- Also connect for existing players
+  for _, player in Players:GetPlayers() do
+    player.CharacterAdded:Connect(function()
+      onCharacterAdded(player)
+    end)
   end
 
   -- Clean up on player leave
@@ -361,7 +854,7 @@ function ThreatEffectsService:KnitStart()
     end
   end)
 
-  print("[ThreatEffectsService] Started — listening for threat tier transitions")
+  print("[ThreatEffectsService] Started — listening for threat tier transitions (tiers 1-5)")
 end
 
 return ThreatEffectsService

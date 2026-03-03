@@ -1,3 +1,79 @@
+## 2026-03-02 — THREAT-004: Threat Level Effects — Tiers 4-5 (Cursed, Doomed)
+
+### What was done
+- Extended `src/server/Services/ThreatEffectsService.lua` with Cursed (60-79) and
+  Doomed (80-100) tier effects.
+- Extended `src/client/Controllers/ThreatEffectsController.lua` with tier-specific
+  vignette colors/intensities, escalating audio, and trap explosion VFX.
+- Modified `src/server/Services/ContainerService.lua` to hook into ThreatEffectsService
+  for trap container detection on break.
+- Added `doomedDarkAuraRange` config to `src/shared/GameConfig.lua`.
+
+### Cursed tier (60-79) effects
+1. **NPC +20% speed**: `GetSpeedBonusNearPosition()` already returned 0.20 for Cursed+
+   players (was prepped in THREAT-003). Now fully activated with tier tracking.
+2. **30% trap containers**: `ShouldTrapContainer(player)` rolls 30% chance per config.
+   ContainerService calls this in `BreakContainer()` — if trap triggers, calls
+   `ExecuteTrap()` which applies 1.5s ragdoll + 10% loot spill + scatters spilled
+   doubloons at container position.
+3. **Ghostly green footprints**: Server-side ParticleEmitter on HumanoidRootPart
+   (green color, bottom emission direction, replicated to all clients).
+   Created on Cursed+ entry, destroyed on tier downgrade, re-attached on respawn.
+4. **Client-side**: Green-tinted fog vignette (darker than Hunted), eerie audio at
+   0.25 volume (louder than Hunted's 0.15).
+
+### Doomed tier (80-100) effects
+1. **Phantom Captain stub**: Sets `phantomCaptainActive = true` in SessionState.
+   Logs warning that NPC-008 (Phantom Captain NPC) is not yet implemented.
+   When NPC-008 is done, spawn/despawn calls go in `onDoomedEnter`/`onDoomedExit`.
+2. **Dark aura (visible to all)**: Server-side BillboardGui with skull icon (purple),
+   PointLight (purple glow, 20-stud range), and dark ParticleEmitter on
+   HumanoidRootPart. All server-replicated, visible to all players.
+3. **Client-side**: Dark purple vignette (most intense), eerie audio at 0.35 volume,
+   "DOOM approaches! The Captain stirs..." notification.
+
+### Trap container VFX (client-side)
+- Screen flash (orange-red, 0.8s fade-out) on local player when trap triggers
+- Camera shake (0.4s duration, diminishing intensity)
+- "TRAP! The container was cursed!" notification (red, 3s)
+
+### Server-side signals added
+- `ThreatEffectsService.TrapTriggered` — server-side signal for inter-service use
+- `ThreatEffectsService.Client.GhostlyFootprintsChanged` — broadcast to all clients
+- `ThreatEffectsService.Client.DarkAuraChanged` — broadcast to all clients
+- `ThreatEffectsService.Client.TrapContainerExploded` — fired to trap victim
+
+### Client method added
+- `GetActiveEffects()` — returns all players with active Cursed/Doomed effects
+  (for potential late-join sync of client-only effects)
+
+### Key design decisions
+- **Server-replicated visuals**: Footprints, dark aura particles, and BillboardGuis
+  are server-side Instances, so they replicate automatically to all clients. No need
+  for per-client management of other players' effects.
+- **Trap after loot scatter**: Trap triggers AFTER doubloons scatter from the broken
+  container, so the player briefly sees the loot before being ragdolled. This makes
+  traps feel extra punishing — you see the loot but can't grab it immediately.
+- **Cumulative vignette**: Each tier has its own color and intensity. Hunted = black,
+  Cursed = greenish-dark, Doomed = dark purple. Vignettes pulse at different rates
+  for each tier.
+- **DoubloonService lazy-loaded**: Moved from inline `Knit.GetService()` in ExecuteTrap
+  to top-level lazy-load in KnitStart for consistency and safety.
+
+### Notes for next developer
+- Phantom Captain spawn is stubbed — implement in NPC-008. Entry/exit points are
+  `onDoomedEnter(player)` / `onDoomedExit(player)` in ThreatEffectsService.
+- Footprint particles use ParticleEmitter on HumanoidRootPart — consider replacing
+  with proper decal-based footprints when polish pass is done.
+- Camera shake uses a raw Heartbeat loop — replace with proper CameraShakeModule
+  if one is added to the project.
+- Trap containers don't have any special visual before breaking — they look like
+  normal containers. The "curse" is the 30% chance on break, not on sight.
+- Next priorities: NPC-003 (SimplePath patrol), NPC-006 (spawn manager),
+  NPC-007 (Ghost Pirate), NPC-008 (Phantom Captain)
+
+---
+
 ## 2026-03-02 — RANK-002: Notoriety Rank Thresholds & Unlocks
 
 ### What was done

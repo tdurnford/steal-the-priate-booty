@@ -54,6 +54,7 @@ ContainerService.ContainerBroken = Signal.new() -- (containerEntry, player)
 local DayNightService = nil
 local DoubloonService = nil
 local NPCService = nil
+local ThreatEffectsService = nil
 
 --------------------------------------------------------------------------------
 -- SPAWN FREQUENCY WEIGHTS
@@ -498,6 +499,12 @@ function ContainerService:BreakContainer(containerId: string, attackingPlayer: P
     return
   end
 
+  -- THREAT-004: Check if this container is a trap for Cursed+ players
+  local isTrap = false
+  if attackingPlayer and ThreatEffectsService then
+    isTrap = ThreatEffectsService:ShouldTrapContainer(attackingPlayer)
+  end
+
   -- Calculate yield
   local yieldMin = entry.def.yieldMin
   local yieldMax = entry.def.yieldMax
@@ -510,9 +517,14 @@ function ContainerService:BreakContainer(containerId: string, attackingPlayer: P
     yield = math.floor(yield)
   end
 
-  -- Scatter doubloons
+  -- Scatter doubloons (even traps scatter loot first)
   if DoubloonService and yield > 0 then
     DoubloonService:ScatterDoubloons(entry.position, yield, entry.def.scatterRadius)
+  end
+
+  -- THREAT-004: Execute trap — ragdoll + spill on the breaking player
+  if isTrap and attackingPlayer then
+    ThreatEffectsService:ExecuteTrap(attackingPlayer, entry.position, containerId)
   end
 
   -- Cursed Chest ambush: 50% chance to spawn 1-2 ambush NPCs at break location
@@ -541,13 +553,15 @@ function ContainerService:BreakContainer(containerId: string, attackingPlayer: P
   if ambushCount > 0 then
     ambushMsg = string.format(" (ambush! %d NPCs spawned)", ambushCount)
   end
+  local trapMsg = if isTrap then " [TRAP!]" else ""
   print(
     string.format(
-      "[ContainerService] %s broken by %s — scattered %d doubloons%s",
+      "[ContainerService] %s broken by %s — scattered %d doubloons%s%s",
       entry.def.name,
       attackingPlayer and attackingPlayer.Name or "unknown",
       yield,
-      ambushMsg
+      ambushMsg,
+      trapMsg
     )
   )
 end
@@ -666,6 +680,7 @@ function ContainerService:KnitStart()
   DayNightService = Knit.GetService("DayNightService")
   DoubloonService = Knit.GetService("DoubloonService")
   NPCService = Knit.GetService("NPCService")
+  ThreatEffectsService = Knit.GetService("ThreatEffectsService")
 
   -- Listen for day/night transitions
   DayNightService.PhaseChanged:Connect(function(newPhase: string, previousPhase: string)

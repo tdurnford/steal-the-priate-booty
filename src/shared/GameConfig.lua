@@ -519,6 +519,9 @@ GameConfig.Threat = {
   cursedTrapContainerChance = 0.30, -- 30% trap containers
   cursedTrapRagdollDuration = 1.5, -- seconds
   cursedTrapSpillPercent = 0.10, -- 10%
+
+  -- Doomed tier effects
+  doomedDarkAuraRange = 20, -- studs: visible dark aura radius
 }
 
 --------------------------------------------------------------------------------

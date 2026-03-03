@@ -1,12 +1,17 @@
 --[[
   ThreatEffectsController.lua
-  Client-side threat tier visual/audio effects (THREAT-003).
+  Client-side threat tier visual/audio effects (THREAT-003 / THREAT-004).
 
   Listens to ThreatEffectsService.ThreatTierChanged for tier transitions.
   Effects:
     - Uneasy (20-39): Faint eerie ambient audio loop (client-only)
     - Hunted (40-59): Screen-edge fog vignette overlay + eerie audio
+    - Cursed (60-79): Enhanced vignette (green tint), louder eerie audio,
+      trap container explosion VFX on self
+    - Doomed (80-100): Intense dark vignette (purple tint), loudest eerie audio,
+      screen shake on trap
 
+  Server handles replicated effects (footprints, dark aura particles).
   All effects clean up on tier downgrade or player death/respawn.
 ]]
 
@@ -45,11 +50,17 @@ local EerieSound: Sound? = nil
 local EERIE_SOUND_ID = "rbxassetid://9114046944" -- low droning foghorn (reused, lower vol)
 local EERIE_VOLUME_UNEASY = 0.08 -- barely audible
 local EERIE_VOLUME_HUNTED = 0.15 -- more noticeable
+local EERIE_VOLUME_CURSED = 0.25 -- unsettling
+local EERIE_VOLUME_DOOMED = 0.35 -- ominous
 
 -- Fog vignette overlay
 local VignetteGui: ScreenGui? = nil
 local VignetteFrame: Frame? = nil
 local VignetteTween: Tween? = nil
+
+-- Trap explosion screen flash
+local TrapFlashGui: ScreenGui? = nil
+local TrapFlashFrame: Frame? = nil
 
 -- Tier transition notification colors
 local TIER_COLORS = {
@@ -66,6 +77,25 @@ local TIER_MESSAGES = {
   cursed = "A curse follows your every step!",
   doomed = "DOOM approaches! The Captain stirs...",
   calm = "The threat has passed.",
+}
+
+-- Vignette settings per tier
+local VIGNETTE_SETTINGS = {
+  hunted = {
+    color = Color3.fromRGB(0, 0, 0),
+    transparency = 0.55,
+    pulseTarget = 0.7,
+  },
+  cursed = {
+    color = Color3.fromRGB(20, 50, 10), -- greenish-dark
+    transparency = 0.45,
+    pulseTarget = 0.6,
+  },
+  doomed = {
+    color = Color3.fromRGB(40, 10, 60), -- dark purple
+    transparency = 0.35,
+    pulseTarget = 0.5,
+  },
 }
 
 --------------------------------------------------------------------------------
@@ -164,8 +194,9 @@ end
 
 --[[
   Shows the fog vignette with a fade-in. Pulses opacity for an unsettling feel.
+  @param settings Vignette color, transparency, and pulse target for the tier
 ]]
-local function showVignette()
+local function showVignette(settings: { color: Color3, transparency: number, pulseTarget: number })
   ensureVignetteGui()
   if not VignetteFrame then
     return
@@ -177,14 +208,18 @@ local function showVignette()
     VignetteTween = nil
   end
 
+  -- Set color for the tier
+  VignetteFrame.BackgroundColor3 = settings.color
+
   -- Fade in
   TweenService:Create(
     VignetteFrame,
     TweenInfo.new(1.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-    { BackgroundTransparency = 0.55 }
+    { BackgroundTransparency = settings.transparency }
   ):Play()
 
-  -- Start pulsing effect (oscillates between 0.55 and 0.7 transparency)
+  -- Start pulsing effect
+  local pulseTarget = settings.pulseTarget
   task.delay(1.5, function()
     if not VignetteFrame or not VignetteFrame.Parent then
       return
@@ -192,7 +227,7 @@ local function showVignette()
     VignetteTween = TweenService:Create(
       VignetteFrame,
       TweenInfo.new(3, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-      { BackgroundTransparency = 0.7 }
+      { BackgroundTransparency = pulseTarget }
     )
     VignetteTween:Play()
   end)
@@ -220,6 +255,80 @@ local function hideVignette()
 end
 
 --------------------------------------------------------------------------------
+-- TRAP CONTAINER EXPLOSION VFX
+--------------------------------------------------------------------------------
+
+--[[
+  Creates the trap flash ScreenGui if not already created.
+]]
+local function ensureTrapFlashGui()
+  if TrapFlashGui then
+    return
+  end
+
+  TrapFlashGui = Instance.new("ScreenGui")
+  TrapFlashGui.Name = "TrapFlashGui"
+  TrapFlashGui.ResetOnSpawn = false
+  TrapFlashGui.DisplayOrder = 95 -- above vignette
+  TrapFlashGui.IgnoreGuiInset = true
+  TrapFlashGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+  TrapFlashFrame = Instance.new("Frame")
+  TrapFlashFrame.Name = "Flash"
+  TrapFlashFrame.Size = UDim2.new(1, 0, 1, 0)
+  TrapFlashFrame.BackgroundColor3 = Color3.fromRGB(255, 100, 30) -- orange-red explosion
+  TrapFlashFrame.BackgroundTransparency = 1
+  TrapFlashFrame.BorderSizePixel = 0
+  TrapFlashFrame.Parent = TrapFlashGui
+end
+
+--[[
+  Plays the trap container explosion VFX: screen flash + camera shake.
+  @param position The world position of the explosion
+]]
+local function playTrapExplosionVFX(_containerId: string, _position: Vector3)
+  ensureTrapFlashGui()
+  if not TrapFlashFrame then
+    return
+  end
+
+  -- Screen flash: orange-red → fade out
+  TrapFlashFrame.BackgroundTransparency = 0.3
+  TweenService:Create(
+    TrapFlashFrame,
+    TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+    { BackgroundTransparency = 1 }
+  ):Play()
+
+  -- Camera shake
+  local camera = workspace.CurrentCamera
+  if camera then
+    task.spawn(function()
+      local shakeDuration = 0.4
+      local shakeIntensity = 1.5
+      local startTime = os.clock()
+      while os.clock() - startTime < shakeDuration do
+        local elapsed = os.clock() - startTime
+        local factor = 1 - (elapsed / shakeDuration) -- diminishing intensity
+        local offsetX = (math.random() - 0.5) * shakeIntensity * factor
+        local offsetY = (math.random() - 0.5) * shakeIntensity * factor
+        camera.CFrame = camera.CFrame * CFrame.new(offsetX, offsetY, 0)
+        task.wait()
+      end
+    end)
+  end
+
+  -- Show notification
+  if NotificationController then
+    NotificationController:ShowNotification(
+      "TRAP! The container was cursed!",
+      Color3.fromRGB(255, 80, 30),
+      3
+    )
+  end
+end
+
+--------------------------------------------------------------------------------
 -- TIER TRANSITION HANDLER
 --------------------------------------------------------------------------------
 
@@ -242,19 +351,26 @@ local function onThreatTierChanged(tierId: string, tierName: string, isUpward: b
     NotificationController:ShowNotification(message, color, 4)
   end
 
-  -- Eerie audio: Uneasy+ only
-  if tierOrder >= TIER_ORDER.uneasy then
-    local volume = if tierOrder >= TIER_ORDER.hunted
-      then EERIE_VOLUME_HUNTED
-      else EERIE_VOLUME_UNEASY
-    startEerieAudio(volume)
+  -- Eerie audio: Uneasy+ only, volume escalates per tier
+  if tierOrder >= TIER_ORDER.doomed then
+    startEerieAudio(EERIE_VOLUME_DOOMED)
+  elseif tierOrder >= TIER_ORDER.cursed then
+    startEerieAudio(EERIE_VOLUME_CURSED)
+  elseif tierOrder >= TIER_ORDER.hunted then
+    startEerieAudio(EERIE_VOLUME_HUNTED)
+  elseif tierOrder >= TIER_ORDER.uneasy then
+    startEerieAudio(EERIE_VOLUME_UNEASY)
   else
     stopEerieAudio()
   end
 
-  -- Fog vignette: Hunted+ only
-  if tierOrder >= TIER_ORDER.hunted then
-    showVignette()
+  -- Fog vignette: Hunted+ only, with tier-specific settings
+  if tierOrder >= TIER_ORDER.doomed then
+    showVignette(VIGNETTE_SETTINGS.doomed)
+  elseif tierOrder >= TIER_ORDER.cursed then
+    showVignette(VIGNETTE_SETTINGS.cursed)
+  elseif tierOrder >= TIER_ORDER.hunted then
+    showVignette(VIGNETTE_SETTINGS.hunted)
   else
     hideVignette()
   end
@@ -297,6 +413,13 @@ function ThreatEffectsController:KnitStart()
     end
   )
 
+  -- Listen for trap container explosions (Cursed+ tier)
+  ThreatEffectsService.TrapContainerExploded:Connect(
+    function(containerId: string, position: Vector3)
+      playTrapExplosionVFX(containerId, position)
+    end
+  )
+
   -- Sync initial tier on join
   task.spawn(function()
     local tierId, tierName = ThreatEffectsService:GetThreatTier()
@@ -309,7 +432,7 @@ function ThreatEffectsController:KnitStart()
   -- Re-sync on character respawn
   LocalPlayer.CharacterAdded:Connect(onCharacterAdded)
 
-  print("[ThreatEffectsController] Started — listening for threat tier changes")
+  print("[ThreatEffectsController] Started — listening for threat tier changes (tiers 1-5)")
 end
 
 return ThreatEffectsController
