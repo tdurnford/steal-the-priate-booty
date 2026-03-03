@@ -3787,3 +3787,103 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - TUTORIAL-002 (steps 6-10) should extend TutorialService with additional steps after
   the skeleton kill, before calling completeTutorial.
 - Next priorities: TUTORIAL-002 (steps 6-10), SHIP-005 (ship lock visuals), UI-005 (minimap)
+
+---
+
+## 2026-03-02 — TUTORIAL-002: Shipwrecked Tutorial Sequence (Steps 6-10)
+
+### What was done
+- Extended `src/server/Services/TutorialService.lua` from a 5-step to a 10-step tutorial
+  sequence. After killing the tutorial skeleton (step 5), the player now continues to
+  the Harbor (steps 6-10) instead of immediately completing.
+- Extended `src/client/Controllers/TutorialController.lua` with compass waypoint UI,
+  new step messages, and additional audio cues for steps 6-10.
+- Updated `src/client/UI/TutorialPrompt.lua` to show "Step X of 10" instead of "Step X of 5".
+- Added tutorial config entries to `src/shared/GameConfig.lua` for step 6-10 parameters.
+
+### New tutorial flow (steps 6-10)
+1. **Step 6: Navigate to Harbor** — Server creates a tall glowing beacon at the Harbor
+   position (neon pillar + particles + BillboardGui label). Fires `TutorialWaypoint` client
+   signal with Harbor position. Client creates a compass arrow indicator at screen top that
+   rotates to point toward Harbor with distance readout. 1-2 easy crates spawn along the
+   path for extra doubloons.
+2. **Step 7: Deposit doubloons** — Triggered by `HarborService.PlayerEnteredHarbor` signal.
+   Harbor beacon removed. Waypoint updated to ship dock position. Player uses existing
+   ProximityPrompt (E key) to deposit. Triggered by `ShipService.DepositCompleted` signal.
+3. **Step 8: Lock ship** — Waypoint stays at ship. Player uses existing ProximityPrompt
+   (F key) to lock. Triggered by `ShipService.LockCompleted` signal. Doubloons move to
+   treasury, ship tier recalculates (Rowboat for new player).
+4. **Step 9: Equip Rusty Cutlass** — Waypoint moved to shop position. Player opens gear
+   shop (G key) and equips the Rusty Cutlass (already owned from defaults, free). Triggered
+   by `GearService.GearEquipped` signal with gearId "rusty_cutlass". Driftwood removed
+   from ownedGear.
+5. **Step 10: Tutorial complete** — Waypoint cleared. 3-second celebration message, then
+   `completeTutorial()` marks persistent data, clears session state, fires TutorialCompleted.
+
+### Server-side changes (TutorialService.lua)
+- Added `TutorialWaypoint` client signal for compass marker positioning
+- Added lazy-loaded refs for `ShipService`, `HarborService`
+- Added `harborBeacon: BasePart?` and `pathCrateIds: { string }` to TutorialInstance type
+- Added `cleanupEntities` handling for beacon and path crates
+- Added `createHarborBeacon()` helper (neon pillar + particles + BillboardGui)
+- Added `getHarborPosition()` and `getShopPosition()` helpers (workspace Part fallbacks)
+- Added `removeDriftwoodFromData()` helper
+- Forward-declared `completeTutorial` (defined after `advanceStep` but called from it)
+- Changed step 5 NPC kill handler: `advanceStep(instance, 6)` instead of `completeTutorial`
+- Added advanceStep handlers for steps 6-10 (beacon, waypoint, cleanup, completion)
+- Added event listeners in StartTutorial: HarborEntry, Deposit, Lock, GearEquip
+- Modified `completeTutorial`: only teleports if player NOT already in Harbor, fallback
+  driftwood→rusty_cutlass swap if player somehow skipped step 9
+
+### Client-side changes (TutorialController.lua)
+- Added compass waypoint system: `createWaypointUI()` (diamond arrow + distance label),
+  `updateWaypoint()` (RenderStepped frame-by-frame camera-relative rotation),
+  `showWaypoint(pos)`, `hideWaypoint()`, `destroyWaypointUI()`
+- Added `TutorialWaypoint` listener: shows/hides compass based on server signals
+- Updated `STEP_MESSAGES_CLIENT` table with steps 6-10
+- Added audio cues: step 6 (Dawn horn), step 7/8 (coin chimes), step 10 (Dawn fanfare)
+- Updated `destroyTutorialUI()` to also destroy waypoint UI
+
+### Config additions (`GameConfig.Tutorial`)
+- `totalSteps = 10` — total tutorial steps
+- `pathCrateCount = 2` — crates along beach→harbor path
+- `pathCrateHits = 2` — easy crates (2 driftwood hits)
+- `shopProximityRadius = 15` — studs to trigger shop proximity
+- `beaconHeight = 40` — harbor beacon pillar height
+
+### Acceptance criteria met
+- Compass marker (waypoint arrow + distance) guides player to Harbor ✓
+- Player can deposit at ship via existing ProximityPrompt ✓
+- Player can lock ship via existing ProximityPrompt ✓
+- Rowboat spawns at dock (ShipService auto-spawns on data load; lock recalculates tier) ✓
+- Rusty Cutlass granted free via shop equip, driftwood removed ✓
+- Full HUD appears on completion (TutorialCompleted fires, session state cleared) ✓
+- tutorial_completed persists (DataService:CompleteTutorial) ✓
+- Disconnect during tutorial causes restart (PlayerRemoving cleanup, data not marked done) ✓
+
+### Design decisions
+- **Reuse existing interactions**: Steps 7-9 reuse ShipInteractionController's
+  ProximityPrompts and GearShopPanel rather than creating tutorial-specific UI. This
+  teaches real game mechanics.
+- **Forward declaration pattern**: `local completeTutorial` declared before `advanceStep`,
+  then `completeTutorial = function(...)` after it. Needed because step 10 calls
+  completeTutorial from inside advanceStep.
+- **Graceful skip handling**: If a player uses "Skip Tutorial" during steps 6-10,
+  completeTutorial checks if driftwood is still equipped and falls back to rusty cutlass.
+- **No proximity-based step 9**: Instead of proximity check to shop area, we listen for
+  GearService.GearEquipped("rusty_cutlass"). This is more reliable and teaches the player
+  to actually use the shop UI.
+- **Path crates**: 2 easy crates (2 HP each) spawn along the beach→harbor path using
+  Vector3.Lerp with slight random offset. Gives extra doubloons for the deposit step.
+
+### Notes for next developer
+- The compass waypoint arrow is a simple rotated diamond shape. For a more polished look,
+  replace with an ImageLabel triangle or custom asset.
+- Steps 7-8 rely on ShipInteractionController's ProximityPrompts working during tutorial.
+  If those prompts are ever gated by tutorial state, add an exception.
+- The Harbor beacon is a server-side Part (replicated to all clients). Only one beacon
+  per tutorial player. It's destroyed when the player enters the Harbor.
+- Late-join sync for steps 6-10 waypoints is not implemented (server would need to
+  re-fire TutorialWaypoint on reconnect). The existing late-join for step text works.
+- Next priorities: SHIP-005 (ship lock visuals), SHIP-006 (ship tier progression),
+  UI-005 (minimap), HAZARD-001 (volcanic vents)

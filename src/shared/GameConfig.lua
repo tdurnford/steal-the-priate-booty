@@ -749,6 +749,11 @@ GameConfig.Tutorial = {
   crateDistance = 15, -- studs from driftwood to tutorial crate
   tutorialCrateHits = 3, -- hits to break tutorial crate with driftwood
   tutorialSkeletonHp = 5, -- weakened skeleton HP
+  totalSteps = 10, -- total number of tutorial steps (1-5: beach, 6-10: harbor/shop)
+  pathCrateCount = 2, -- crates spawned along beach→harbor path
+  pathCrateHits = 2, -- hits to break path crates (easier than normal)
+  shopProximityRadius = 15, -- studs to trigger "shop reached" during step 9
+  beaconHeight = 40, -- height of the Harbor beacon in studs
 }
 
 --------------------------------------------------------------------------------

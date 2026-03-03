@@ -1,13 +1,18 @@
 --[[
   TutorialService.lua
-  Server-authoritative tutorial sequence manager (TUTORIAL-001).
+  Server-authoritative tutorial sequence manager (TUTORIAL-001, TUTORIAL-002).
 
-  Manages the 5-step "Shipwrecked" tutorial for new players:
-    Step 1: Spawn on tutorial beach, "Find something to defend yourself"
-    Step 2: Walk to glowing driftwood pickup, equip driftwood weapon
-    Step 3: Smash a tutorial crate (3 hits with driftwood)
-    Step 4: Collect scattered doubloons
-    Step 5: Fight and kill a weakened skeleton (5 HP)
+  Manages the 10-step "Shipwrecked" tutorial for new players:
+    Step 1:  Spawn on tutorial beach, "Find something to defend yourself"
+    Step 2:  Walk to glowing driftwood pickup, equip driftwood weapon
+    Step 3:  Smash a tutorial crate (3 hits with driftwood)
+    Step 4:  Collect scattered doubloons
+    Step 5:  Fight and kill a weakened skeleton (5 HP)
+    Step 6:  Navigate to the Harbor (compass marker, 1-2 path crates)
+    Step 7:  Arrive at Harbor, deposit doubloons into ship
+    Step 8:  Lock ship to secure treasure in treasury
+    Step 9:  Visit the shop, equip the Rusty Cutlass (free), driftwood removed
+    Step 10: Tutorial complete — full HUD appears, player released
 
   Tutorial players are in a soft safe zone — other players cannot attack them
   or steal from them. Tutorial NPCs/containers are scripted and separate from
@@ -17,9 +22,11 @@
     - SessionStateService for tutorial state (tutorialActive, tutorialStep)
     - DataService for persistent tutorialCompleted flag
     - GearService pattern for equipping driftwood
-    - ContainerService for spawning a tutorial crate
+    - ContainerService for spawning tutorial crates
     - DoubloonService for detecting pickups
     - NPCService for spawning a weakened skeleton
+    - HarborService for Harbor zone detection (step 6→7)
+    - ShipService for deposit and lock events (steps 7→8, 8→9)
 ]]
 
 local Players = game:GetService("Players")
@@ -42,6 +49,10 @@ local TutorialService = Knit.CreateService({
 
     -- Fired to the tutorial player when tutorial completes.
     TutorialCompleted = Knit.CreateSignal(),
+
+    -- Fired to the tutorial player to show/clear a waypoint marker.
+    -- Args: (position: Vector3?) — nil to clear
+    TutorialWaypoint = Knit.CreateSignal(),
   },
 })
 
@@ -55,6 +66,8 @@ local DataService = nil
 local ContainerService = nil
 local DoubloonService = nil
 local NPCService = nil
+local ShipService = nil
+local HarborService = nil
 
 --------------------------------------------------------------------------------
 -- TUTORIAL CONFIG
@@ -69,10 +82,18 @@ local STEP_MESSAGES = {
   [3] = "Smash the crate open!",
   [4] = "Grab the doubloons!",
   [5] = "Watch out! Hit it before it gets you!",
+  [6] = "Get to the Harbor to claim your ship!",
+  [7] = "This is your ship. Deposit your doubloons!",
+  [8] = "Lock your ship to secure your treasure.",
+  [9] = "Visit the shop to claim your Rusty Cutlass.",
+  [10] = "You're on your own now, pirate. The island is watching.",
 }
 
 -- Default tutorial spawn position (MAP-002 will place a TutorialBeach part)
 local DEFAULT_TUTORIAL_POSITION = Vector3.new(200, 10, 200)
+
+-- Default harbor position (MAP-001 will place HarborSpawn / HarborZone parts)
+local DEFAULT_HARBOR_POSITION = Vector3.new(0, 10, 0)
 
 --------------------------------------------------------------------------------
 -- PER-PLAYER TUTORIAL STATE
@@ -86,6 +107,8 @@ type TutorialInstance = {
   driftwoodPickup: BasePart?, -- glowing Part the player walks to
   tutorialContainerId: string?, -- ContainerService container ID
   tutorialNPCId: number?, -- NPCService NPC ID
+  harborBeacon: BasePart?, -- glowing beacon at Harbor for step 6
+  pathCrateIds: { string }, -- ContainerService IDs for path crates
 
   -- Step tracking
   currentStep: number,
@@ -125,6 +148,33 @@ local function getTutorialForwardDirection(spawnPos: Vector3): Vector3
 end
 
 --[[
+  Gets the Harbor target position for the compass waypoint.
+]]
+local function getHarborPosition(): Vector3
+  local harborSpawn = workspace:FindFirstChild("HarborSpawn")
+  if harborSpawn and harborSpawn:IsA("BasePart") then
+    return harborSpawn.Position
+  end
+  local harborZone = workspace:FindFirstChild("HarborZone")
+  if harborZone and harborZone:IsA("BasePart") then
+    return harborZone.Position
+  end
+  return DEFAULT_HARBOR_POSITION
+end
+
+--[[
+  Gets the shop trigger position for step 9 waypoint.
+]]
+local function getShopPosition(): Vector3
+  local shopTrigger = workspace:FindFirstChild("ShopTrigger")
+  if shopTrigger and shopTrigger:IsA("BasePart") then
+    return shopTrigger.Position
+  end
+  -- Fallback: near the harbor position
+  return getHarborPosition() + Vector3.new(20, 0, 0)
+end
+
+--[[
   Disconnects and clears all connections for a tutorial instance.
 ]]
 local function cleanupConnections(instance: TutorialInstance)
@@ -146,12 +196,9 @@ local function cleanupEntities(instance: TutorialInstance)
 
   -- Remove tutorial container (if it still exists)
   if instance.tutorialContainerId and ContainerService then
-    local ok = pcall(function()
+    pcall(function()
       ContainerService:RemoveContainer(instance.tutorialContainerId, false)
     end)
-    if not ok then
-      -- Container may have already been broken — that's fine
-    end
     instance.tutorialContainerId = nil
   end
 
@@ -161,6 +208,22 @@ local function cleanupEntities(instance: TutorialInstance)
       NPCService:DespawnBonusNPC(instance.tutorialNPCId)
     end)
     instance.tutorialNPCId = nil
+  end
+
+  -- Remove harbor beacon
+  if instance.harborBeacon then
+    instance.harborBeacon:Destroy()
+    instance.harborBeacon = nil
+  end
+
+  -- Remove path crates
+  if instance.pathCrateIds then
+    for _, crateId in instance.pathCrateIds do
+      pcall(function()
+        ContainerService:RemoveContainer(crateId, false)
+      end)
+    end
+    table.clear(instance.pathCrateIds)
   end
 end
 
@@ -214,6 +277,73 @@ local function createDriftwoodPickup(position: Vector3): BasePart
   label.Parent = billboard
 
   -- Put in a tutorial folder
+  local folder = workspace:FindFirstChild("TutorialEntities")
+  if not folder then
+    folder = Instance.new("Folder")
+    folder.Name = "TutorialEntities"
+    folder.Parent = workspace
+  end
+  part.Parent = folder
+
+  return part
+end
+
+--[[
+  Creates a tall glowing beacon at the Harbor to guide the player during step 6.
+  Visible from far away with particles and light.
+]]
+local function createHarborBeacon(position: Vector3): BasePart
+  local beaconHeight = TUTORIAL_CONFIG.beaconHeight or 40
+
+  local part = Instance.new("Part")
+  part.Name = "TutorialHarborBeacon"
+  part.Size = Vector3.new(2, beaconHeight, 2)
+  part.BrickColor = BrickColor.new("Bright yellow")
+  part.Material = Enum.Material.Neon
+  part.Anchored = true
+  part.CanCollide = false
+  part.Transparency = 0.5
+  part.CFrame = CFrame.new(position + Vector3.new(0, beaconHeight / 2, 0))
+
+  -- Bright light visible from far away
+  local light = Instance.new("PointLight")
+  light.Color = Color3.fromRGB(255, 220, 100)
+  light.Brightness = 4
+  light.Range = 60
+  light.Parent = part
+
+  -- Upward particles for visibility
+  local particles = Instance.new("ParticleEmitter")
+  particles.Color = ColorSequence.new(Color3.fromRGB(255, 220, 100))
+  particles.Size = NumberSequence.new(1, 0)
+  particles.Lifetime = NumberRange.new(2, 4)
+  particles.Rate = 15
+  particles.Speed = NumberRange.new(5, 10)
+  particles.SpreadAngle = Vector2.new(10, 10)
+  particles.LightEmission = 1
+  particles.EmissionDirection = Enum.NormalId.Top
+  particles.Parent = part
+
+  -- Billboard label
+  local billboard = Instance.new("BillboardGui")
+  billboard.Size = UDim2.fromOffset(250, 50)
+  billboard.StudsOffset = Vector3.new(0, beaconHeight / 2 + 3, 0)
+  billboard.AlwaysOnTop = true
+  billboard.MaxDistance = 500
+  billboard.Parent = part
+
+  local label = Instance.new("TextLabel")
+  label.Size = UDim2.fromScale(1, 1)
+  label.BackgroundTransparency = 1
+  label.Text = "Harbor"
+  label.TextColor3 = Color3.fromRGB(255, 220, 100)
+  label.Font = Enum.Font.FredokaOne
+  label.TextSize = 24
+  label.TextStrokeTransparency = 0.2
+  label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+  label.Parent = billboard
+
+  -- Put in tutorial folder
   local folder = workspace:FindFirstChild("TutorialEntities")
   if not folder then
     folder = Instance.new("Folder")
@@ -298,9 +428,29 @@ local function equipDriftwood(player: Player)
   tool.Parent = character
 end
 
+--[[
+  Removes driftwood from owned gear data.
+]]
+local function removeDriftwoodFromData(player: Player)
+  local data = DataService:GetData(player)
+  if not data then
+    return
+  end
+  for i, id in data.ownedGear do
+    if id == "driftwood" then
+      table.remove(data.ownedGear, i)
+      break
+    end
+  end
+end
+
 --------------------------------------------------------------------------------
 -- STEP PROGRESSION
 --------------------------------------------------------------------------------
+
+-- Forward declaration: completeTutorial is defined below advanceStep but called
+-- from the step 10 handler inside advanceStep.
+local completeTutorial
 
 --[[
   Advances the tutorial to the next step for a player.
@@ -358,6 +508,68 @@ local function advanceStep(instance: TutorialInstance, newStep: number)
     if npcEntry then
       instance.tutorialNPCId = npcEntry.id
     end
+  elseif newStep == 6 then
+    -- Create a harbor beacon visible from the beach
+    local harborPos = getHarborPosition()
+    instance.harborBeacon = createHarborBeacon(harborPos)
+
+    -- Send waypoint to client for compass indicator
+    TutorialService.Client.TutorialWaypoint:Fire(player, harborPos)
+
+    -- Spawn 1-2 crates along the path from beach to harbor
+    local pathCrateCount = TUTORIAL_CONFIG.pathCrateCount or 2
+    local beachPos = instance.spawnPosition
+    for i = 1, pathCrateCount do
+      local t = i / (pathCrateCount + 1) -- spread evenly between beach and harbor
+      local cratePos = beachPos:Lerp(harborPos, t)
+      -- Ground the crate
+      cratePos = Vector3.new(cratePos.X, beachPos.Y - 2, cratePos.Z)
+      -- Offset slightly to the side so they're not directly on the path
+      cratePos = cratePos + Vector3.new(math.random(-5, 5), 0, math.random(-5, 5))
+
+      local containerEntry = ContainerService:SpawnContainerAt("crate", cratePos)
+      if containerEntry then
+        containerEntry.hp = TUTORIAL_CONFIG.pathCrateHits or 2
+        containerEntry.maxHp = TUTORIAL_CONFIG.pathCrateHits or 2
+        table.insert(instance.pathCrateIds, containerEntry.id)
+      end
+    end
+  elseif newStep == 7 then
+    -- Clear the harbor beacon and waypoint
+    if instance.harborBeacon then
+      instance.harborBeacon:Destroy()
+      instance.harborBeacon = nil
+    end
+
+    -- Send waypoint to player's ship position
+    if ShipService then
+      local shipPos = ShipService:GetShipPosition(player)
+      if shipPos then
+        TutorialService.Client.TutorialWaypoint:Fire(player, shipPos)
+      end
+    end
+  elseif newStep == 8 then
+    -- Keep waypoint at ship for lock action (same position as step 7)
+    if ShipService then
+      local shipPos = ShipService:GetShipPosition(player)
+      if shipPos then
+        TutorialService.Client.TutorialWaypoint:Fire(player, shipPos)
+      end
+    end
+  elseif newStep == 9 then
+    -- Clear ship waypoint, point to shop
+    local shopPos = getShopPosition()
+    TutorialService.Client.TutorialWaypoint:Fire(player, shopPos)
+  elseif newStep == 10 then
+    -- Clear all waypoints
+    TutorialService.Client.TutorialWaypoint:Fire(player, nil)
+
+    -- Brief celebration delay, then complete
+    task.delay(3, function()
+      if ActiveTutorials[player] then
+        completeTutorial(instance)
+      end
+    end)
   end
 
   instance.stepAdvancePending = false
@@ -365,9 +577,9 @@ end
 
 --[[
   Completes the tutorial for a player.
-  Awards the rusty cutlass, marks tutorial as done, teleports to Harbor.
+  Marks tutorial as done, cleans up driftwood, enables full gameplay.
 ]]
-local function completeTutorial(instance: TutorialInstance)
+completeTutorial = function(instance: TutorialInstance)
   local player = instance.player
 
   -- Mark as complete in persistent data
@@ -376,51 +588,49 @@ local function completeTutorial(instance: TutorialInstance)
   -- Clear session state
   SessionStateService:CompleteTutorialSession(player)
 
-  -- Replace driftwood with rusty cutlass
-  local data = DataService:GetData(player)
-  if data then
-    -- Remove driftwood from owned gear
-    for i, id in data.ownedGear do
-      if id == "driftwood" then
-        table.remove(data.ownedGear, i)
-        break
-      end
-    end
-    -- Equip rusty cutlass (should already be owned from defaults)
-    DataService:EquipGear(player, "rusty_cutlass")
-  end
+  -- Remove driftwood from owned gear (if still present)
+  removeDriftwoodFromData(player)
 
-  -- Give rusty cutlass tool
-  local GearService = Knit.GetService("GearService")
-  if GearService then
-    GearService.Client.GearChanged:Fire(player, "rusty_cutlass", "equipped")
-    GearService.GearEquipped:Fire(player, "rusty_cutlass")
+  -- If the player somehow still has driftwood equipped (skipped step 9),
+  -- equip rusty cutlass as fallback
+  local data = DataService:GetData(player)
+  if data and data.equippedGear == "driftwood" then
+    DataService:EquipGear(player, "rusty_cutlass")
+    local GearService = Knit.GetService("GearService")
+    if GearService then
+      GearService.Client.GearChanged:Fire(player, "rusty_cutlass", "equipped")
+      GearService.GearEquipped:Fire(player, "rusty_cutlass")
+    end
   end
 
   -- Notify client
   TutorialService.Client.TutorialCompleted:Fire(player)
+
+  -- Clear any remaining waypoint
+  TutorialService.Client.TutorialWaypoint:Fire(player, nil)
 
   -- Clean up tutorial entities
   cleanupEntities(instance)
   cleanupConnections(instance)
   ActiveTutorials[player] = nil
 
-  -- Teleport to Harbor spawn
-  task.defer(function()
-    local character = player.Character
-    if character then
-      local hrp = character:FindFirstChild("HumanoidRootPart")
-      if hrp then
-        local harborSpawn = workspace:FindFirstChild("HarborSpawn")
-        if harborSpawn and harborSpawn:IsA("BasePart") then
-          hrp.CFrame = harborSpawn.CFrame + Vector3.new(0, 3, 0)
-        else
-          -- Default harbor position
-          hrp.CFrame = CFrame.new(0, 10, 0)
+  -- If player is NOT already in the Harbor (e.g. skipped tutorial), teleport them
+  if HarborService and not HarborService:IsInHarbor(player) then
+    task.defer(function()
+      local character = player.Character
+      if character then
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+          local harborSpawn = workspace:FindFirstChild("HarborSpawn")
+          if harborSpawn and harborSpawn:IsA("BasePart") then
+            hrp.CFrame = harborSpawn.CFrame + Vector3.new(0, 3, 0)
+          else
+            hrp.CFrame = CFrame.new(DEFAULT_HARBOR_POSITION)
+          end
         end
       end
-    end
-  end)
+    end)
+  end
 
   -- Fire server-side signal
   TutorialService.TutorialFinished:Fire(player)
@@ -449,6 +659,8 @@ function TutorialService:StartTutorial(player: Player)
     driftwoodPickup = nil,
     tutorialContainerId = nil,
     tutorialNPCId = nil,
+    harborBeacon = nil,
+    pathCrateIds = {},
     currentStep = 0,
     stepAdvancePending = false,
     connections = {},
@@ -556,7 +768,7 @@ function TutorialService:StartTutorial(player: Player)
   )
   table.insert(instance.connections, stateChangedConn)
 
-  -- Listen for NPC death (step 5→complete)
+  -- Listen for NPC death (step 5→6)
   -- NPCDied fires (npcEntry, killedByPlayer) where npcEntry has .id
   local npcKillConn = NPCService.NPCDied:Connect(function(npcEntry, killedByPlayer)
     if killedByPlayer ~= player then
@@ -568,15 +780,94 @@ function TutorialService:StartTutorial(player: Player)
     if npcEntry and npcEntry.id == instance.tutorialNPCId then
       instance.tutorialNPCId = nil
 
-      -- Brief delay for death animation
+      -- Brief delay for death animation, then advance to step 6
       task.delay(1.5, function()
         if ActiveTutorials[player] then
-          completeTutorial(instance)
+          advanceStep(instance, 6)
         end
       end)
     end
   end)
   table.insert(instance.connections, npcKillConn)
+
+  -- Listen for Harbor entry (step 6→7)
+  if HarborService then
+    local harborEntryConn = HarborService.PlayerEnteredHarbor:Connect(function(enteredPlayer)
+      if enteredPlayer ~= player then
+        return
+      end
+      if instance.currentStep ~= 6 then
+        return
+      end
+      advanceStep(instance, 7)
+    end)
+    table.insert(instance.connections, harborEntryConn)
+  end
+
+  -- Listen for deposit (step 7→8)
+  if ShipService then
+    local depositConn = ShipService.DepositCompleted:Connect(
+      function(depositPlayer, _amount, _newHold)
+        if depositPlayer ~= player then
+          return
+        end
+        if instance.currentStep ~= 7 then
+          return
+        end
+        -- Brief delay for feedback
+        task.delay(0.5, function()
+          if ActiveTutorials[player] and ActiveTutorials[player].currentStep == 7 then
+            advanceStep(instance, 8)
+          end
+        end)
+      end
+    )
+    table.insert(instance.connections, depositConn)
+  end
+
+  -- Listen for lock (step 8→9)
+  if ShipService then
+    local lockConn = ShipService.LockCompleted:Connect(function(lockPlayer, _amount, _newTreasury)
+      if lockPlayer ~= player then
+        return
+      end
+      if instance.currentStep ~= 8 then
+        return
+      end
+      -- Brief delay for feedback
+      task.delay(0.5, function()
+        if ActiveTutorials[player] and ActiveTutorials[player].currentStep == 8 then
+          advanceStep(instance, 9)
+        end
+      end)
+    end)
+    table.insert(instance.connections, lockConn)
+  end
+
+  -- Listen for gear equip of rusty_cutlass (step 9→10)
+  local GearService = Knit.GetService("GearService")
+  if GearService then
+    local gearConn = GearService.GearEquipped:Connect(function(equipPlayer, gearId)
+      if equipPlayer ~= player then
+        return
+      end
+      if instance.currentStep ~= 9 then
+        return
+      end
+      if gearId == "rusty_cutlass" then
+        -- Remove driftwood from owned gear
+        removeDriftwoodFromData(player)
+
+        -- Brief delay for feedback
+        task.delay(0.5, function()
+          if ActiveTutorials[player] and ActiveTutorials[player].currentStep == 9 then
+            advanceStep(instance, 10)
+          end
+        end)
+      end
+    end)
+    table.insert(instance.connections, gearConn)
+  end
 
   -- Fire server-side signal
   TutorialService.TutorialStarted:Fire(player)
@@ -618,6 +909,12 @@ function TutorialService:IsTutorialContainer(containerId: string): boolean
   for _, instance in ActiveTutorials do
     if instance.tutorialContainerId == containerId then
       return true
+    end
+    -- Also check path crates
+    for _, crateId in instance.pathCrateIds do
+      if crateId == containerId then
+        return true
+      end
     end
   end
   return false
@@ -665,6 +962,8 @@ function TutorialService:KnitStart()
   ContainerService = Knit.GetService("ContainerService")
   DoubloonService = Knit.GetService("DoubloonService")
   NPCService = Knit.GetService("NPCService")
+  ShipService = Knit.GetService("ShipService")
+  HarborService = Knit.GetService("HarborService")
 
   -- Start tutorial for new players when their data loads
   DataService.PlayerDataLoaded:Connect(function(player: Player, data)

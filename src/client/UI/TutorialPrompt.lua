@@ -49,13 +49,13 @@ function TutorialPrompt.create(scope, props)
     TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
   )
 
-  -- Step indicator text ("Step 1 of 5")
+  -- Step indicator text ("Step 1 of 10")
   local stepText = scope:Computed(function(use)
     local s = use(step)
     if s <= 0 then
       return ""
     end
-    return string.format("Step %d of 5", s)
+    return string.format("Step %d of 10", s)
   end)
 
   return scope:New("Frame")({
