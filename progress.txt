@@ -1,3 +1,64 @@
+## 2026-03-02 — COSMETIC-001: Cosmetic Item Configuration
+
+### What was done
+- Created `src/shared/CosmeticConfig.lua` — Shared cosmetic item configuration module.
+  Defines 25 cosmetic items across 6 display categories (Cutlass Skins, Hats, Outfits,
+  Pets, Emotes, Ship Customization). Each item has a unique ID, display name, description,
+  equip slot, display category, treasury cost, asset reference (placeholder), and display
+  order. Follows the established config pattern: export types at top, data tables, lookup
+  tables built at require-time (ById, ByCategory, BySlot), accessor functions
+  (getById, getByCategory, getBySlot), and validation helpers (canPurchase, canEquip).
+- Categories and item counts:
+  - Cutlass Skins (3): Barnacle Blade (500), Crimson Cutlass (2000), Golden Saber (8000)
+  - Hats (3): Sailor's Bandana (300), Tricorn Hat (1500), Captain's Plume (5000)
+  - Outfits (3): Deckhand Garb (1000), Buccaneer Coat (4000), Admiral's Regalia (15000)
+  - Pets (3): Parrot (2000), Monkey (8000), Ghost Crab (25000)
+  - Emotes (4): Pirate Dance (200), Laugh Taunt (800), Telescope Pose (1500), Coin Flip (2500)
+  - Ship Customization (9): 3 sails (1000-20000), 3 hulls (1500-25000), 3 flags (500-8000)
+- Slot mapping aligns with EquippedCosmetics type in Types.lua (9 slots: cutlass_skin,
+  hat, outfit, pet, emote_1, emote_2, ship_sail, ship_hull, ship_flag).
+- SlotToCategory and SlotEquipFields mappings for COSMETIC-002 (service) and UI-011 (shop).
+- canPurchase validates: exists, not already owned, sufficient treasury.
+- canEquip validates: exists, owned, slot compatibility (emotes can go in emote_1 or emote_2).
+- No Types.lua changes needed — EquippedCosmetics and ownedCosmetics already exist.
+- No GameConfig.lua changes needed — cosmetics are a separate config module.
+
+### Acceptance criteria met
+- All 6 cosmetic categories defined (Cutlass Skins, Hats, Outfits, Pets, Emotes, Ship Customization) ✓
+- At least 3 items per category (3-9 per category, 25 total) ✓
+- Prices within sensible ranges for the game economy (200-25000 doubloons) ✓
+- Each item has unique ID, name, category, price, and asset reference ✓
+- All cosmetics are visual only — no gameplay advantage ✓
+
+### Design decisions
+- **Separate module from GameConfig**: CosmeticConfig.lua is its own module rather than a
+  section in GameConfig.lua. This keeps GameConfig focused on gameplay mechanics and lets
+  the cosmetic catalog grow independently. The config is still in src/shared/ and follows
+  the same pattern.
+- **Slot vs Category distinction**: The CosmeticSlot type maps to EquippedCosmetics fields,
+  while CosmeticCategory maps to shop UI tabs. Ship Customization is one display category
+  containing three slot types (ship_sail, ship_hull, ship_flag). Emotes are one category
+  with items that can go in either emote_1 or emote_2 slots.
+- **Price scaling**: Prices are designed relative to the existing economy — gear costs 0-25000,
+  ship tiers need 0-1M treasury. Cosmetics sit in the mid-range (200-25000) so early players
+  can buy cheap emotes, while expensive items (Ghost Crab pet, Gilded Hull) require
+  significant treasury savings. Spending treasury on cosmetics can cause ship tier downgrade
+  (by design — this is the trade-off).
+- **Placeholder asset IDs**: All assetId fields use "rbxassetid://0" until MODEL assets are
+  created. The config is fully functional for purchase/equip logic without real assets.
+
+### Notes for next developer
+- CosmeticConfig is consumed by CosmeticService (COSMETIC-002) for purchase/equip validation
+  and by the Cosmetic Shop UI (UI-011) for displaying the catalog.
+- Asset IDs should be updated when MODEL assets are created (MODEL-001 through MODEL-005).
+- To add new cosmetics: append to CosmeticConfig.Items with a unique id following the
+  naming pattern `{slot}_{snake_case_name}` (e.g. `hat_pirate_crown`). The require-time
+  loops automatically index new items into ById, ByCategory, and BySlot.
+- Next priorities: COSMETIC-002 (purchase/equip service), COSMETIC-003 (visual application),
+  UI-006 (event banner queuing), UI-008 (hazard warnings), EMOTE-001 (emote system)
+
+---
+
 ## 2026-03-02 — HAZARD-004: Rogue Wave Hazard (Night Only)
 
 ### What was done
