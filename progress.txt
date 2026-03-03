@@ -5619,3 +5619,111 @@ opacity (0.3 TextTransparency) to indicate the entity is beyond the visible rang
 - All MAP features (MAP-001 through MAP-006) are now complete
 - Remaining not-started features are MODEL-001 through MODEL-005 (3D model assets) and AUDIO-001 (audio assets) — these are asset-sourcing/creation tasks rather than code
 - The rojo/selene PATH issue persists (aftman/rokit conflict) — StyLua works via `~/.rokit/bin/stylua`
+
+---
+
+## 2026-03-03 — MODEL-001: Loot Container 3D Models
+
+### What was done
+- Created `src/server/ContainerModels.lua` — Server-side module that builds detailed Part-based
+  3D models for all 6 container types, replacing the old single-box placeholders.
+- Modified `src/server/Services/ContainerService.lua` — Integrated ContainerModels.build() into
+  `createContainerModel()` with fallback to simple box for unknown types. Removed the old
+  `CONTAINER_APPEARANCE` table. Added `require(ContainerModels)` import.
+
+### Container model designs
+
+**Crate** (simple wooden crate):
+- Body: 2.8×2.8×2.8 Wood Part (brown)
+- 4 darker wood corner posts (vertical)
+- 2 horizontal cross planks on front/back faces
+- Lighter wood top lid with center seam plank
+
+**Barrel** (cylindrical wooden barrel):
+- Body: Cylinder Part rotated 90°Z to stand upright, 3.6 tall × 2.2 diameter
+- 3 metal bands (thin cylinders at top/middle/bottom thirds)
+- Wood top cap disc
+
+**Treasure Chest** (ornate pirate chest):
+- Body: 3.2×1.8×2.2 dark wood
+- Raised lid (3.3×0.9×2.3) with lid ridge on top
+- Gold clasp with keyhole on front face
+- Gold metal trim strips along bottom edges (front, back, sides)
+- 2 metal hinges on back
+
+**Reinforced Trunk** (heavy metal-banded trunk):
+- Body: 3.6×2.6×2.6 dark wood
+- 3 horizontal iron bands on front AND back faces (6 total)
+- 2 vertical side straps
+- 8 metal corner reinforcement cubes
+- Front lock plate with ball lock ring
+- 2 side handles
+- Flat lid with 4 metal ball rivets
+
+**Captain's Vault** (elaborate gold-accented vault):
+- Body: 4.0×3.0×3.0 gold-tinted wood
+- 12 gold trim edges (all edges of the box)
+- Ornate gold front panel with ball lock disc + keyhole
+- Skull & crossbones decoration above lock
+- 2 neon jewel accents (ruby + sapphire balls)
+- Gold top plate
+
+**Cursed Chest** (eerie purple night chest):
+- Body: 3.2×1.8×2.2 dark purple SmoothPlastic
+- Dark lid with neon purple ridge
+- 5 chain Parts (diagonal crosses on front/back + horizontal top wrap)
+- Skull lock with tiny neon purple eye balls
+- 4 neon purple rune accents on side faces
+- (Plus existing PointLight + ParticleEmitter from ContainerService)
+
+### Architecture
+- `ContainerModels.build(typeId, position, instanceId)` returns a Model or nil
+- Each builder uses helper functions: `makePart()` for decorative parts (CanCollide=false,
+  CanQuery=false), `makeBaseModel()` for the Body PrimaryPart (CanCollide=true, CanQuery=true)
+- Body PrimaryPart preserves all existing contracts:
+  - Name = "Body" (ContainerVFXController lookups)
+  - ContainerId/ContainerType/MaxHP/CurrentHP attributes (hit detection)
+  - Anchored = true, CanCollide = true, CanQuery = true (raycast hits)
+- Special effects (cursed glow, captain's vault light) remain in ContainerService
+  since they're applied after model creation
+- Fallback: unknown container types still get a simple box (backwards compatible)
+
+### Acceptance criteria met
+- 6 distinct container models with pirate theme ✓
+  (crate, barrel, treasure chest, reinforced trunk, captain's vault, cursed chest)
+- Visual quality escalates with container tier ✓
+  (crate=simple planks → vault=gold trim+skull+jewels)
+- Cursed Chest has distinct ethereal/cursed look ✓
+  (chains, skull lock, neon purple runes+eyes, dark body)
+- Models are performant for Roblox (reasonable polycount) ✓
+  (all Part-based, 8-25 Parts per model, no MeshParts)
+
+### Design decisions
+- **Part-based models, not MeshParts**: Uses Instance.new("Part") with Shape, Material, and
+  Color to create multi-Part models. This avoids needing external mesh assets, works purely
+  in code, and is highly performant (Parts are Roblox's most optimized primitive).
+- **Separate module, not inline**: ContainerModels.lua is a standalone module rather than
+  expanding ContainerService's createContainerModel(). This keeps ContainerService focused on
+  spawn/damage/break logic and makes model definitions easy to find and modify.
+- **Barrel uses Cylinder shape**: Part.Shape = Enum.PartType.Cylinder with 90° Z rotation
+  to stand upright. Metal bands are also cylinder Parts for authentic hoop appearance.
+- **Decorative parts CanCollide=false, CanQuery=false**: Only the Body part has CanCollide and
+  CanQuery enabled. Decorative parts don't interfere with player movement or raycast hit
+  detection. This ensures combat hits always register on the Body.
+- **Neon material for Cursed Chest accents**: Rune marks and skull eyes use Enum.Material.Neon
+  for a self-illuminating eerie glow effect without additional PointLights.
+
+### Files changed
+- `src/server/ContainerModels.lua` (NEW) — Container model builder module (732 lines)
+- `src/server/Services/ContainerService.lua` — Integrated ContainerModels, removed CONTAINER_APPEARANCE
+
+### Notes for next person
+- ContainerModels.lua is at `src/server/ContainerModels.lua` → maps to `ServerScriptService.Server.ContainerModels`
+- To add a new container type: add a builder function and register it in the `BUILDERS` table
+- Body Part attributes (ContainerId, ContainerType, MaxHP, CurrentHP) are set by ContainerService
+  AFTER the model is built, not inside ContainerModels — don't duplicate them
+- ContainerVFXController is unmodified and fully compatible (looks for "Body" child by name)
+- No Roblox Studio MCP server was available for in-game testing. Code follows established
+  patterns exactly (MapBootstrap for Part creation, ContainerService for model lifecycle).
+- Remaining not-started features: MODEL-002 (ships), MODEL-003 (NPCs), MODEL-004 (weapons),
+  MODEL-005 (doubloons/purses), AUDIO-001 (audio assets)

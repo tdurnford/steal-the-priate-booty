@@ -31,6 +31,9 @@ local Knit = require(Packages:WaitForChild("Knit"))
 local Signal = require(Packages:WaitForChild("GoodSignal"))
 local GameConfig = require(Shared:WaitForChild("GameConfig"))
 
+local Server = game:GetService("ServerScriptService"):WaitForChild("Server")
+local ContainerModels = require(Server:WaitForChild("ContainerModels"))
+
 local ContainerService = Knit.CreateService({
   Name = "ContainerService",
   Client = {
@@ -166,21 +169,13 @@ local lastNightPhase = false -- tracks if we were in night last frame
 -- CONTAINER MODEL CREATION
 --------------------------------------------------------------------------------
 
--- Container appearance by type (placeholder models — simple colored boxes)
-local CONTAINER_APPEARANCE = {
-  crate = { size = Vector3.new(3, 3, 3), color = Color3.fromRGB(139, 90, 43) },
-  barrel = { size = Vector3.new(2.5, 4, 2.5), color = Color3.fromRGB(120, 75, 35) },
-  treasure_chest = { size = Vector3.new(3.5, 2.5, 2.5), color = Color3.fromRGB(180, 140, 50) },
-  reinforced_trunk = { size = Vector3.new(4, 3, 3), color = Color3.fromRGB(100, 100, 110) },
-  captains_vault = { size = Vector3.new(4.5, 3.5, 3.5), color = Color3.fromRGB(200, 170, 60) },
-  cursed_chest = { size = Vector3.new(3.5, 2.5, 2.5), color = Color3.fromRGB(100, 40, 130) },
-}
-
 --[[
-  Creates a placeholder container model at the given position.
-  When MODEL-001 (3D models) is implemented, replace this with proper models.
+  Creates a container model at the given position using ContainerModels builders.
+  Each container type has a detailed Part-based model with decorative elements.
+  The "Body" PrimaryPart carries metadata attributes for hit detection and VFX.
+
   @param containerDef The container definition
-  @param position World position
+  @param position World position (bottom-center)
   @param instanceId Unique ID string
   @return The created Model
 ]]
@@ -189,29 +184,29 @@ local function createContainerModel(
   position: Vector3,
   instanceId: string
 ): Model
-  local appearance = CONTAINER_APPEARANCE[containerDef.id]
-    or { size = Vector3.new(3, 3, 3), color = Color3.fromRGB(139, 90, 43) }
+  local model = ContainerModels.build(containerDef.id, position, instanceId)
 
-  local model = Instance.new("Model")
-  model.Name = "Container_" .. instanceId
+  -- Fallback: if no builder exists for this type, create a simple box
+  if not model then
+    model = Instance.new("Model")
+    model.Name = "Container_" .. instanceId
+    local body = Instance.new("Part")
+    body.Name = "Body"
+    body.Size = Vector3.new(3, 3, 3)
+    body.Color = Color3.fromRGB(139, 90, 43)
+    body.Material = Enum.Material.Wood
+    body.Anchored = true
+    body.CanCollide = true
+    body.CanQuery = true
+    body.CanTouch = false
+    body.CastShadow = true
+    body.CFrame = CFrame.new(position + Vector3.new(0, 1.5, 0))
+    body.Parent = model
+    model.PrimaryPart = body
+  end
 
-  -- Main body part
-  local body = Instance.new("Part")
-  body.Name = "Body"
-  body.Size = appearance.size
-  body.Color = appearance.color
-  body.Material = Enum.Material.Wood
-  body.Anchored = true
-  body.CanCollide = true
-  body.CanQuery = true
-  body.CanTouch = false
-  body.CastShadow = true
-  body.CFrame = CFrame.new(position + Vector3.new(0, appearance.size.Y / 2, 0))
-  body.Parent = model
-
-  model.PrimaryPart = body
-
-  -- Store metadata as attributes
+  -- Store metadata as attributes on the Body part
+  local body = model.PrimaryPart
   body:SetAttribute("ContainerId", instanceId)
   body:SetAttribute("ContainerType", containerDef.id)
   body:SetAttribute("MaxHP", containerDef.hp)
@@ -222,10 +217,9 @@ local function createContainerModel(
     local light = Instance.new("PointLight")
     light.Color = Color3.fromRGB(140, 60, 200)
     light.Brightness = 1.5
-    light.Range = 30 -- visible through fog (~30 studs per spec)
+    light.Range = 30
     light.Parent = body
 
-    -- Eerie particle effect
     local particles = Instance.new("ParticleEmitter")
     particles.Color = ColorSequence.new(Color3.fromRGB(140, 60, 200))
     particles.Size = NumberSequence.new(0.3, 0)
