@@ -105,6 +105,16 @@ function HarborService:IsInHarbor(player: Player): boolean
   return SessionStateService:IsInHarbor(player)
 end
 
+--[[
+  Checks whether a world position is inside the Harbor safe zone.
+  Used by NPCService to exclude Harbor from NPC patrol waypoints.
+  @param position The world position to check
+  @return true if inside the Harbor zone
+]]
+function HarborService:IsPositionInHarbor(position: Vector3): boolean
+  return isPositionInHarbor(position)
+end
+
 --------------------------------------------------------------------------------
 -- ZONE CHECK LOOP
 --------------------------------------------------------------------------------

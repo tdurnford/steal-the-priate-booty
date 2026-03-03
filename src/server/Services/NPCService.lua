@@ -9,7 +9,8 @@
     - Lunge attack (0.5s crouch telegraph, 6 stud dash + slash, 5s cooldown)
     - NPC hit reception: flinch (0.2s pause), death (loot drop), respawn (90s)
     - Hit detection against players: ragdoll 2.0s, spill 20% held doubloons
-    - Basic patrol/chase movement via Humanoid:MoveTo
+    - SimplePath-based patrol: walk between zone waypoints using PathfindingService
+    - Basic chase movement via Humanoid:MoveTo (NPC-004 will upgrade to SimplePath)
     - Respawn management per zone
 
   Spawn Manager (NPC-006):
@@ -23,6 +24,14 @@
   Each spawn point Part can have:
     - Attribute "Zone" (string): zone name (e.g., "jungle", "beach", "danger")
     - Attribute "NPCType" (string): which NPC type spawns here (default "skeleton")
+
+  Patrol waypoints are read from workspace.PatrolWaypoints.
+  Each child Part must have:
+    - Attribute "Zone" (string): which zone this waypoint belongs to
+    - Attribute "Order" (number, optional): ordering hint (lower = first)
+  If no PatrolWaypoints folder exists, spawn points of the same zone are used
+  as patrol destinations. If a zone has <2 waypoints, random positions around
+  spawn are generated via SimplePath for obstacle avoidance.
 
   Other services call:
     - DamageNPC(npcId, damage, attackingPlayer) to deal damage
@@ -39,6 +48,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Knit = require(Packages:WaitForChild("Knit"))
 local Signal = require(Packages:WaitForChild("GoodSignal"))
 local GameConfig = require(Shared:WaitForChild("GameConfig"))
+local SimplePath = require(Shared:WaitForChild("SimplePath"))
 
 local NPCService = Knit.CreateService({
   Name = "NPCService",
@@ -118,9 +128,14 @@ type NPCEntry = {
   targetPlayer: Player?,
   lastSlashTime: number,
   lastLungeTime: number,
-  lastPatrolMoveTime: number,
-  patrolTarget: Vector3?,
+  lastPatrolMoveTime: number, -- timestamp of last patrol waypoint arrival
+  patrolTarget: Vector3?, -- legacy fallback (unused when SimplePath is active)
   carriedDoubloons: number,
+
+  -- SimplePath patrol (NPC-003)
+  simplePath: any?, -- SimplePath instance for this NPC
+  patrolWaypoints: { Vector3 }, -- ordered list of patrol waypoints for this NPC's zone
+  patrolWaypointIndex: number, -- current index in patrolWaypoints (loops)
 
   -- Flinch tracking
   flinchEndTime: number,
@@ -172,6 +187,17 @@ local BudgetGhostPirateCount = 0
 
 -- Track all Ghost Pirate NPC IDs for Dawn despawn
 local GhostPirateNPCIds: { [number]: boolean } = {}
+
+-- Patrol waypoints per zone (NPC-003)
+-- Key: zone name, Value: ordered list of Vector3 positions
+local ZonePatrolWaypoints: { [string]: { Vector3 } } = {}
+
+-- SimplePath agent params from config
+local AGENT_PARAMS = {
+  AgentRadius = NPC_BEHAVIOR.agentRadius,
+  AgentHeight = NPC_BEHAVIOR.agentHeight,
+  AgentCanJump = NPC_BEHAVIOR.agentCanJump,
+}
 
 --[[
   Picks a random skeleton budget target for the current phase.
@@ -531,7 +557,7 @@ local function createSkeletonModel(position: Vector3, npcId: number): (Model, Hu
   humanoid.MaxHealth = SKELETON.hp
   humanoid.Health = SKELETON.hp
   humanoid.WalkSpeed = PLAYER_BASE_SPEED * SKELETON.speedMultiplier
-  humanoid.JumpPower = 0 -- No jumping for skeletons (NPC-003 will use SimplePath)
+  humanoid.JumpPower = 50 -- Needed for SimplePath pathfinding (NPC-003)
   humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
   humanoid.HealthDisplayDistance = 30
   humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOn
@@ -650,6 +676,31 @@ local function randomPositionAround(center: Vector3, radius: number): Vector3
 end
 
 --[[
+  Returns the patrol waypoints for a given zone.
+  If the zone has no defined waypoints, generates 4 random positions around
+  the spawn position to create a basic patrol loop.
+  @param zone The zone name
+  @param spawnPos Fallback center for generated waypoints
+  @return Ordered list of Vector3 patrol waypoints
+]]
+local function getPatrolWaypointsForZone(zone: string, spawnPos: Vector3): { Vector3 }
+  local waypoints = ZonePatrolWaypoints[zone]
+  if waypoints and #waypoints >= 2 then
+    return waypoints
+  end
+
+  -- Fallback: generate 4 patrol points in a loop around spawn position
+  local generated: { Vector3 } = {}
+  local patrolRadius = 15
+  for i = 1, 4 do
+    local angle = ((i - 1) / 4) * math.pi * 2
+    local offset = Vector3.new(math.cos(angle) * patrolRadius, 0, math.sin(angle) * patrolRadius)
+    table.insert(generated, spawnPos + offset)
+  end
+  return generated
+end
+
+--[[
   Gets the effective aggro range, accounting for night bonus.
 ]]
 local function getEffectiveAggroRange(): number
@@ -718,6 +769,11 @@ local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?)
     patrolTarget = nil,
     carriedDoubloons = 0,
 
+    -- SimplePath patrol (NPC-003)
+    simplePath = nil, -- created below
+    patrolWaypoints = {},
+    patrolWaypointIndex = 0,
+
     flinchEndTime = 0,
 
     lungeTarget = nil,
@@ -729,6 +785,26 @@ local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?)
     forcedTarget = nil,
     isBonusNPC = false,
   }
+
+  -- Create SimplePath instance for pathfinding (NPC-003)
+  local path = SimplePath.new(model, AGENT_PARAMS)
+  entry.simplePath = path
+  entry.patrolWaypoints = getPatrolWaypointsForZone(zone, position)
+  entry.patrolWaypointIndex = math.random(1, math.max(1, #entry.patrolWaypoints))
+
+  -- Wire SimplePath signals
+  path.Reached:Connect(function()
+    -- Mark arrival time so patrol state pauses before next waypoint
+    entry.lastPatrolMoveTime = os.clock()
+  end)
+  path.Blocked:Connect(function()
+    -- Path blocked mid-traversal: skip to next waypoint on next tick
+    entry.lastPatrolMoveTime = os.clock() - 2 -- no pause, try next waypoint immediately
+  end)
+  path.Error:Connect(function()
+    -- Path computation failed: skip to next waypoint on next tick
+    entry.lastPatrolMoveTime = os.clock() - 2
+  end)
 
   ActiveNPCs[npcId] = entry
   ActiveNPCCount = ActiveNPCCount + 1
@@ -770,6 +846,12 @@ local function despawnNPC(npcId: number)
   -- Clean up Ghost Pirate tracking
   GhostPirateNPCIds[npcId] = nil
 
+  -- Clean up SimplePath (NPC-003)
+  if entry.simplePath then
+    entry.simplePath:Destroy()
+    entry.simplePath = nil
+  end
+
   if entry.model and entry.model.Parent then
     entry.model:Destroy()
   end
@@ -784,8 +866,16 @@ end
 
 --[[
   Transitions an NPC to a new AI state.
+  Stops SimplePath if leaving patrol state.
 ]]
 local function setState(entry: NPCEntry, newState: string)
+  -- Stop SimplePath when leaving patrol (NPC-003)
+  if entry.aiState == AI_STATE.PATROL and newState ~= AI_STATE.PATROL then
+    if entry.simplePath and entry.simplePath:IsRunning() then
+      entry.simplePath:Stop()
+    end
+  end
+
   entry.aiState = newState
   entry.aiStateStartTime = os.clock()
 end
@@ -958,25 +1048,40 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
       return
     end
 
-    -- Patrol: wander around spawn point
-    if not entry.patrolTarget or now - entry.lastPatrolMoveTime > 5 then
-      -- Pick a new random patrol point within 15 studs of spawn
-      entry.patrolTarget = randomPositionAround(entry.spawnPosition, 15)
-      entry.lastPatrolMoveTime = now
-    end
+    -- SimplePath-based patrol (NPC-003)
+    if entry.simplePath and #entry.patrolWaypoints >= 1 then
+      -- If SimplePath is not running, advance to next waypoint after a brief pause
+      if not entry.simplePath:IsRunning() then
+        -- Wait 2 seconds at each waypoint before moving on
+        if now - entry.lastPatrolMoveTime < 2 then
+          return
+        end
 
-    -- Move toward patrol target
-    if entry.humanoid and entry.patrolTarget then
-      entry.humanoid:MoveTo(entry.patrolTarget)
-    end
+        -- Advance to next patrol waypoint (loop)
+        entry.patrolWaypointIndex = (entry.patrolWaypointIndex % #entry.patrolWaypoints) + 1
+        local nextWaypoint = entry.patrolWaypoints[entry.patrolWaypointIndex]
+        entry.simplePath:Run(nextWaypoint)
+      end
+      -- SimplePath handles movement via MoveToFinished — don't call Humanoid:MoveTo()
 
-    -- Check if reached patrol target
-    if entry.patrolTarget then
-      local distToPatrol = (entry.position - entry.patrolTarget).Magnitude
-      if distToPatrol < 3 then
-        -- Wait briefly at the waypoint
-        entry.patrolTarget = nil
+      -- Listen for SimplePath events (processed next tick via signal connections)
+      -- Reached: sets lastPatrolMoveTime so we pause at the waypoint
+      -- Blocked/Error: falls through to fallback below on next tick
+    else
+      -- Fallback: basic random wander (no SimplePath or no waypoints)
+      if not entry.patrolTarget or now - entry.lastPatrolMoveTime > 5 then
+        entry.patrolTarget = randomPositionAround(entry.spawnPosition, 15)
         entry.lastPatrolMoveTime = now
+      end
+      if entry.humanoid and entry.patrolTarget then
+        entry.humanoid:MoveTo(entry.patrolTarget)
+      end
+      if entry.patrolTarget then
+        local distToPatrol = (entry.position - entry.patrolTarget).Magnitude
+        if distToPatrol < 3 then
+          entry.patrolTarget = nil
+          entry.lastPatrolMoveTime = now
+        end
       end
     end
     return
@@ -1508,6 +1613,77 @@ function NPCService:KnitStart()
         table.insert(GhostPirateSpawnPoints, point)
       end
     end
+  end
+
+  -- Discover patrol waypoints per zone (NPC-003)
+  -- Filter out any waypoints inside the Harbor safe zone
+  local function isInHarbor(pos: Vector3): boolean
+    return HarborService and HarborService:IsPositionInHarbor(pos)
+  end
+
+  local patrolFolder = workspace:FindFirstChild("PatrolWaypoints")
+  if patrolFolder then
+    for _, point in patrolFolder:GetChildren() do
+      if point:IsA("BasePart") and not isInHarbor(point.Position) then
+        local zone = point:GetAttribute("Zone") or "unknown"
+        if not ZonePatrolWaypoints[zone] then
+          ZonePatrolWaypoints[zone] = {}
+        end
+        table.insert(ZonePatrolWaypoints[zone], {
+          position = point.Position,
+          order = point:GetAttribute("Order") or 999,
+        })
+      end
+    end
+
+    -- Sort waypoints by order within each zone, then extract positions
+    for zone, waypointData in ZonePatrolWaypoints do
+      table.sort(waypointData, function(a, b)
+        return a.order < b.order
+      end)
+      local positions: { Vector3 } = {}
+      for _, wp in waypointData do
+        table.insert(positions, wp.position)
+      end
+      ZonePatrolWaypoints[zone] = positions
+    end
+
+    local totalZones = 0
+    local totalWaypoints = 0
+    for _, wps in ZonePatrolWaypoints do
+      totalZones += 1
+      totalWaypoints += #wps
+    end
+    print(
+      string.format(
+        "[NPCService] Loaded %d patrol waypoints across %d zones from PatrolWaypoints folder",
+        totalWaypoints,
+        totalZones
+      )
+    )
+  else
+    -- Fallback: use spawn points of each zone as patrol waypoints for that zone
+    local zoneSpawnPositions: { [string]: { Vector3 } } = {}
+    for _, point in allSpawnPoints do
+      if point:IsA("BasePart") and not isInHarbor(point.Position) then
+        local zone = point:GetAttribute("Zone") or "unknown"
+        if not zoneSpawnPositions[zone] then
+          zoneSpawnPositions[zone] = {}
+        end
+        table.insert(zoneSpawnPositions[zone], point.Position)
+      end
+    end
+
+    for zone, positions in zoneSpawnPositions do
+      if #positions >= 2 then
+        ZonePatrolWaypoints[zone] = positions
+      end
+    end
+
+    print(
+      "[NPCService] No PatrolWaypoints folder found. "
+        .. "Using spawn points as patrol waypoints for zones with 2+ points."
+    )
   end
 
   -- If no skeleton spawn points exist, create test spawn points

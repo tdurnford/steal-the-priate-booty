@@ -3005,3 +3005,86 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
   sophisticated look, replace with a pre-rendered vignette ImageLabel.
 - Next priorities: THREAT-004 (Cursed/Doomed effects), NPC-003 (SimplePath patrol),
   NPC-006 (spawn manager), NPC-007 (Ghost Pirate)
+
+---
+
+## 2026-03-02 — NPC-003: NPC SimplePath Patrol Behavior
+
+### What was done
+- Created `src/shared/SimplePath.lua` — lightweight PathfindingService wrapper module
+  that provides a clean API for NPC navigation with signals (Reached, Blocked, Error).
+- Modified `src/server/Services/NPCService.lua` to use SimplePath for NPC patrol
+  instead of raw `Humanoid:MoveTo()` with random positions.
+- Added `HarborService:IsPositionInHarbor()` public method to `src/server/Services/HarborService.lua`
+  for NPC waypoint filtering.
+
+### SimplePath module (src/shared/SimplePath.lua)
+1. **Wraps PathfindingService**: Creates paths with configurable agent params
+   (AgentRadius, AgentHeight, AgentCanJump).
+2. **API**: `SimplePath.new(agent, agentParams)`, `:Run(destination)`, `:Stop()`,
+   `:IsRunning()`, `:Destroy()`.
+3. **Signal-based**: `Reached` fires when destination reached, `Blocked` fires when
+   path obstructed mid-traversal, `Error` fires on path computation failure.
+4. **MoveToFinished-driven**: Follows path waypoints using `Humanoid:MoveTo()` with
+   automatic progression via `MoveToFinished`. Handles jump waypoints.
+5. **Heartbeat-compatible**: `setState()` in NPCService calls `:Stop()` when leaving
+   patrol state, preventing conflicts with chase `Humanoid:MoveTo()` calls.
+
+### Patrol waypoint system
+1. **PatrolWaypoints folder**: Reads `workspace.PatrolWaypoints` for patrol waypoint Parts.
+   Each Part has `Zone` (string) and optional `Order` (number) attributes.
+   Waypoints are sorted by Order within each zone.
+2. **Fallback to spawn points**: If no PatrolWaypoints folder exists, uses NPC spawn
+   points of the same zone as patrol destinations (requires 2+ points per zone).
+3. **Generated fallback**: If a zone has <2 waypoints, generates 4 positions in a
+   circle (15-stud radius) around the NPC's spawn point.
+4. **Harbor exclusion**: All waypoints inside the Harbor safe zone are filtered out
+   during discovery (uses `HarborService:IsPositionInHarbor()`).
+
+### NPCEntry changes
+- Added `simplePath` (SimplePath instance), `patrolWaypoints` (Vector3 list),
+  `patrolWaypointIndex` (current position in loop) to NPCEntry type.
+- SimplePath created per NPC at spawn time with agent params from `GameConfig.NPCBehavior`.
+- Each NPC starts at a random waypoint index to avoid clustering.
+- SimplePath signals wired at spawn: Reached sets `lastPatrolMoveTime` for pause,
+  Blocked/Error skip pause to try next waypoint immediately.
+
+### AI state machine changes
+1. **PATROL state**: Checks `simplePath:IsRunning()`. If not running, waits 2 seconds
+   at waypoint, then advances to next waypoint and calls `simplePath:Run()`.
+   Falls back to random wander for NPCs without SimplePath (shouldn't happen in practice).
+2. **setState()**: Calls `simplePath:Stop()` when transitioning out of PATROL state
+   (e.g., to CHASE). This disconnects MoveToFinished so chase `Humanoid:MoveTo()`
+   calls don't conflict.
+3. **despawnNPC()**: Calls `simplePath:Destroy()` to clean up connections.
+4. **JumpPower**: Changed from 0 to 50 to enable pathfinding jump waypoints.
+
+### Key design decisions
+- **SimplePath in shared/**: Module is in `src/shared/` so it can be reused when
+  NPC-004 upgrades chase behavior to use SimplePath as well.
+- **Signal-based integration**: SimplePath uses GoodSignal events rather than coroutines
+  or task.spawn, keeping the API clean and compatible with the heartbeat AI loop.
+- **Patrol pause at waypoints**: 2-second pause at each waypoint makes NPCs look like
+  they're "surveying" their zone rather than robotically walking between points.
+- **Random start index**: Each NPC starts at a random patrol waypoint so multiple
+  NPCs in the same zone don't all walk the same route in lockstep.
+- **Blocked = skip**: When SimplePath encounters a blocked path, the NPC skips to the
+  next waypoint rather than retrying. This prevents NPCs from getting stuck on one
+  unreachable point.
+- **Chase still uses MoveTo**: NPC-004 will upgrade chase behavior to use SimplePath.
+  For now, chase uses `Humanoid:MoveTo()` directly (same as before).
+
+### Notes for next developer
+- NPC-004 (SimplePath Chase): The SimplePath module is already available. In chase state,
+  replace `entry.humanoid:MoveTo(targetPos)` with `entry.simplePath:Run(targetPos)`
+  on a 0.3s recalculation interval. Add stuck detection (3s recalc, 6s teleport).
+- NPC-005 (Dormant Mode): When dormant, call `entry.simplePath:Stop()` and skip the
+  AI update entirely. Resume patrol when player approaches <150 studs.
+- PatrolWaypoints folder: Map builders should create Parts in `workspace.PatrolWaypoints`
+  with `Zone` attribute matching spawn point zones. Use `Order` attribute (1, 2, 3...)
+  to define patrol route. Without this, NPCs patrol between spawn points.
+- The `getPatrolWaypointsForZone()` fallback generates positions at Y=0 offset from
+  spawn. If terrain is uneven, the generated positions may not be reachable — define
+  explicit PatrolWaypoints for hilly zones.
+- Next priorities: NPC-004 (SimplePath chase), NPC-007 (Ghost Pirate), NPC-008
+  (Phantom Captain), NPC-005 (dormant mode)
