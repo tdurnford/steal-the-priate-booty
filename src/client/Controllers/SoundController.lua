@@ -62,6 +62,9 @@ local SOUNDS = {
   raidStart = "rbxassetid://4590657391", -- tense interaction start
   raidComplete = "rbxassetid://4612373815", -- loot stolen chime (coin grab)
   raidAlert = "rbxassetid://9114046944", -- urgent alarm horn (ship being raided)
+
+  -- World event sounds
+  eventAnnouncement = "rbxassetid://9114046944", -- dramatic horn blast (shared with dusk)
 }
 
 -- Volume settings per sound type
@@ -93,6 +96,9 @@ local VOLUMES = {
   raidStart = 0.5,
   raidComplete = 0.6,
   raidAlert = 0.8,
+
+  -- World event sounds
+  eventAnnouncement = 0.7,
 }
 
 -- References
@@ -269,6 +275,13 @@ end
 ]]
 function SoundController:PlayRaidAlertSound()
   play2DSound(SOUNDS.raidAlert, VOLUMES.raidAlert)
+end
+
+--[[
+	Plays the world event announcement horn sound (attention-grabbing blast).
+]]
+function SoundController:PlayEventAnnouncementSound()
+  play2DSound(SOUNDS.eventAnnouncement, VOLUMES.eventAnnouncement)
 end
 
 --[[

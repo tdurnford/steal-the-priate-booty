@@ -687,7 +687,11 @@ GameConfig.ShipwreckEvent = {
   intervalMin = 180, -- seconds (3 min)
   intervalMax = 300, -- seconds (5 min)
   containerCount = { min = 3, max = 5 },
+  containerTypes = { "reinforced_trunk", "captains_vault" }, -- high-value only
+  containerTypeWeights = { 0.6, 0.4 }, -- 60% Reinforced Trunk, 40% Captain's Vault
   duration = 60, -- seconds before despawn
+  containerSpread = 12, -- studs radius for container placement around wreck center
+  bannerDuration = 6, -- seconds the announcement banner shows
 }
 
 GameConfig.LootSurgeEvent = {

@@ -1,3 +1,68 @@
+## 2026-03-02 — EVENT-002: Shipwreck World Event
+
+### What was done
+- Created `src/server/Services/EventService.lua` — Server-authoritative world event manager.
+  Runs a Heartbeat timer loop with randomized 180-300s intervals. When triggered, spawns a
+  placeholder shipwreck model at a random EventSpawnPoints location with 3-5 high-value
+  containers (60% Reinforced Trunk, 40% Captain's Vault) via ContainerService:SpawnContainerAt().
+  Tracks active event state, auto-despawns after 60 seconds (removes unbroken containers and
+  model). Only one major event active at a time. Fires EventStarted/EventEnded signals to
+  clients and server. Provides GetActiveEvent RPC for late-join sync.
+- Created `src/client/Controllers/EventController.lua` — Client-side event controller with
+  announcement banner. Listens for EventStarted/EventEnded server signals. Shows a top-center
+  "SHIPWRECK SPOTTED!" banner with gold-themed styling, gradient background, title + subtitle,
+  scale-in animation, and auto-fade-out after bannerDuration (6s). Plays event announcement
+  horn SFX via SoundController. Exposes local GoodSignal events (EventStarted/EventEnded) and
+  public API (IsEventActive, GetActiveEventType, GetActiveEventPosition) for minimap/HUD use.
+  Late-join sync via GetActiveEvent RPC with defensive validation.
+- Modified `src/shared/GameConfig.lua` — Added containerTypes, containerTypeWeights,
+  containerSpread, and bannerDuration to ShipwreckEvent config.
+- Modified `src/client/Controllers/SoundController.lua` — Added eventAnnouncement sound entry
+  and PlayEventAnnouncementSound() method.
+
+### Acceptance criteria met
+- Spawns every 3-5 minutes if no other major event is active ✓
+- 3-5 high-value containers (Reinforced Trunks + Captain's Vaults) in the wreck ✓
+- Event announced via banner and audio to all players ✓
+- Despawns after 60 seconds ✓
+- Containers are functional and breakable (uses ContainerService infrastructure) ✓
+- Location marked on minimap — DEFERRED (UI-005 minimap not yet implemented;
+  EventController exposes position API for future minimap integration)
+
+### Design decisions
+- **Reuses ContainerService**: Rather than reimplementing container logic, spawns event
+  containers via ContainerService:SpawnContainerAt() and cleans up via RemoveContainer().
+  This means event containers automatically get damage, VFX, loot scatter, trap, and
+  ambush mechanics for free.
+- **Placeholder shipwreck model**: Created a recognizable placeholder with hull (tilted dark
+  wood box), broken mast, neon gold beacon with PointLight (range 60, visible from afar),
+  and BillboardGui "SHIPWRECK" label (AlwaysOnTop, maxDistance 500). To be replaced by
+  MODEL asset when available.
+- **Banner in EventController** (not HudController): The event banner is a one-shot
+  animation (show → auto-dismiss), so it follows the DayNightBannerController pattern
+  (Instance.new + TweenService in its own ScreenGui) rather than a persistent Fusion
+  component wired through HudController. This keeps HudController focused on persistent
+  HUD elements.
+- **Vector3 serialization**: GetActiveEvent RPC serializes position as {X, Y, Z} array
+  since Knit RPCs can't pass Vector3 directly. Client validates table structure before
+  constructing Vector3.
+- **Container break tracking**: EventService listens for ContainerService.ContainerBroken
+  to remove broken containers from its tracking list, so only unbroken containers are
+  cleaned up on event end.
+
+### Notes for next developer
+- EventSpawnPoints folder: Place Parts in workspace.EventSpawnPoints to define where
+  shipwrecks can spawn. If the folder is empty, a fallback position (0,5,0) is used.
+- The shipwreck model is a placeholder. Replace createShipwreckModel() with actual mesh
+  when MODEL assets are ready (or use insert_model from marketplace).
+- EventController exposes GetActiveEventPosition() for minimap integration (UI-005).
+- LootSurgeEvent config already exists in GameConfig but is not yet implemented (EVENT-003).
+  The EventService timer/exclusion system supports multiple event types.
+- Next priorities: HAZARD-002 (tidal surge), HAZARD-003 (quicksand), EVENT-003 (loot surge),
+  UI-005 (minimap), UI-013 (player stats)
+
+---
+
 ## 2026-03-02 — UI-007: HUD Bounty & Raid Alerts
 
 ### What was done
