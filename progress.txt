@@ -1,3 +1,65 @@
+## 2026-03-02 — COSMETIC-002: Cosmetic Purchase & Equip System
+
+### What was done
+- Created `src/server/Services/CosmeticService.lua` — Server-authoritative cosmetic purchase,
+  equip, and unequip system. Follows the GearService pattern: validates all requests server-side
+  using CosmeticConfig helpers (canPurchase, canEquip), delegates persistence to DataService.
+  Client-callable RPCs: PurchaseCosmetic (validates ownership/funds, deducts treasury, adds to
+  owned, triggers ShipService:RecalculateShipTier for potential tier downgrade), EquipCosmetic
+  (validates ownership + slot compatibility, sets equipped slot), UnequipCosmetic (clears slot),
+  GetCosmeticCatalog (full catalog with ownership + equip status per item), GetEquippedCosmetics
+  (current equip map copy). Server signals: CosmeticPurchased, CosmeticEquipped,
+  CosmeticUnequipped for inter-service communication. Client signal: CosmeticChanged fires on
+  all changes with (cosmeticId, slotField, action).
+- Created `src/client/Controllers/CosmeticController.lua` — Client-side cosmetic state tracking.
+  Follows GearController pattern: loads initial state from DataService:GetData(), listens to
+  CosmeticService.CosmeticChanged for server-pushed updates, listens to DataService.DataChanged
+  for reconnection sync. Maintains local OwnedCosmetics and EquippedCosmetics caches. Public
+  API: OwnsCosmetic, GetEquippedInSlot, GetEquippedCosmetics, GetOwnedCosmetics,
+  PurchaseCosmetic, EquipCosmetic, UnequipCosmetic, GetCosmeticCatalog. Local signal:
+  CosmeticChanged for other controllers. Plays purchase SFX via SoundController.
+- No Types.lua changes needed — ownedCosmetics, equippedCosmetics, EquippedCosmetics type
+  already exist with correct fields.
+- No DataService changes needed — all required methods (OwnsCosmetic, AddOwnedCosmetic,
+  EquipCosmetic, UpdateTreasury) already implemented.
+
+### Acceptance criteria met
+- Players can purchase cosmetics with treasury (PurchaseCosmetic RPC) ✓
+- Treasury is deducted and ship tier may change (ShipService:RecalculateShipTier called) ✓
+- Cosmetics are permanent once purchased (added to ownedCosmetics via DataService, never removed) ✓
+- Players can equip and unequip cosmetics by slot (EquipCosmetic + UnequipCosmetic RPCs) ✓
+- Cannot equip unowned cosmetics (CosmeticConfig.canEquip validates ownership) ✓
+
+### Design decisions
+- **CosmeticService + CosmeticController pattern**: Follows the established GearService/
+  GearController architecture exactly. Service handles validation and persistence, controller
+  caches state and provides API for UI.
+- **CosmeticConfig validation reuse**: All purchase and equip validation is delegated to
+  CosmeticConfig.canPurchase() and CosmeticConfig.canEquip(), which were specifically designed
+  for this purpose in COSMETIC-001. No validation logic is duplicated.
+- **Ship tier recalculation**: When treasury is spent on cosmetics, ShipService:RecalculateShipTier
+  is called to handle potential tier downgrade. This is the intentional trade-off: cosmetics cost
+  treasury, which may reduce your ship tier.
+- **Emote slot handling**: Emote items have slot "emote" but can be equipped to "emote_1" or
+  "emote_2" fields. The slotField parameter in EquipCosmetic specifies which field. This is
+  validated by CosmeticConfig.SlotEquipFields.
+- **Catalog endpoint**: GetCosmeticCatalog returns all items with ownership/equip status in a
+  single RPC call, ordered by category then displayOrder. This gives UI-011 everything it needs
+  in one request.
+
+### Notes for next developer
+- CosmeticService exposes server signals (CosmeticPurchased, CosmeticEquipped,
+  CosmeticUnequipped) for COSMETIC-003 to hook into for visual application.
+- CosmeticController exposes a local CosmeticChanged signal for UI-011 to react to.
+- Visual application of cosmetics (character attachments, ship customization) is COSMETIC-003.
+- The cosmetic shop UI is UI-011 — it should use CosmeticController:GetCosmeticCatalog() for
+  data, CosmeticController:PurchaseCosmetic() / :EquipCosmetic() / :UnequipCosmetic() for
+  actions.
+- Next priorities: COSMETIC-003 (visual application), UI-011 (cosmetic shop UI), UI-006
+  (event banner queuing), UI-008 (hazard warnings), EMOTE-001 (emote system)
+
+---
+
 ## 2026-03-02 — COSMETIC-001: Cosmetic Item Configuration
 
 ### What was done
