@@ -1,3 +1,94 @@
+## 2026-03-02 — RANK-002: Notoriety Rank Thresholds & Unlocks
+
+### What was done
+- Created `src/server/Services/RankEffectsService.lua` — server-authoritative rank effects
+  manager that applies gameplay effects based on notoriety rank.
+- Added lunge and spin attack config to `GameConfig.lua` (Combat section).
+- Added lunge and spin attack handlers to `CombatService.lua` (server-side).
+- Added lunge and spin input handling to `CombatController.lua` (client-side).
+- Modified `DoubloonService.lua` for per-player pickup radius based on rank.
+- Added `DataService.NotorietyRankChanged` server-side signal for rank change events.
+
+### All 6 rank unlocks implemented
+
+| Rank | Name | XP | Unlock | Implementation |
+|------|------|----|--------|----------------|
+| 1 | Deckhand | 0 | None | Base gameplay |
+| 2 | Buccaneer | 500 | Cutlass Lunge | X key: 0.3s windup → 6-stud dash + 8-stud hit, 2.0s ragdoll, 15% spill, 4s cooldown |
+| 3 | Raider | 2000 | +5% Speed | WalkSpeed 16 → 16.8, applied on character spawn/rank change |
+| 4 | Captain | 8000 | Cutlass Spin | C key: 0.5s windup → 360° area attack, 6-stud range, 1.5s ragdoll, 10% spill, 5s cooldown |
+| 5 | Pirate Lord | 25000 | +10% Pickup Radius | Base 4 studs → 4.4 studs, per-player radius in DoubloonService |
+| 6 | Dread Pirate | 75000 | Title Display | "DREAD PIRATE" BillboardGui above head, purple glow, visible to all |
+
+### RankEffectsService features
+1. **Speed bonus (Rank 3)**: Modifies Humanoid.WalkSpeed on character spawn and rank change.
+   Coordinates with CombatService block speed reduction via `GetWalkSpeed()` API.
+2. **Pickup radius (Rank 5)**: `GetPickupRadius(player)` returns per-player radius.
+   DoubloonService queries this per collection check cycle.
+3. **Title display (Rank 6)**: Server-side BillboardGui creation (replicated to all clients).
+   Re-attached on character respawn. Purple text + purple PointLight glow.
+4. **Unlock tracking**: Fires `UnlocksChanged` signal to client with `{lunge, spin}` booleans.
+   Client RPC `GetUnlocks()` for initial sync on join.
+5. **Rank change listener**: Uses `DataService.NotorietyRankChanged` server-side signal.
+
+### CombatService changes (lunge + spin)
+1. **Lunge (Rank 2)**: `LungeRequest` client signal → server validates rank, cooldown, state.
+   0.3s windup delay → hit detection (8 stud range, 70° arc). Single-target like light/heavy.
+   `LungeConfirm` fires to client for movement + VFX.
+2. **Spin (Rank 4)**: `SpinRequest` client signal → server validates rank, cooldown, state.
+   0.5s windup delay → multi-hit detection (6 stud range, 360° arc). Hits ALL targets in range.
+   `SpinConfirm` fires to client for VFX.
+3. **Both use `handlePlayerHitCustom()`** — shared hit logic with custom ragdoll/spill/knockback.
+4. **Block speed fix**: CombatService now queries `RankEffectsService:GetWalkSpeed()` for
+   the correct default speed when entering/exiting block (accounts for rank speed bonus).
+
+### CombatController changes (client input)
+1. **X key**: Lunge attack (gated by `HasLungeUnlock` from server)
+   - Forward dash trail VFX (gold/orange), thrust animation, movement via LinearVelocity
+2. **C key**: Spin attack (gated by `HasSpinUnlock` from server)
+   - Circular particle burst VFX (gold/orange), fast spin animation
+3. **State checks**: Both lunge and spin prevent other actions during execution
+   (IsLunging/IsSpinning flags checked by canSwing, block, dash, primary attack)
+4. **Ragdoll cleanup**: Lunge/spin state cancelled on ragdoll, character respawn
+
+### Key bindings chosen
+- **X**: Lunge — avoids conflict with F (ship lock ProximityPrompt)
+- **C**: Spin — avoids conflict with E (ship deposit ProximityPrompt)
+- No conflict with: WASD (move), Q (dash), G (shop), Mouse1 (swing), Mouse2 (block),
+  E/F/R (ship ProximityPrompts)
+
+### Design decisions
+- **Per-player pickup radius**: DoubloonService now builds a `radiusSq` per player each
+  collection check, rather than using a single global constant. Minimal perf impact since
+  the check already iterates all players.
+- **Multi-hit for spin**: Spin uses `performMultiHitDetection()` which returns arrays of
+  all hit players/NPCs/containers. Each target gets independent ragdoll/spill/knockback.
+  This makes spin powerful but fair — shorter range (6 studs) and long cooldown (5s).
+- **Lunge dash is server-confirmed**: Server validates then fires `LungeConfirm` to client.
+  Client applies LinearVelocity for the 6-stud forward dash. Hit detection happens
+  server-side after the windup delay.
+- **Speed bonus coordination**: RankEffectsService stores BASE_WALK_SPEED (16) and applies
+  the bonus. CombatService queries `GetWalkSpeed()` when applying block speed reduction
+  to ensure the 50% block speed is applied to the rank-boosted speed, not the base.
+- **Title re-attach**: BillboardGui is re-created on CharacterAdded (not persisted on the
+  old character). PointLight glow is parented to Head for proper position.
+
+### Notes for next developer
+- All lunge/spin values are in `GameConfig.Combat` — change amounts there, not in services.
+- Lunge animations and spin animations use placeholder `rbxassetid://522635514` — replace
+  with proper thrust/spin animations when animation assets are created.
+- SoundController reuses existing sounds: lunge uses `PlayDashSound()` + `PlaySwingSound()`,
+  spin uses `PlayHeavySwingSound()`. Add dedicated lunge/spin sounds when audio assets
+  are available (AUDIO-001).
+- The spin VFX uses a ParticleEmitter on HumanoidRootPart — replace with proper circular
+  slash VFX when visual effects are polished.
+- `DataService.NotorietyRankChanged` is a new server-side signal. Other services can
+  listen to it for rank-based behavior (e.g., THREAT-003 rank-gated effects).
+- Next priorities: NPC-003 (SimplePath patrol), NPC-006 (spawn manager), THREAT-003
+  (threat effects), NPC-007 (Ghost Pirate)
+
+---
+
 ## 2026-03-02 — EVENT-001: Bounty System
 
 ### What was done

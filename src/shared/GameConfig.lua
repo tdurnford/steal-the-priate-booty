@@ -46,6 +46,25 @@ GameConfig.Combat = {
   -- Cooldowns
   perTargetHitCooldown = 2, -- seconds before same player can be hit again
   recoveryWindow = 0.5, -- seconds after ragdoll where player can move but not attack
+
+  -- Lunge attack (Rank 2 unlock — forward thrust)
+  lungeWindup = 0.3, -- seconds (crouch telegraph before dash)
+  lungeDashDistance = 6, -- studs forward dash
+  lungeRange = 8, -- studs hit detection range at endpoint
+  lungeArc = 70, -- degrees half-angle cone
+  lungeCooldown = 4, -- seconds
+  lungeRagdollDuration = 2.0, -- seconds
+  lungeLootSpillPercent = 0.15, -- 15%
+  lungeKnockback = 25, -- studs/s impulse
+
+  -- Spin attack (Rank 4 unlock — 360° area attack)
+  spinWindup = 0.5, -- seconds (windup animation)
+  spinRange = 6, -- studs (shorter range, but full circle)
+  spinArc = 180, -- degrees half-angle (= full 360°)
+  spinCooldown = 5, -- seconds
+  spinRagdollDuration = 1.5, -- seconds
+  spinLootSpillPercent = 0.10, -- 10%
+  spinKnockback = 20, -- studs/s impulse
 } :: CombatConfig
 
 --------------------------------------------------------------------------------

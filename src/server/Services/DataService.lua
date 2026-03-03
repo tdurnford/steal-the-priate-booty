@@ -49,6 +49,10 @@ DataService.PlayerDataLoaded = Signal.new()
 -- Future LOOT-005 will connect to this to spawn pickup entities.
 DataService.DisconnectDoubloonSpill = Signal.new()
 
+-- Server-side signal fired when a player's notoriety rank changes.
+-- Args: (player: Player, newRank: RankDef, oldRank: RankDef)
+DataService.NotorietyRankChanged = Signal.new()
+
 --------------------------------------------------------------------------------
 -- DATA ACCESSORS
 --------------------------------------------------------------------------------
@@ -186,6 +190,7 @@ function DataService:AddNotorietyXP(player: Player, amount: number): boolean
   -- Notify if rank changed
   if newRank.rank ~= oldRank.rank then
     self.Client.DataChanged:Fire(player, "notorietyRank", newRank)
+    DataService.NotorietyRankChanged:Fire(player, newRank, oldRank)
   end
 
   return true

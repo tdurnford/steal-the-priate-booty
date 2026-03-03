@@ -40,6 +40,8 @@ local CombatController = Knit.CreateController({
 -- Lazy-loaded references
 local CombatService = nil
 local SoundController = nil
+local RankEffectsService = nil
+local NotorietyController = nil
 
 -- Local state
 local LocalPlayer = Players.LocalPlayer
@@ -63,6 +65,24 @@ local IsDashing = false
 local LastDashTime = 0
 local DashTrailAttachment: Attachment? = nil
 local DashTrailInstance: Trail? = nil
+
+-- Lunge state (Rank 2 unlock)
+local IsLunging = false
+local LastLungeTime = 0
+local LUNGE_COOLDOWN = GameConfig.Combat.lungeCooldown -- 4s
+local LUNGE_DASH_DISTANCE = GameConfig.Combat.lungeDashDistance -- 6 studs
+local LUNGE_WINDUP = GameConfig.Combat.lungeWindup -- 0.3s
+local LUNGE_DASH_DURATION = 0.15 -- seconds to apply lunge velocity
+
+-- Spin state (Rank 4 unlock)
+local IsSpinning = false
+local LastSpinTime = 0
+local SPIN_COOLDOWN = GameConfig.Combat.spinCooldown -- 5s
+local SPIN_WINDUP = GameConfig.Combat.spinWindup -- 0.5s
+
+-- Rank unlock cache (updated from server)
+local HasLungeUnlock = false
+local HasSpinUnlock = false
 
 -- Tracks the active ragdoll cleanup task so overlapping ragdolls cancel the old one
 local RagdollCleanupThread: thread? = nil
@@ -423,6 +443,225 @@ local function applyDashMovement(direction: Vector3)
 end
 
 --[[
+  Plays a lunge thrust animation on the local character.
+]]
+local function playLungeAnimation()
+  local humanoid = getLocalHumanoid()
+  if not humanoid then
+    return
+  end
+  local animator = humanoid:FindFirstChildOfClass("Animator")
+  if not animator then
+    return
+  end
+  local animation = Instance.new("Animation")
+  animation.AnimationId = "rbxassetid://522635514" -- placeholder (thrust)
+  local track = animator:LoadAnimation(animation)
+  track.Priority = Enum.AnimationPriority.Action4
+  track:Play(0.05, 1, 1.5) -- medium speed for thrust feel
+  animation:Destroy()
+end
+
+--[[
+  Applies lunge forward movement via LinearVelocity.
+  @param direction Unit direction vector for the lunge
+]]
+local function applyLungeMovement(direction: Vector3)
+  local hrp = getLocalHRP()
+  if not hrp then
+    return
+  end
+
+  local lungeSpeed = LUNGE_DASH_DISTANCE / LUNGE_DASH_DURATION
+
+  local attachment = Instance.new("Attachment")
+  attachment.Name = "LungeAttachment"
+  attachment.Parent = hrp
+
+  local linearVelocity = Instance.new("LinearVelocity")
+  linearVelocity.Name = "LungeVelocity"
+  linearVelocity.Attachment0 = attachment
+  linearVelocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+  linearVelocity.VectorVelocity = direction * lungeSpeed
+  linearVelocity.MaxForce = 100000
+  linearVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
+  linearVelocity.Parent = hrp
+
+  task.delay(LUNGE_DASH_DURATION, function()
+    if linearVelocity and linearVelocity.Parent then
+      linearVelocity:Destroy()
+    end
+    if attachment and attachment.Parent then
+      attachment:Destroy()
+    end
+  end)
+end
+
+--[[
+  Creates a lunge trail VFX (gold/orange streak).
+]]
+local function startLungeTrailVFX()
+  local character = LocalPlayer.Character
+  if not character then
+    return
+  end
+  local hrp = character:FindFirstChild("HumanoidRootPart")
+  if not hrp or not hrp:IsA("BasePart") then
+    return
+  end
+
+  local att0 = Instance.new("Attachment")
+  att0.Name = "LungeTrailAtt0"
+  att0.Position = Vector3.new(0, 0.5, 0)
+  att0.Parent = hrp
+
+  local att1 = Instance.new("Attachment")
+  att1.Name = "LungeTrailAtt1"
+  att1.Position = Vector3.new(0, -0.5, 0)
+  att1.Parent = hrp
+
+  local trail = Instance.new("Trail")
+  trail.Name = "LungeTrail"
+  trail.Attachment0 = att0
+  trail.Attachment1 = att1
+  trail.Lifetime = 0.2
+  trail.MinLength = 0.1
+  trail.FaceCamera = true
+  trail.Color = ColorSequence.new(Color3.fromRGB(255, 200, 50), Color3.fromRGB(255, 120, 20))
+  trail.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0.3),
+    NumberSequenceKeypoint.new(1, 1),
+  })
+  trail.WidthScale = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0.8),
+    NumberSequenceKeypoint.new(1, 0.2),
+  })
+  trail.Parent = hrp
+
+  -- Auto-cleanup after lunge duration
+  task.delay(LUNGE_WINDUP + LUNGE_DASH_DURATION + 0.1, function()
+    trail:Destroy()
+    att0:Destroy()
+    att1:Destroy()
+  end)
+end
+
+--[[
+  Handles the lunge confirm from server.
+  @param direction Unit direction vector from server
+]]
+local function onLungeConfirm(direction: Vector3)
+  IsLunging = true
+
+  -- Play lunge SFX
+  if SoundController then
+    SoundController:PlayDashSound() -- reuse dash whoosh for now
+  end
+
+  -- Start trail VFX
+  startLungeTrailVFX()
+
+  -- Apply forward movement after brief windup
+  task.delay(LUNGE_WINDUP, function()
+    applyLungeMovement(direction)
+    playLungeAnimation()
+
+    if SoundController then
+      SoundController:PlaySwingSound()
+    end
+  end)
+
+  -- Clear lunge state after total duration
+  task.delay(LUNGE_WINDUP + LUNGE_DASH_DURATION + 0.1, function()
+    IsLunging = false
+  end)
+end
+
+--[[
+  Plays a spin attack animation on the local character.
+]]
+local function playSpinAnimation()
+  local humanoid = getLocalHumanoid()
+  if not humanoid then
+    return
+  end
+  local animator = humanoid:FindFirstChildOfClass("Animator")
+  if not animator then
+    return
+  end
+  local animation = Instance.new("Animation")
+  animation.AnimationId = "rbxassetid://522635514" -- placeholder (spin)
+  local track = animator:LoadAnimation(animation)
+  track.Priority = Enum.AnimationPriority.Action4
+  track:Play(0.05, 1, 3) -- fast speed for spin feel
+  animation:Destroy()
+end
+
+--[[
+  Creates a spin VFX (circular particle burst around player).
+]]
+local function startSpinVFX()
+  local character = LocalPlayer.Character
+  if not character then
+    return
+  end
+  local hrp = character:FindFirstChild("HumanoidRootPart")
+  if not hrp or not hrp:IsA("BasePart") then
+    return
+  end
+
+  -- Create a ring of particles
+  local emitter = Instance.new("ParticleEmitter")
+  emitter.Name = "SpinVFX"
+  emitter.Color = ColorSequence.new(Color3.fromRGB(255, 200, 50), Color3.fromRGB(255, 100, 0))
+  emitter.Size = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 1),
+    NumberSequenceKeypoint.new(1, 0),
+  })
+  emitter.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0.2),
+    NumberSequenceKeypoint.new(1, 1),
+  })
+  emitter.Lifetime = NumberRange.new(0.3, 0.5)
+  emitter.Rate = 200
+  emitter.Speed = NumberRange.new(8, 12)
+  emitter.SpreadAngle = Vector2.new(180, 10)
+  emitter.RotSpeed = NumberRange.new(200, 400)
+  emitter.Parent = hrp
+
+  -- Auto-cleanup
+  task.delay(SPIN_WINDUP + 0.2, function()
+    emitter.Enabled = false
+    task.delay(0.5, function()
+      emitter:Destroy()
+    end)
+  end)
+end
+
+--[[
+  Handles the spin confirm from server.
+]]
+local function onSpinConfirm()
+  IsSpinning = true
+
+  -- Start spin VFX
+  startSpinVFX()
+
+  -- Play windup then spin
+  task.delay(SPIN_WINDUP, function()
+    playSpinAnimation()
+    if SoundController then
+      SoundController:PlayHeavySwingSound()
+    end
+  end)
+
+  -- Clear spin state
+  task.delay(SPIN_WINDUP + 0.3, function()
+    IsSpinning = false
+  end)
+end
+
+--[[
   Handles the dash confirm from server.
   Applies movement, plays VFX and SFX.
   @param direction Unit direction vector from server
@@ -466,6 +705,14 @@ local function canSwing(cooldown: number): boolean
     return false
   end
 
+  if IsLunging then
+    return false
+  end
+
+  if IsSpinning then
+    return false
+  end
+
   local now = os.clock()
   return (now - LastSwingTime) >= cooldown
 end
@@ -484,8 +731,8 @@ local function onPrimaryDown()
     return
   end
 
-  -- Cannot start an attack while dashing
-  if IsDashing then
+  -- Cannot start an attack while dashing, lunging, or spinning
+  if IsDashing or IsLunging or IsSpinning then
     return
   end
 
@@ -623,6 +870,14 @@ local function onRagdollTrigger(
     stopDashTrailVFX()
   end
 
+  -- Cancel lunge/spin state if active
+  if IsLunging then
+    IsLunging = false
+  end
+  if IsSpinning then
+    IsSpinning = false
+  end
+
   IsRagdolled = true
   RagdollEndTime = os.clock() + ragdollDuration
 
@@ -674,13 +929,8 @@ local function onSecondaryDown()
     return
   end
 
-  -- Cannot block while charging a heavy swing
-  if IsCharging then
-    return
-  end
-
-  -- Cannot block while dashing
-  if IsDashing then
+  -- Cannot block while in another action
+  if IsCharging or IsDashing or IsLunging or IsSpinning then
     return
   end
 
@@ -708,13 +958,33 @@ end
 function CombatController:KnitStart()
   -- Get service and controller references
   CombatService = Knit.GetService("CombatService")
+  RankEffectsService = Knit.GetService("RankEffectsService")
   SoundController = Knit.GetController("SoundController")
+  NotorietyController = Knit.GetController("NotorietyController")
+
+  -- Fetch initial unlock state from server
+  RankEffectsService:GetUnlocks()
+    :andThen(function(unlocks)
+      HasLungeUnlock = unlocks.lunge
+      HasSpinUnlock = unlocks.spin
+    end)
+    :catch(function(err)
+      warn("[CombatController] Failed to get unlocks:", err)
+    end)
+
+  -- Listen for unlock changes from server
+  RankEffectsService.UnlocksChanged:Connect(function(unlocks)
+    HasLungeUnlock = unlocks.lunge
+    HasSpinUnlock = unlocks.spin
+  end)
 
   -- Listen for server events
   CombatService.SwingResult:Connect(onSwingResult)
   CombatService.RagdollTrigger:Connect(onRagdollTrigger)
   CombatService.BlockImpact:Connect(onBlockImpact)
   CombatService.DashConfirm:Connect(onDashConfirm)
+  CombatService.LungeConfirm:Connect(onLungeConfirm)
+  CombatService.SpinConfirm:Connect(onSpinConfirm)
 
   -- Clean up ragdoll, block, and dash state on character removal (death/respawn)
   LocalPlayer.CharacterRemoving:Connect(function(character: Model)
@@ -724,6 +994,8 @@ function CombatController:KnitStart()
     ChargeReady = false
     IsBlocking = false
     IsDashing = false
+    IsLunging = false
+    IsSpinning = false
     stopChargeVFX()
     stopBlockAnimation()
     stopDashTrailVFX()
@@ -775,7 +1047,7 @@ function CombatController:KnitStart()
     end
   end)
 
-  -- Listen for dash key (Q)
+  -- Listen for dash key (Q), lunge key (F), spin key (E)
   UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
     if gameProcessed then
       return
@@ -783,7 +1055,7 @@ function CombatController:KnitStart()
 
     if input.KeyCode == Enum.KeyCode.Q then
       -- Client-side pre-checks to avoid spamming the server
-      if IsRagdolled or IsBlocking or IsCharging or IsDashing then
+      if IsRagdolled or IsBlocking or IsCharging or IsDashing or IsLunging or IsSpinning then
         return
       end
 
@@ -801,11 +1073,59 @@ function CombatController:KnitStart()
       if CombatService then
         CombatService.DashRequest:Fire(direction)
       end
+    elseif input.KeyCode == Enum.KeyCode.X then
+      -- Lunge attack (Rank 2 unlock)
+      if not HasLungeUnlock then
+        return
+      end
+
+      if IsRagdolled or IsBlocking or IsCharging or IsDashing or IsLunging or IsSpinning then
+        return
+      end
+
+      local now = os.clock()
+      if (now - LastLungeTime) < LUNGE_COOLDOWN then
+        return
+      end
+      if (now - LastSwingTime) < LIGHT_SWING_COOLDOWN then
+        return
+      end
+
+      LastLungeTime = now
+      LastSwingTime = now
+
+      if CombatService then
+        CombatService.LungeRequest:Fire()
+      end
+    elseif input.KeyCode == Enum.KeyCode.C then
+      -- Spin attack (Rank 4 unlock)
+      if not HasSpinUnlock then
+        return
+      end
+
+      if IsRagdolled or IsBlocking or IsCharging or IsDashing or IsLunging or IsSpinning then
+        return
+      end
+
+      local now = os.clock()
+      if (now - LastSpinTime) < SPIN_COOLDOWN then
+        return
+      end
+      if (now - LastSwingTime) < LIGHT_SWING_COOLDOWN then
+        return
+      end
+
+      LastSpinTime = now
+      LastSwingTime = now
+
+      if CombatService then
+        CombatService.SpinRequest:Fire()
+      end
     end
   end)
 
   print(
-    "[CombatController] Started — click to swing, hold to charge, right-click to block, Q to dash"
+    "[CombatController] Started — click to swing, hold to charge, right-click to block, Q to dash, X to lunge, C to spin"
   )
 end
 

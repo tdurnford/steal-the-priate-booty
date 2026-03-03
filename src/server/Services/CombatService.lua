@@ -69,6 +69,19 @@ local CombatService = Knit.CreateService({
     -- Fired to all players near a loot spill for VFX.
     -- Args: (targetPosition: Vector3, spillAmount: number)
     LootSpillVFX = Knit.CreateSignal(),
+
+    -- Client fires this to request a lunge attack (Rank 2 unlock).
+    LungeRequest = Knit.CreateSignal(),
+
+    -- Fired to the lunging player to confirm lunge (for VFX/movement).
+    -- Args: (direction: Vector3)
+    LungeConfirm = Knit.CreateSignal(),
+
+    -- Client fires this to request a spin attack (Rank 4 unlock).
+    SpinRequest = Knit.CreateSignal(),
+
+    -- Fired to the spinning player to confirm spin (for VFX).
+    SpinConfirm = Knit.CreateSignal(),
   },
 })
 
@@ -84,6 +97,7 @@ local ContainerService = nil
 local DoubloonService = nil
 local HarborService = nil
 local NPCService = nil
+local RankEffectsService = nil
 
 -- Per-player last attack timestamp for rate limiting
 local LastAttackTime: { [Player]: number } = {}
@@ -106,6 +120,29 @@ local BLOCK_SPEED_MULTIPLIER = GameConfig.Combat.blockSpeedMultiplier -- 0.5
 local DASH_DISTANCE = GameConfig.Combat.dashDistance -- 10 studs
 local DASH_COOLDOWN = GameConfig.Combat.dashCooldown -- 3s
 local DASH_INVULN_TIME = GameConfig.Combat.dashInvulnerabilityTime -- 0.3s
+
+-- Lunge parameters (Rank 2 unlock)
+local LUNGE_WINDUP = GameConfig.Combat.lungeWindup -- 0.3s
+local LUNGE_DASH_DISTANCE = GameConfig.Combat.lungeDashDistance -- 6 studs
+local LUNGE_RANGE = GameConfig.Combat.lungeRange -- 8 studs
+local LUNGE_ARC = math.rad(GameConfig.Combat.lungeArc) -- 70 degrees
+local LUNGE_COOLDOWN = GameConfig.Combat.lungeCooldown -- 4s
+local LUNGE_RAGDOLL = GameConfig.Combat.lungeRagdollDuration -- 2.0s
+local LUNGE_SPILL = GameConfig.Combat.lungeLootSpillPercent -- 0.15
+local LUNGE_KNOCKBACK = GameConfig.Combat.lungeKnockback -- 25
+
+-- Spin parameters (Rank 4 unlock)
+local SPIN_WINDUP = GameConfig.Combat.spinWindup -- 0.5s
+local SPIN_RANGE = GameConfig.Combat.spinRange -- 6 studs
+local SPIN_ARC = math.rad(GameConfig.Combat.spinArc) -- 180 degrees (= full 360)
+local SPIN_COOLDOWN = GameConfig.Combat.spinCooldown -- 5s
+local SPIN_RAGDOLL = GameConfig.Combat.spinRagdollDuration -- 1.5s
+local SPIN_SPILL = GameConfig.Combat.spinLootSpillPercent -- 0.10
+local SPIN_KNOCKBACK = GameConfig.Combat.spinKnockback -- 20
+
+-- Per-player lunge/spin cooldown timestamps
+local LastLungeTime: { [Player]: number } = {}
+local LastSpinTime: { [Player]: number } = {}
 
 -- Per-player default walk speed (stored on first block for restoration)
 local PlayerDefaultWalkSpeed: { [Player]: number } = {}
@@ -497,6 +534,185 @@ local function handleNPCHit(attacker: Player, npcEntry: any)
   end
 end
 
+--[[
+  Performs server-side hit detection that returns ALL targets in arc (for spin attack).
+  Returns separate lists for players, NPCs, and containers.
+]]
+local function performMultiHitDetection(
+  attacker: Player,
+  range: number,
+  arc: number
+): ({ Player }, { any }, { any })
+  local attackerHRP = getHRP(attacker)
+  if not attackerHRP then
+    return {}, {}, {}
+  end
+
+  local attackerCFrame = attackerHRP.CFrame
+  local hitPlayers: { Player } = {}
+  local hitNPCs: { any } = {}
+  local hitContainers: { any } = {}
+
+  -- Check player targets
+  local attackerInHarbor = SessionStateService and SessionStateService:IsInHarbor(attacker)
+  if not attackerInHarbor then
+    for _, otherPlayer in Players:GetPlayers() do
+      if otherPlayer ~= attacker then
+        if SessionStateService:IsInHarbor(otherPlayer) then
+          continue
+        end
+        local otherHRP = getHRP(otherPlayer)
+        if otherHRP then
+          if isInSwingArc(attackerCFrame, otherHRP.Position, range, arc) then
+            if SessionStateService:CanHitTarget(attacker, otherPlayer.UserId) then
+              if
+                not SessionStateService:IsRagdolling(otherPlayer)
+                and not SessionStateService:IsDashing(otherPlayer)
+              then
+                table.insert(hitPlayers, otherPlayer)
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  -- Check NPC targets
+  if NPCService then
+    local npcsFolder = workspace:FindFirstChild("NPCs")
+    if npcsFolder then
+      for _, child in npcsFolder:GetChildren() do
+        if child:IsA("Model") then
+          local rootPart = child:FindFirstChild("HumanoidRootPart") or child:FindFirstChild("Torso")
+          if rootPart and rootPart:IsA("BasePart") then
+            if isInSwingArc(attackerCFrame, rootPart.Position, range, arc) then
+              local npcEntry = NPCService:GetNPCByPart(rootPart)
+              if npcEntry and npcEntry.alive then
+                table.insert(hitNPCs, npcEntry)
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  -- Check container targets
+  if ContainerService then
+    for _, child in
+      workspace:FindFirstChild("Containers") and workspace.Containers:GetChildren() or {}
+    do
+      if child:IsA("Model") then
+        local body = child:FindFirstChild("Body")
+        if body and body:IsA("BasePart") then
+          if isInSwingArc(attackerCFrame, body.Position, range, arc) then
+            local entry = ContainerService:GetContainerByPart(body)
+            if entry then
+              table.insert(hitContainers, entry)
+            end
+          end
+        end
+      end
+    end
+  end
+
+  return hitPlayers, hitNPCs, hitContainers
+end
+
+--[[
+  Handles a player hit with custom ragdoll/knockback/spill parameters (for lunge/spin).
+  @param attacker The attacking player
+  @param target The hit player
+  @param ragdollDuration Custom ragdoll duration
+  @param spillPercent Custom loot spill percentage
+  @param knockbackForce Custom knockback force
+  @param attackType Label for logging ("lunge" or "spin")
+]]
+local function handlePlayerHitCustom(
+  attacker: Player,
+  target: Player,
+  ragdollDuration: number,
+  spillPercent: number,
+  knockbackForce: number,
+  attackType: string
+)
+  -- Record the hit for per-target cooldown
+  SessionStateService:RecordHitTarget(attacker, target.UserId)
+
+  -- Check if the target is blocking
+  local targetIsBlocking = SessionStateService:IsBlocking(target)
+
+  if targetIsBlocking then
+    ragdollDuration = GameConfig.Ragdoll.blockedHitDuration
+    knockbackForce = GameConfig.Ragdoll.blockedHitKnockback
+    spillPercent = GameConfig.LootSpill.blockedHitPercent
+    SessionStateService:SetBlocking(target, false)
+    local targetHumanoid = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+    if targetHumanoid and PlayerDefaultWalkSpeed[target] then
+      targetHumanoid.WalkSpeed = PlayerDefaultWalkSpeed[target]
+    end
+  end
+
+  SessionStateService:StartRagdoll(target, ragdollDuration)
+
+  -- Calculate knockback velocity
+  local attackerHRP = getHRP(attacker)
+  local targetHRP = getHRP(target)
+  local knockbackVelocity = Vector3.zero
+  if knockbackForce > 0 and attackerHRP and targetHRP then
+    local knockbackDir = (targetHRP.Position - attackerHRP.Position)
+    knockbackDir = Vector3.new(knockbackDir.X, 0, knockbackDir.Z)
+    if knockbackDir.Magnitude > 0.01 then
+      knockbackDir = knockbackDir.Unit
+    else
+      knockbackDir = attackerHRP.CFrame.LookVector
+      knockbackDir = Vector3.new(knockbackDir.X, 0, knockbackDir.Z).Unit
+    end
+    knockbackVelocity = knockbackDir * knockbackForce
+  end
+
+  if targetIsBlocking then
+    CombatService.Client.BlockImpact:Fire(target, attacker.Name, ragdollDuration)
+  end
+
+  CombatService.Client.RagdollTrigger:Fire(
+    target,
+    attacker.Name,
+    ragdollDuration,
+    knockbackVelocity
+  )
+
+  -- Calculate loot spill
+  local heldDoubloons = SessionStateService:GetHeldDoubloons(target)
+  local hasBounty = SessionStateService:HasBounty(target)
+  local spillAmount = GameConfig.calculateSpill(heldDoubloons, spillPercent, hasBounty)
+
+  if spillAmount > 0 then
+    SessionStateService:AddHeldDoubloons(target, -spillAmount)
+    local spillHRP = getHRP(target)
+    local spillPos = if spillHRP then spillHRP.Position else Vector3.new(0, 5, 0)
+    if DoubloonService then
+      DoubloonService:ScatterDoubloons(spillPos, spillAmount, 5)
+    end
+    CombatService.Client.LootSpillVFX:FireAll(spillPos, spillAmount)
+  end
+
+  CombatService.PlayerHitPlayer:Fire(attacker, target, spillAmount)
+
+  local hitLabel = if targetIsBlocking then "blocked" else attackType
+  print(
+    string.format(
+      "[CombatService] %s %s-hit %s — ragdoll %.1fs, spilled %d doubloons",
+      attacker.Name,
+      hitLabel,
+      target.Name,
+      ragdollDuration,
+      spillAmount
+    )
+  )
+end
+
 --------------------------------------------------------------------------------
 -- CLIENT REQUEST HANDLERS
 --------------------------------------------------------------------------------
@@ -576,6 +792,158 @@ local function onHeavyAttackRequest(player: Player, chargeTime: number)
   end
 end
 
+--[[
+  Called when a client fires LungeRequest (Rank 2 unlock).
+  Forward dash + slash at endpoint.
+]]
+local function onLungeRequest(player: Player)
+  -- Check rank unlock
+  if not RankEffectsService or not RankEffectsService:HasLunge(player) then
+    return
+  end
+
+  -- Validate basic attack state
+  local canAttack, _ = validateAttack(player, LUNGE_COOLDOWN)
+  if not canAttack then
+    return
+  end
+
+  -- Check lunge-specific cooldown
+  local now = os.clock()
+  local lastLunge = LastLungeTime[player]
+  if lastLunge and (now - lastLunge) < LUNGE_COOLDOWN then
+    return
+  end
+
+  LastLungeTime[player] = now
+  LastAttackTime[player] = now
+
+  -- Get lunge direction (player's facing direction)
+  local hrp = getHRP(player)
+  if not hrp then
+    return
+  end
+  local lookDir = hrp.CFrame.LookVector
+  local lungeDir = Vector3.new(lookDir.X, 0, lookDir.Z)
+  if lungeDir.Magnitude > 0.01 then
+    lungeDir = lungeDir.Unit
+  else
+    return
+  end
+
+  -- Confirm lunge to client (triggers VFX and movement)
+  CombatService.Client.LungeConfirm:Fire(player, lungeDir)
+
+  -- Schedule hit detection after windup delay (player dashes then hits at endpoint)
+  task.delay(LUNGE_WINDUP, function()
+    -- Re-check state (could have been ragdolled during windup)
+    if SessionStateService:IsRagdolling(player) then
+      return
+    end
+
+    -- Hit detection at endpoint (standard single-target)
+    local hitType, target = performHitDetection(player, LUNGE_RANGE, LUNGE_ARC)
+
+    if hitType == "player" and target then
+      handlePlayerHitCustom(
+        player,
+        target :: Player,
+        LUNGE_RAGDOLL,
+        LUNGE_SPILL,
+        LUNGE_KNOCKBACK,
+        "lunge"
+      )
+      CombatService.Client.SwingResult:Fire(player, "player", (target :: Player).Name, "lunge")
+    elseif hitType == "npc" and target then
+      handleNPCHit(player, target)
+      CombatService.Client.SwingResult:Fire(player, "npc", target.npcType, "lunge")
+    elseif hitType == "container" and target then
+      handleContainerHit(player, target)
+      CombatService.Client.SwingResult:Fire(player, "container", nil, "lunge")
+    else
+      CombatService.Client.SwingResult:Fire(player, "miss", nil, "lunge")
+    end
+  end)
+end
+
+--[[
+  Called when a client fires SpinRequest (Rank 4 unlock).
+  360° area attack hitting all targets in range.
+]]
+local function onSpinRequest(player: Player)
+  -- Check rank unlock
+  if not RankEffectsService or not RankEffectsService:HasSpin(player) then
+    return
+  end
+
+  -- Validate basic attack state
+  local canAttack, _ = validateAttack(player, SPIN_COOLDOWN)
+  if not canAttack then
+    return
+  end
+
+  -- Check spin-specific cooldown
+  local now = os.clock()
+  local lastSpin = LastSpinTime[player]
+  if lastSpin and (now - lastSpin) < SPIN_COOLDOWN then
+    return
+  end
+
+  LastSpinTime[player] = now
+  LastAttackTime[player] = now
+
+  -- Confirm spin to client (triggers VFX)
+  CombatService.Client.SpinConfirm:Fire(player)
+
+  -- Schedule hit detection after windup
+  task.delay(SPIN_WINDUP, function()
+    if SessionStateService:IsRagdolling(player) then
+      return
+    end
+
+    -- Multi-hit detection: hits ALL targets in 360° arc
+    local hitPlayers, hitNPCs, hitContainers =
+      performMultiHitDetection(player, SPIN_RANGE, SPIN_ARC)
+
+    local hitAnything = false
+
+    -- Hit all players in range
+    for _, target in hitPlayers do
+      handlePlayerHitCustom(player, target, SPIN_RAGDOLL, SPIN_SPILL, SPIN_KNOCKBACK, "spin")
+      hitAnything = true
+    end
+
+    -- Hit all NPCs in range
+    for _, npcEntry in hitNPCs do
+      handleNPCHit(player, npcEntry)
+      hitAnything = true
+    end
+
+    -- Hit all containers in range
+    for _, containerEntry in hitContainers do
+      handleContainerHit(player, containerEntry)
+      hitAnything = true
+    end
+
+    if hitAnything then
+      local hitCount = #hitPlayers + #hitNPCs + #hitContainers
+      CombatService.Client.SwingResult:Fire(player, "multi", tostring(hitCount), "spin")
+      print(
+        string.format(
+          "[CombatService] %s spin hit %d targets (%d players, %d NPCs, %d containers)",
+          player.Name,
+          hitCount,
+          #hitPlayers,
+          #hitNPCs,
+          #hitContainers
+        )
+      )
+    else
+      CombatService.Client.SwingResult:Fire(player, "miss", nil, "spin")
+    end
+  end)
+end
+
 --------------------------------------------------------------------------------
 -- LIFECYCLE
 --------------------------------------------------------------------------------
@@ -592,6 +960,7 @@ function CombatService:KnitStart()
   DoubloonService = Knit.GetService("DoubloonService")
   HarborService = Knit.GetService("HarborService")
   NPCService = Knit.GetService("NPCService")
+  RankEffectsService = Knit.GetService("RankEffectsService")
 
   -- Listen for client attack requests
   self.Client.AttackRequest:Connect(function(player: Player)
@@ -625,21 +994,23 @@ function CombatService:KnitStart()
 
     SessionStateService:SetBlocking(player, blocking)
 
-    -- Apply or restore movement speed
+    -- Apply or restore movement speed (use rank-aware walk speed)
     local character = player.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     if humanoid then
       if blocking then
-        -- Store default walk speed if not already stored
-        if not PlayerDefaultWalkSpeed[player] then
-          PlayerDefaultWalkSpeed[player] = humanoid.WalkSpeed
-        end
-        humanoid.WalkSpeed = PlayerDefaultWalkSpeed[player] * BLOCK_SPEED_MULTIPLIER
+        -- Get the correct default walk speed from RankEffectsService
+        local defaultSpeed = if RankEffectsService
+          then RankEffectsService:GetWalkSpeed(player)
+          else humanoid.WalkSpeed
+        PlayerDefaultWalkSpeed[player] = defaultSpeed
+        humanoid.WalkSpeed = defaultSpeed * BLOCK_SPEED_MULTIPLIER
       else
         -- Restore default walk speed
-        if PlayerDefaultWalkSpeed[player] then
-          humanoid.WalkSpeed = PlayerDefaultWalkSpeed[player]
-        end
+        local restoreSpeed = if RankEffectsService
+          then RankEffectsService:GetWalkSpeed(player)
+          else PlayerDefaultWalkSpeed[player] or humanoid.WalkSpeed
+        humanoid.WalkSpeed = restoreSpeed
       end
     end
   end)
@@ -711,9 +1082,21 @@ function CombatService:KnitStart()
     CombatService.Client.DashConfirm:Fire(player, dashDir)
   end)
 
+  -- Listen for lunge requests from client (Rank 2 unlock)
+  self.Client.LungeRequest:Connect(function(player: Player)
+    onLungeRequest(player)
+  end)
+
+  -- Listen for spin requests from client (Rank 4 unlock)
+  self.Client.SpinRequest:Connect(function(player: Player)
+    onSpinRequest(player)
+  end)
+
   -- Clean up rate limiting data on player leave
   Players.PlayerRemoving:Connect(function(player: Player)
     LastAttackTime[player] = nil
+    LastLungeTime[player] = nil
+    LastSpinTime[player] = nil
     PlayerDefaultWalkSpeed[player] = nil
   end)
 

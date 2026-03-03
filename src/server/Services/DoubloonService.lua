@@ -36,6 +36,7 @@ local DoubloonService = Knit.CreateService({
 -- Lazy-loaded service references (set in KnitStart)
 local SessionStateService = nil
 local DataService = nil
+local RankEffectsService = nil
 
 -- Server-side signal: fired when doubloons are collected by a player.
 -- Args: (player: Player, amount: number, position: Vector3)
@@ -267,6 +268,7 @@ end
 --[[
   Checks all active players against all active pickups for proximity collection.
   Uses squared distance to avoid sqrt for performance.
+  Per-player pickup radius accounts for Rank 5 bonus (+10%).
 ]]
 local function checkCollections()
   if #ActivePickups == 0 then
@@ -274,16 +276,22 @@ local function checkCollections()
   end
 
   local players = Players:GetPlayers()
-  -- Build a list of player positions for this frame
-  local playerPositions: { { player: Player, position: Vector3 } } = {}
+  -- Build a list of player positions for this frame (with per-player radius)
+  local playerPositions: { { player: Player, position: Vector3, radiusSq: number } } = {}
   for _, player in players do
     local character = player.Character
     if character then
       local rootPart = character:FindFirstChild("HumanoidRootPart")
       if rootPart then
+        -- Get per-player pickup radius (includes rank bonus if applicable)
+        local radius = PICKUP_RADIUS
+        if RankEffectsService then
+          radius = RankEffectsService:GetPickupRadius(player)
+        end
         table.insert(playerPositions, {
           player = player,
           position = rootPart.Position,
+          radiusSq = radius * radius,
         })
       end
     end
@@ -304,7 +312,7 @@ local function checkCollections()
       local dz = pdata.position.Z - pickup.position.Z
       local distSq = dx * dx + dz * dz
 
-      if distSq <= PICKUP_RADIUS_SQ then
+      if distSq <= pdata.radiusSq then
         -- Collect this pickup
         if SessionStateService then
           SessionStateService:AddHeldDoubloons(pdata.player, pickup.value)
@@ -348,6 +356,7 @@ end
 function DoubloonService:KnitStart()
   SessionStateService = Knit.GetService("SessionStateService")
   DataService = Knit.GetService("DataService")
+  RankEffectsService = Knit.GetService("RankEffectsService")
 
   -- Connect to disconnect doubloon spill signal
   DataService.DisconnectDoubloonSpill:Connect(
