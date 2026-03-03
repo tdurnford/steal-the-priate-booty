@@ -1,3 +1,72 @@
+## 2026-03-02 — HAZARD-003: Quicksand Hazard
+
+### What was done
+- Created `src/server/Services/QuicksandService.lua` — Server-authoritative quicksand hazard.
+  Loads Parts from workspace.QuicksandPatches folder. Maintains 2-3 active patches out of 4-6
+  total via cycling system (each active patch stays active 25-40s, then goes dormant and a
+  random dormant patch activates). Player position checks every 0.25s on active patches (AABB).
+  Players stepping on active quicksand: 3s immobilization (WalkSpeed=0, JumpHeight=0, can still
+  attack and pickup). After 3s: ejected to nearest patch edge. Stores/restores WalkSpeed and
+  JumpHeight for correct restoration. Ragdoll from other sources frees the player immediately.
+  Skips: dashing (i-frame bypass), ragdolled, tutorial, harbor. Client signals for VFX/SFX.
+  Server signals for inter-service communication. Disconnect cleanup.
+- Created `src/client/Controllers/QuicksandController.lua` — Client-side quicksand VFX/SFX.
+  Active patches show subtle sandy shimmer particles + occasional bubble particles. Dormant
+  patches have no visual effects (normal ground). On trap: sand swirl VFX part at player's feet,
+  sinking sound, notification. On release: pop-out sound, freed notification, VFX cleanup.
+  Late-join sync via GetPatchStates RPC. Character removal cleanup.
+- Modified `src/shared/Types.lua` — Added `isQuicksandTrapped: boolean` and
+  `quicksandEndTime: number` to SessionState type + defaults.
+- Modified `src/shared/GameConfig.lua` — Expanded Quicksand config with `activeDurationMin` (25s),
+  `activeDurationMax` (40s), and `ejectOffset` (5 studs).
+- Modified `src/server/Services/SessionStateService.lua` — Added quicksand methods:
+  `IsQuicksandTrapped(player)` with auto-clear on expiry, `StartQuicksandTrap(player, duration)`,
+  `EndQuicksandTrap(player)`. All fire `notifyChange` signals.
+
+### Acceptance criteria met
+- 4-6 patches loaded from workspace.QuicksandPatches; 2-3 active at any time ✓
+- Active patches have subtle visual tell (shimmer particles, bubble particles) ✓
+- Player is immobilized for 3s, can still attack but not move ✓
+- Ejected to nearest solid ground (nearest patch edge + offset) after 3s ✓
+- Dash i-frames (0.3s) prevent quicksand trigger ✓
+- Server-authoritative (all detection and immobilization on server) ✓
+
+### Design decisions
+- **Cycling mechanism**: Each active patch has its own timer (25-40s randomized). When it
+  expires, the patch goes dormant and a random dormant patch activates. This maintains the
+  2-3 active count while providing unpredictable hazard distribution.
+- **WalkSpeed/JumpHeight save-restore**: Rather than querying RankEffectsService or CombatService
+  for the "correct" speed, we save the player's current WalkSpeed and JumpHeight at trap time
+  and restore them on release. This correctly handles any modifiers (rank speed bonus, block
+  speed reduction) that were active when the player stepped in.
+- **Ragdoll frees quicksand**: If a player gets ragdolled by another source while trapped (e.g.,
+  volcanic vent, combat), the quicksand trap ends immediately. Movement is restored but no
+  ejection teleport occurs (ragdoll physics handles positioning). This prevents double-stacking
+  movement lockouts.
+- **0.25s position check interval**: Unlike volcanic vents (per-frame), quicksand only checks
+  player positions every 0.25s. This is sufficient since quicksand doesn't need frame-precise
+  detection and saves CPU with 4-6 patches × all players.
+- **No loot spill**: The spec explicitly says "no ragdoll, no spill, but vulnerable". Players
+  trapped in quicksand keep their doubloons but are sitting ducks for PvP attacks.
+- **AABB detection**: Matches VolcanicVentService and TidalSurgeService pattern using
+  PointToObjectSpace for rotated patch Parts.
+- **Safe iteration**: Collected players-to-release into temporary arrays before modifying
+  TrappedPlayers table to avoid issues with table modification during iteration.
+
+### Notes for next developer
+- QuicksandPatches folder: Place Parts in workspace.QuicksandPatches to define quicksand zones.
+  Each Part defines a quicksand patch boundary. If the folder is empty, quicksand is disabled.
+- Patches should be placed on jungle paths between Pirate Town and Skull Cave, and along jungle
+  trails (per MAP-005 spec).
+- The eject position is calculated as the nearest patch edge + 5 studs outward. The player is
+  teleported via CFrame to that position.
+- Sound asset IDs are shared placeholders (same as volcanic vent/tidal surge). Replace with
+  dedicated quicksand sounds when AUDIO-001 is implemented.
+- Next priorities: HAZARD-004 (rogue wave), UI-005 (minimap), UI-006 (event banner queuing),
+  COSMETIC-001/002/003 (cosmetic system)
+
+---
+
 ## 2026-03-02 — EVENT-003: Loot Surge World Event
 
 ### What was done

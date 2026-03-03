@@ -623,6 +623,9 @@ GameConfig.Quicksand = {
   totalPatches = { min = 4, max = 6 },
   activeAtOnce = { min = 2, max = 3 },
   immobilizeDuration = 3, -- seconds (can attack, cannot move)
+  activeDurationMin = 25, -- seconds an active patch stays active before cycling
+  activeDurationMax = 40,
+  ejectOffset = 5, -- studs outside patch edge when player is ejected
 }
 
 --------------------------------------------------------------------------------

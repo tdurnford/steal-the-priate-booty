@@ -7,7 +7,8 @@
     heldDoubloons, shipHold, shipLocked, isRagdolling, ragdollEndTime,
     recoveryEndTime, dashCooldownEnd, lastHitTargets, lastRaidedShips,
     hasBounty, tutorialActive, tutorialStep, threatLevel, lastLockTime,
-    inDangerZone, dangerZoneName, phantomCaptainActive
+    inDangerZone, dangerZoneName, phantomCaptainActive,
+    isQuicksandTrapped, quicksandEndTime
 
   Other services read/write session state through this service's API.
   The client receives read-only snapshots of select fields via signals.
@@ -580,6 +581,43 @@ function SessionStateService:SetInDangerZone(
   state.dangerZoneName = zoneName
   notifyChange(player, "inDangerZone", inDangerZone)
   notifyChange(player, "dangerZoneName", zoneName)
+end
+
+--------------------------------------------------------------------------------
+-- QUICKSAND
+--------------------------------------------------------------------------------
+
+function SessionStateService:IsQuicksandTrapped(player: Player): boolean
+  local state = SessionStates[player]
+  if not state then
+    return false
+  end
+  if state.isQuicksandTrapped and os.clock() >= state.quicksandEndTime then
+    state.isQuicksandTrapped = false
+    notifyChange(player, "isQuicksandTrapped", false)
+  end
+  return state.isQuicksandTrapped
+end
+
+function SessionStateService:StartQuicksandTrap(player: Player, duration: number)
+  local state = SessionStates[player]
+  if not state then
+    return
+  end
+  state.isQuicksandTrapped = true
+  state.quicksandEndTime = os.clock() + duration
+  notifyChange(player, "isQuicksandTrapped", true)
+end
+
+function SessionStateService:EndQuicksandTrap(player: Player)
+  local state = SessionStates[player]
+  if not state then
+    return
+  end
+  if state.isQuicksandTrapped then
+    state.isQuicksandTrapped = false
+    notifyChange(player, "isQuicksandTrapped", false)
+  end
 end
 
 --------------------------------------------------------------------------------

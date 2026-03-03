@@ -84,6 +84,10 @@ export type SessionState = {
 
   -- NPC
   phantomCaptainActive: boolean,
+
+  -- Quicksand
+  isQuicksandTrapped: boolean,
+  quicksandEndTime: number,
 }
 
 --------------------------------------------------------------------------------
@@ -161,6 +165,10 @@ Types.DEFAULT_SESSION_STATE = {
 
   -- NPC
   phantomCaptainActive = false,
+
+  -- Quicksand
+  isQuicksandTrapped = false,
+  quicksandEndTime = 0,
 }
 
 -- Default data template for new players (used by ProfileService)
