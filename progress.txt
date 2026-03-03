@@ -4001,3 +4001,69 @@ KNIT-001, TYPES-001, STATS-001, UI-009, CONTAINER-VFX-001, COMBAT-VFX-001.
   by NPCService (spawn preferences) and HazardService (hazard placement).
 - Next priorities: SHIP-006 (ship tier progression), HAZARD-001 (volcanic vents),
   EVENT-002 (shipwreck world event), UI-005 (minimap)
+
+---
+
+## 2026-03-02 — HAZARD-001: Volcanic Vent Environmental Hazard
+
+### What was done
+- Created `src/server/Services/VolcanicVentService.lua` — server-authoritative volcanic vent
+  hazard system. Manages vent phase cycling, player detection, and damage application.
+- Created `src/client/Controllers/VolcanicVentController.lua` — client-side VFX/SFX for
+  each vent phase (dormant steam, warning glow+rumble, eruption fire geyser).
+
+### Server: VolcanicVentService
+1. **Vent loading**: Reads BaseParts from `workspace.VolcanicVents` folder. Each Part defines
+   the eruption zone (AABB + vertical tolerance of 12 studs above surface).
+2. **Phase cycling**: Each vent independently cycles: dormant (20s ±20%) → warning (5s) →
+   eruption (3s) → repeat. Initial timers staggered (30-100% of dormant duration) so vents
+   don't synchronize.
+3. **Eruption damage**: During eruption phase, Heartbeat checks all players against vent
+   bounds. Hit players get: 2.0s ragdoll via SessionStateService, upward launch (80 stud/s
+   + ±15 horizontal scatter), 15% held doubloons spill via calculateSpill + DoubloonService.
+4. **Skip conditions**: Already ragdolled, dashing (i-frames), tutorial-active players are
+   skipped. NPCs are never affected (only iterates Players:GetPlayers).
+5. **Client signals**: VentPhaseChanged (all clients, for VFX), VentEruptionHit (hit player,
+   for ragdoll + launch), VentEruptionLaunchVFX (all clients, for spectator effects).
+6. **Public API**: GetVentStates() (server+client RPC for late-join sync),
+   IsPositionOnVent(position) for other services.
+
+### Client: VolcanicVentController
+1. **Dormant VFX**: Faint gray steam particles (Rate=3, slow upward drift).
+2. **Warning VFX**: Steam rate increases to 8, orange-tinted heavy steam (Rate=12),
+   PointLight orange glow tweens from 0→3 brightness over 4.5s, looped rumble Sound
+   fades in over 3s with 3D rolloff (10-80 studs).
+3. **Eruption VFX**: Fire geyser particle column (yellow→red gradient, Speed=30-50,
+   Rate=40, LightEmission=1), bright red-orange PointLight (Brightness=5, Range=40),
+   eruption burst Sound with 3D rolloff (15-120 studs).
+4. **Eruption hit**: Shows "Volcanic eruption!" notification, enables RagdollModule with
+   launch velocity, schedules cleanup after ragdoll duration.
+5. **Phase cleanup**: Each phase transition destroys previous phase's emitters/lights/sounds.
+   Dormant steam emitter persists across phases (rate adjusted: 3→8→0→3).
+6. **Late-join sync**: Calls GetVentStates RPC on start, applies current phase VFX.
+7. **Character cleanup**: CharacterRemoving cleans up ragdoll state.
+
+### Config used (`GameConfig.VolcanicVent`)
+- `dormantDuration = 20`, `warningDuration = 5`, `eruptionDuration = 3`
+- `ragdollDuration = 2.0`, `lootSpillPercent = 0.15`
+
+### Also marked as done: SHIP-006 (Ship Tier Progression)
+The ship tier system was already fully functional from prior work:
+- 7 tiers defined in GameConfig with correct treasury thresholds
+- RecalculateShipTier called on deposit/lock/gear/cosmetic purchase
+- Model swap on tier change, ShipTierChanged signal to all clients
+- Ghost Ship spectral glow + particles
+- The remaining visual quality (proper ship meshes) is MODEL-002's scope
+
+### Notes for next developer
+- Vent Parts must be placed in `workspace.VolcanicVents` folder for the service to load them.
+  MAP-005 (Hazard Placement on Map) is the task for placing these Parts.
+- Sound asset IDs are placeholders (rbxassetid://9116222901 for rumble, rbxassetid://9114227726
+  for eruption). Replace with proper pirate-themed volcanic audio when available (AUDIO-001).
+- The VentEruptionLaunchVFX signal is fired to all clients but not currently consumed by the
+  controller (spectator launch effects could be added later — e.g., fire particle burst at the
+  launched player's position).
+- Continuous eruption checks run every Heartbeat during the 3s eruption phase. Players who
+  walk onto an active eruption mid-phase will also be hit.
+- Next priorities: HAZARD-002 (tidal surge), HAZARD-003 (quicksand), EVENT-002 (shipwreck),
+  UI-007 (bounty/raid alerts)
