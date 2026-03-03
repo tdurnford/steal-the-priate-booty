@@ -4,18 +4,21 @@
 
   Handles:
     - Cursed Skeleton entity creation with Humanoid, HP, and stats
+    - Ghost Pirate entity creation (NPC-007): semi-transparent, spectral slash, night-only
     - NPC AI state machine: Idle → Patrol → Chase → Attack → Flinch → Dead
-    - Slash attack (0.8s windup, 8 stud range, 2s cooldown)
-    - Lunge attack (0.5s crouch telegraph, 6 stud dash + slash, 5s cooldown)
+    - Skeleton slash attack (0.8s windup, 8 stud range, 2s cooldown)
+    - Skeleton lunge attack (0.5s crouch telegraph, 6 stud dash + slash, 5s cooldown)
+    - Ghost Pirate spectral slash (0.6s windup, 8 stud range, 2.5s cooldown, 15% spill)
+    - Ghost Pirate materialization (flash VFX + screech SFX on aggro)
     - NPC hit reception: flinch (0.2s pause), death (loot drop), respawn (90s)
-    - Hit detection against players: ragdoll 2.0s, spill 20% held doubloons
+    - Hit detection against players: ragdoll + loot spill (type-specific values)
     - SimplePath-based patrol: walk between zone waypoints using PathfindingService
     - SimplePath-based chase: 0.3s path recalculation, leash, stuck detection, Harbor boundary stop
     - Respawn management per zone
 
   Spawn Manager (NPC-006):
     - Budget-driven spawning: 6-10 Cursed Skeletons during day
-    - Night scaling: skeleton count ×1.5, Ghost Pirates 4-6 (stub until NPC-007)
+    - Night scaling: skeleton count ×1.5, Ghost Pirates 4-6
     - Dawn cleanup: despawn Ghost Pirates (drop loot), reduce skeleton budget
     - Budget-aware respawning: only respawn if under current budget
     - Bonus threat NPCs (ThreatEffectsService) are separate from budget
@@ -71,6 +74,9 @@ local NPCService = Knit.CreateService({
     -- Fired to ALL players when an NPC teleports (stuck detection poof VFX).
     -- Args: (npcId: number, fromPosition: Vector3, toPosition: Vector3)
     NPCTeleported = Knit.CreateSignal(),
+    -- Fired to ALL players when a Ghost Pirate materializes (enters chase).
+    -- Args: (npcId: number, position: Vector3)
+    GhostPirateMaterialized = Knit.CreateSignal(),
   },
 })
 
@@ -106,7 +112,19 @@ local PLAYER_BASE_SPEED = 16
 
 -- NPC config shorthand
 local SKELETON = GameConfig.CursedSkeleton
+local GHOST_PIRATE = GameConfig.GhostPirate
 local NPC_BEHAVIOR = GameConfig.NPCBehavior
+
+--[[
+  Returns the NPC config table for a given NPC type.
+  Allows shared AI logic to read type-appropriate values.
+]]
+local function getNPCConfig(npcType: string)
+  if npcType == "ghost_pirate" then
+    return GHOST_PIRATE
+  end
+  return SKELETON
+end
 
 --------------------------------------------------------------------------------
 -- NPC REGISTRY
@@ -284,6 +302,39 @@ local function fillSkeletonBudget(): number
 end
 
 --[[
+  Spawns Ghost Pirates to fill the current budget, using available spawn points.
+  Returns the number of NPCs spawned.
+]]
+local function fillGhostPirateBudget(): number
+  local spawned = 0
+  while BudgetGhostPirateCount < GhostPirateBudget do
+    local point = pickAvailableSpawnPoint(GhostPirateSpawnPoints)
+    if not point then
+      -- No available spawn points, spawn at a random offset from an existing point
+      if #GhostPirateSpawnPoints > 0 then
+        local randomPoint = GhostPirateSpawnPoints[math.random(1, #GhostPirateSpawnPoints)]
+        local zone = randomPoint:GetAttribute("Zone") or "unknown"
+        local offset = randomPositionAround(randomPoint.Position, 10)
+        local entry = spawnGhostPirate(offset, zone, nil)
+        if entry then
+          spawned = spawned + 1
+        end
+      else
+        break
+      end
+    else
+      local zone = point:GetAttribute("Zone") or "unknown"
+      local entry = spawnGhostPirate(point.Position, zone, point)
+      if entry then
+        OccupiedSpawnPoints[point] = entry.id
+        spawned = spawned + 1
+      end
+    end
+  end
+  return spawned
+end
+
+--[[
   Despawns excess skeletons to bring count down to budget.
   Prefers despawning NPCs furthest from any player.
 ]]
@@ -372,24 +423,15 @@ local function onPhaseChanged(newPhase: string, _previousPhase: string)
     GhostPirateBudget = rollNightGhostPirateBudget()
 
     local skeletonsFilled = fillSkeletonBudget()
-
-    -- Ghost Pirates: stub until NPC-007 is implemented
-    if GhostPirateBudget > 0 then
-      warn(
-        string.format(
-          "[NPCService] Night: Ghost Pirate budget = %d, "
-            .. "but NPC-007 (Ghost Pirate NPC) is not yet implemented. Skipping spawn.",
-          GhostPirateBudget
-        )
-      )
-    end
+    local ghostPiratesFilled = fillGhostPirateBudget()
 
     print(
       string.format(
-        "[NPCService] Night budget: %d skeletons (spawned %d new), %d ghost pirates (stubbed)",
+        "[NPCService] Night budget: %d skeletons (spawned %d new), %d ghost pirates (spawned %d)",
         SkeletonBudget,
         skeletonsFilled,
-        GhostPirateBudget
+        GhostPirateBudget,
+        ghostPiratesFilled
       )
     )
   elseif newPhase == "Dawn" or newPhase == "Day" then
@@ -588,6 +630,181 @@ local function createSkeletonModel(position: Vector3, npcId: number): (Model, Hu
   return model, humanoid, rootPart
 end
 
+--[[
+  Creates a Ghost Pirate NPC model at the given position.
+  Spectral/translucent appearance with ghostly glow. Semi-transparent by default.
+  @param position World position
+  @param npcId Unique NPC ID
+  @return The created Model, Humanoid, and HumanoidRootPart
+]]
+local function createGhostPirateModel(position: Vector3, npcId: number): (Model, Humanoid, BasePart)
+  local model = Instance.new("Model")
+  model.Name = "GhostPirate_" .. tostring(npcId)
+
+  -- Root part
+  local rootPart = Instance.new("Part")
+  rootPart.Name = "HumanoidRootPart"
+  rootPart.Size = Vector3.new(2, 2, 1)
+  rootPart.Transparency = 1
+  rootPart.CanCollide = false
+  rootPart.Anchored = false
+  rootPart.CFrame = CFrame.new(position + Vector3.new(0, 3, 0))
+  rootPart.Parent = model
+
+  -- Spectral torso
+  local torso = Instance.new("Part")
+  torso.Name = "Torso"
+  torso.Size = Vector3.new(2, 2, 1)
+  torso.Color = Color3.fromRGB(100, 180, 200) -- spectral teal
+  torso.Material = Enum.Material.Neon
+  torso.Transparency = 0.4
+  torso.CanCollide = false
+  torso.Anchored = false
+  torso.CFrame = rootPart.CFrame
+  torso.Parent = model
+
+  local torsoWeld = Instance.new("Weld")
+  torsoWeld.Part0 = rootPart
+  torsoWeld.Part1 = torso
+  torsoWeld.C0 = CFrame.new()
+  torsoWeld.Parent = rootPart
+
+  -- Ghost pirate glow particle emitter on torso
+  local ghostGlow = Instance.new("ParticleEmitter")
+  ghostGlow.Name = "GhostGlow"
+  ghostGlow.Color = ColorSequence.new(Color3.fromRGB(120, 200, 220))
+  ghostGlow.Size =
+    NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 0) })
+  ghostGlow.Transparency =
+    NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.6), NumberSequenceKeypoint.new(1, 1) })
+  ghostGlow.Lifetime = NumberRange.new(0.5, 1.0)
+  ghostGlow.Rate = 15
+  ghostGlow.Speed = NumberRange.new(0.5, 1.5)
+  ghostGlow.SpreadAngle = Vector2.new(180, 180)
+  ghostGlow.LightEmission = 1
+  ghostGlow.Parent = torso
+
+  -- Spectral head
+  local head = Instance.new("Part")
+  head.Name = "Head"
+  head.Shape = Enum.PartType.Ball
+  head.Size = Vector3.new(1.2, 1.2, 1.2)
+  head.Color = Color3.fromRGB(120, 200, 220) -- lighter spectral
+  head.Material = Enum.Material.Neon
+  head.Transparency = 0.3
+  head.CanCollide = false
+  head.Anchored = false
+  head.CFrame = rootPart.CFrame * CFrame.new(0, 1.6, 0)
+  head.Parent = model
+
+  local headWeld = Instance.new("Weld")
+  headWeld.Part0 = torso
+  headWeld.Part1 = head
+  headWeld.C0 = CFrame.new(0, 1.6, 0)
+  headWeld.Parent = torso
+
+  -- Left arm
+  local leftArm = Instance.new("Part")
+  leftArm.Name = "Left Arm"
+  leftArm.Size = Vector3.new(0.6, 2, 0.6)
+  leftArm.Color = Color3.fromRGB(100, 180, 200)
+  leftArm.Material = Enum.Material.Neon
+  leftArm.Transparency = 0.5
+  leftArm.CanCollide = false
+  leftArm.Anchored = false
+  leftArm.Parent = model
+
+  local leftArmWeld = Instance.new("Weld")
+  leftArmWeld.Part0 = torso
+  leftArmWeld.Part1 = leftArm
+  leftArmWeld.C0 = CFrame.new(-1.3, 0, 0)
+  leftArmWeld.Parent = torso
+
+  -- Right arm (spectral claw)
+  local rightArm = Instance.new("Part")
+  rightArm.Name = "Right Arm"
+  rightArm.Size = Vector3.new(0.6, 2, 0.6)
+  rightArm.Color = Color3.fromRGB(100, 180, 200)
+  rightArm.Material = Enum.Material.Neon
+  rightArm.Transparency = 0.5
+  rightArm.CanCollide = false
+  rightArm.Anchored = false
+  rightArm.Parent = model
+
+  local rightArmWeld = Instance.new("Weld")
+  rightArmWeld.Part0 = torso
+  rightArmWeld.Part1 = rightArm
+  rightArmWeld.C0 = CFrame.new(1.3, 0, 0)
+  rightArmWeld.Parent = torso
+
+  -- Left leg (fading into mist below)
+  local leftLeg = Instance.new("Part")
+  leftLeg.Name = "Left Leg"
+  leftLeg.Size = Vector3.new(0.8, 2, 0.8)
+  leftLeg.Color = Color3.fromRGB(80, 150, 170)
+  leftLeg.Material = Enum.Material.Neon
+  leftLeg.Transparency = 0.6
+  leftLeg.CanCollide = false
+  leftLeg.Anchored = false
+  leftLeg.Parent = model
+
+  local leftLegWeld = Instance.new("Weld")
+  leftLegWeld.Part0 = torso
+  leftLegWeld.Part1 = leftLeg
+  leftLegWeld.C0 = CFrame.new(-0.5, -2, 0)
+  leftLegWeld.Parent = torso
+
+  -- Right leg
+  local rightLeg = Instance.new("Part")
+  rightLeg.Name = "Right Leg"
+  rightLeg.Size = Vector3.new(0.8, 2, 0.8)
+  rightLeg.Color = Color3.fromRGB(80, 150, 170)
+  rightLeg.Material = Enum.Material.Neon
+  rightLeg.Transparency = 0.6
+  rightLeg.CanCollide = false
+  rightLeg.Anchored = false
+  rightLeg.Parent = model
+
+  local rightLegWeld = Instance.new("Weld")
+  rightLegWeld.Part0 = torso
+  rightLegWeld.Part1 = rightLeg
+  rightLegWeld.C0 = CFrame.new(0.5, -2, 0)
+  rightLegWeld.Parent = torso
+
+  -- Eerie ghost eye glow (cyan)
+  local eyeGlow = Instance.new("PointLight")
+  eyeGlow.Color = Color3.fromRGB(100, 220, 255) -- icy cyan
+  eyeGlow.Brightness = 1.2
+  eyeGlow.Range = 8
+  eyeGlow.Parent = head
+
+  -- Humanoid
+  local humanoid = Instance.new("Humanoid")
+  humanoid.MaxHealth = GHOST_PIRATE.hp
+  humanoid.Health = GHOST_PIRATE.hp
+  humanoid.WalkSpeed = PLAYER_BASE_SPEED * GHOST_PIRATE.speedMultiplier
+  humanoid.JumpPower = 50
+  humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
+  humanoid.HealthDisplayDistance = 20
+  humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOn
+  humanoid.NameDisplayDistance = 15
+  humanoid.DisplayName = GHOST_PIRATE.displayName
+  humanoid.Parent = model
+
+  model.PrimaryPart = rootPart
+
+  -- Store metadata as attributes for hit detection
+  for _, part in model:GetChildren() do
+    if part:IsA("BasePart") then
+      part:SetAttribute("NPCId", npcId)
+      part:SetAttribute("NPCType", "ghost_pirate")
+    end
+  end
+
+  model.Parent = NPCsFolder
+  return model, humanoid, rootPart
+end
+
 --------------------------------------------------------------------------------
 -- HELPER FUNCTIONS
 --------------------------------------------------------------------------------
@@ -710,10 +927,12 @@ local function getPatrolWaypointsForZone(zone: string, spawnPos: Vector3): { Vec
 end
 
 --[[
-  Gets the effective aggro range, accounting for night bonus.
+  Gets the effective aggro range for an NPC, accounting for night bonus.
+  @param npcType The NPC type (for config lookup)
 ]]
-local function getEffectiveAggroRange(): number
-  local range = SKELETON.aggroRange
+local function getEffectiveAggroRange(npcType: string): number
+  local config = getNPCConfig(npcType)
+  local range = config.aggroRange
   if DayNightService and DayNightService:IsNight() then
     range = range * (1 + NPC_BEHAVIOR.nightAggroRangeBonus)
   end
@@ -721,11 +940,13 @@ local function getEffectiveAggroRange(): number
 end
 
 --[[
-  Gets the effective walk speed, accounting for night bonus and threat effects.
+  Gets the effective walk speed for an NPC, accounting for night bonus and threat effects.
+  @param npcType The NPC type (for config lookup)
   @param npcPosition Optional NPC position for threat-based speed bonus lookup
 ]]
-local function getEffectiveSpeed(npcPosition: Vector3?): number
-  local speed = PLAYER_BASE_SPEED * SKELETON.speedMultiplier
+local function getEffectiveSpeed(npcType: string, npcPosition: Vector3?): number
+  local config = getNPCConfig(npcType)
+  local speed = PLAYER_BASE_SPEED * config.speedMultiplier
   if DayNightService and DayNightService:IsNight() then
     speed = speed * (1 + NPC_BEHAVIOR.nightSpeedBonus)
   end
@@ -899,6 +1120,106 @@ local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?)
 end
 
 --[[
+  Spawns a single Ghost Pirate NPC at the given position.
+  @param position World position
+  @param zone Zone name
+  @param spawnPoint Optional spawn point Part
+  @return The NPC entry, or nil if spawn failed
+]]
+local function spawnGhostPirate(position: Vector3, zone: string, spawnPoint: Part?): NPCEntry?
+  local npcId = nextNPCId
+  nextNPCId = nextNPCId + 1
+
+  local model, humanoid, rootPart = createGhostPirateModel(position, npcId)
+
+  local entry: NPCEntry = {
+    id = npcId,
+    npcType = "ghost_pirate",
+    hp = GHOST_PIRATE.hp,
+    maxHp = GHOST_PIRATE.hp,
+    model = model,
+    humanoid = humanoid,
+    rootPart = rootPart,
+    position = position,
+    spawnPosition = position,
+    spawnPoint = spawnPoint,
+    zone = zone,
+
+    aiState = AI_STATE.IDLE,
+    aiStateStartTime = os.clock(),
+    targetPlayer = nil,
+    lastSlashTime = 0,
+    lastLungeTime = 0,
+    lastPatrolMoveTime = 0,
+    patrolTarget = nil,
+    carriedDoubloons = 0,
+
+    -- SimplePath patrol and chase
+    simplePath = nil,
+    patrolWaypoints = {},
+    patrolWaypointIndex = 0,
+
+    -- SimplePath chase tracking
+    lastChaseRecalcTime = 0,
+    chaseStuckPos = nil,
+    chaseStuckTime = 0,
+    harborWaitStart = nil,
+
+    flinchEndTime = 0,
+
+    lungeTarget = nil,
+    lungeStartTime = 0,
+
+    respawnTime = nil,
+    alive = true,
+
+    forcedTarget = nil,
+    isBonusNPC = false,
+  }
+
+  -- Create SimplePath instance for pathfinding
+  local path = SimplePath.new(model, AGENT_PARAMS)
+  entry.simplePath = path
+  entry.patrolWaypoints = getPatrolWaypointsForZone(zone, position)
+  entry.patrolWaypointIndex = math.random(1, math.max(1, #entry.patrolWaypoints))
+
+  -- Wire SimplePath signals (same as skeleton)
+  path.Reached:Connect(function()
+    if entry.aiState == AI_STATE.CHASE then
+      entry.lastChaseRecalcTime = 0
+    else
+      entry.lastPatrolMoveTime = os.clock()
+    end
+  end)
+  path.Blocked:Connect(function()
+    if entry.aiState == AI_STATE.CHASE then
+      entry.lastChaseRecalcTime = 0
+    else
+      entry.lastPatrolMoveTime = os.clock() - 2
+    end
+  end)
+  path.Error:Connect(function()
+    if entry.aiState == AI_STATE.CHASE then
+      entry.lastChaseRecalcTime = 0
+    else
+      entry.lastPatrolMoveTime = os.clock() - 2
+    end
+  end)
+
+  ActiveNPCs[npcId] = entry
+  ActiveNPCCount = ActiveNPCCount + 1
+  BudgetGhostPirateCount = BudgetGhostPirateCount + 1
+  GhostPirateNPCIds[npcId] = true
+
+  -- Fire signals
+  NPCService.Client.NPCSpawned:FireAll(npcId, "ghost_pirate", position)
+
+  print(string.format("[NPCService] Spawned Ghost Pirate #%d at zone '%s'", npcId, zone))
+
+  return entry
+end
+
+--[[
   Removes an NPC from the world. Decrements budget counters and frees spawn points.
   @param npcId The NPC instance ID
 ]]
@@ -964,6 +1285,11 @@ local function setState(entry: NPCEntry, newState: string)
     entry.chaseStuckPos = nil
     entry.chaseStuckTime = os.clock()
     entry.harborWaitStart = nil
+
+    -- Ghost Pirate materialization: flash VFX + screech SFX when entering chase
+    if entry.npcType == "ghost_pirate" and oldState == AI_STATE.PATROL then
+      NPCService.Client.GhostPirateMaterialized:FireAll(entry.id, entry.position)
+    end
   end
 
   entry.aiState = newState
@@ -995,9 +1321,11 @@ local function handleNPCHitPlayer(entry: NPCEntry, target: Player)
     return
   end
 
+  local config = getNPCConfig(entry.npcType)
+
   -- Check distance (must still be within range)
   local dist = (targetHRP.Position - entry.rootPart.Position).Magnitude
-  if dist > SKELETON.slashRange + 2 then -- small tolerance
+  if dist > config.slashRange + 2 then -- small tolerance
     return
   end
 
@@ -1011,9 +1339,9 @@ local function handleNPCHitPlayer(entry: NPCEntry, target: Player)
     spillPercent = GameConfig.LootSpill.blockedHitPercent
     SessionStateService:SetBlocking(target, false)
   else
-    ragdollDuration = SKELETON.slashRagdollDuration
-    knockbackForce = GameConfig.Ragdoll.lightHitKnockback -- NPC hits use light knockback
-    spillPercent = SKELETON.slashLootSpillPercent
+    ragdollDuration = config.slashRagdollDuration
+    knockbackForce = GameConfig.Ragdoll.lightHitKnockback
+    spillPercent = config.slashLootSpillPercent
   end
 
   -- Apply ragdoll
@@ -1034,14 +1362,15 @@ local function handleNPCHitPlayer(entry: NPCEntry, target: Player)
   end
 
   -- Send ragdoll trigger to target via CombatService client signal
+  local attackerName = if entry.npcType == "ghost_pirate" then "Ghost Pirate" else "Cursed Skeleton"
   local CombatService = Knit.GetService("CombatService")
   if CombatService then
     if targetIsBlocking then
-      CombatService.Client.BlockImpact:Fire(target, "Cursed Skeleton", ragdollDuration)
+      CombatService.Client.BlockImpact:Fire(target, attackerName, ragdollDuration)
     end
     CombatService.Client.RagdollTrigger:Fire(
       target,
-      "Cursed Skeleton",
+      attackerName,
       ragdollDuration,
       knockbackVelocity
     )
@@ -1068,7 +1397,8 @@ local function handleNPCHitPlayer(entry: NPCEntry, target: Player)
 
   print(
     string.format(
-      "[NPCService] Skeleton #%d hit %s — ragdoll %.1fs, spilled %d",
+      "[NPCService] %s #%d hit %s — ragdoll %.1fs, spilled %d",
+      attackerName,
       entry.id,
       target.Name,
       ragdollDuration,
@@ -1094,11 +1424,12 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
 
   -- Update humanoid speed for night bonus + threat effects
   if entry.humanoid and entry.humanoid.Parent then
-    entry.humanoid.WalkSpeed = getEffectiveSpeed(entry.position)
+    entry.humanoid.WalkSpeed = getEffectiveSpeed(entry.npcType, entry.position)
   end
 
   local now = os.clock()
-  local aggroRange = getEffectiveAggroRange()
+  local config = getNPCConfig(entry.npcType)
+  local aggroRange = getEffectiveAggroRange(entry.npcType)
 
   -- State machine
   if entry.aiState == AI_STATE.FLINCH then
@@ -1250,9 +1581,13 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
     end
 
     -- Check if close enough for attack
-    if distToTarget <= SKELETON.slashRange then
-      -- Decide attack type: prefer lunge if cooldown is up and distance is right
-      if distToTarget > 3 and now - entry.lastLungeTime >= SKELETON.lungeCooldown then
+    if distToTarget <= config.slashRange then
+      -- Skeletons can lunge; Ghost Pirates only use spectral slash
+      if
+        entry.npcType == "skeleton"
+        and distToTarget > 3
+        and now - entry.lastLungeTime >= SKELETON.lungeCooldown
+      then
         -- Start lunge attack
         setState(entry, AI_STATE.ATTACK_LUNGE)
         entry.lungeStartTime = now
@@ -1270,8 +1605,9 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
         return
       end
 
-      if now - entry.lastSlashTime >= SKELETON.slashCooldown then
+      if now - entry.lastSlashTime >= config.slashCooldown then
         -- Start slash attack
+        local attackType = if entry.npcType == "ghost_pirate" then "spectral_slash" else "slash"
         setState(entry, AI_STATE.ATTACK_SLASH)
         -- Face target
         if entry.rootPart then
@@ -1282,7 +1618,7 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
               CFrame.new(entry.rootPart.Position, entry.rootPart.Position + lookDir)
           end
         end
-        NPCService.Client.NPCAttack:FireAll(entry.id, "slash", targetPos)
+        NPCService.Client.NPCAttack:FireAll(entry.id, attackType, targetPos)
         return
       end
     end
@@ -1332,15 +1668,16 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
 
   if entry.aiState == AI_STATE.ATTACK_SLASH then
     local elapsed = now - entry.aiStateStartTime
+    local windupTime = config.slashWindup
 
     -- Windup phase
-    if elapsed < SKELETON.slashWindup then
+    if elapsed < windupTime then
       -- NPC is winding up — frozen in place
       return
     end
 
     -- Execute slash hit
-    if elapsed >= SKELETON.slashWindup and entry.lastSlashTime < entry.aiStateStartTime then
+    if elapsed >= windupTime and entry.lastSlashTime < entry.aiStateStartTime then
       entry.lastSlashTime = now
 
       -- Check if target is still valid and in range
@@ -1351,7 +1688,7 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
     end
 
     -- After slash, return to chase
-    if elapsed > SKELETON.slashWindup + 0.3 then
+    if elapsed > windupTime + 0.3 then
       setState(entry, AI_STATE.CHASE)
     end
     return
@@ -1446,7 +1783,8 @@ function NPCService:DamageNPC(
   end
 
   -- Apply flinch (0.2s pause)
-  entry.flinchEndTime = os.clock() + SKELETON.flinchDuration
+  local npcConfig = getNPCConfig(entry.npcType)
+  entry.flinchEndTime = os.clock() + npcConfig.flinchDuration
   setState(entry, AI_STATE.FLINCH)
   NPCService.Client.NPCFlinch:FireAll(npcId)
 
@@ -1468,9 +1806,10 @@ function NPCService:KillNPC(npcId: number, killedByPlayer: Player?)
   setState(entry, AI_STATE.DEAD)
 
   local deathPosition = entry.position
+  local npcConfig = getNPCConfig(entry.npcType)
 
   -- Calculate loot drop: carried doubloons + bonus
-  local bonusDoubloons = math.random(SKELETON.deathBonusMin, SKELETON.deathBonusMax)
+  local bonusDoubloons = math.random(npcConfig.deathBonusMin, npcConfig.deathBonusMax)
   local totalDrop = entry.carriedDoubloons + bonusDoubloons
 
   -- Scatter doubloons at death position
@@ -1489,9 +1828,11 @@ function NPCService:KillNPC(npcId: number, killedByPlayer: Player?)
   -- Fire server signal
   NPCService.NPCDied:Fire(entry, killedByPlayer)
 
+  local npcLabel = if entry.npcType == "ghost_pirate" then "Ghost Pirate" else "Skeleton"
   print(
     string.format(
-      "[NPCService] Skeleton #%d killed by %s — dropped %d doubloons (%d bonus + %d carried)",
+      "[NPCService] %s #%d killed by %s — dropped %d doubloons (%d bonus + %d carried)",
+      npcLabel,
       npcId,
       killedByPlayer and killedByPlayer.Name or "unknown",
       totalDrop,
@@ -1503,7 +1844,7 @@ function NPCService:KillNPC(npcId: number, killedByPlayer: Player?)
   -- Queue respawn (skip for bonus NPCs — ThreatEffectsService handles their lifecycle)
   if not entry.isBonusNPC then
     table.insert(RespawnQueue, {
-      spawnTime = os.clock() + SKELETON.respawnTime,
+      spawnTime = os.clock() + npcConfig.respawnTime,
       spawnPosition = entry.spawnPosition,
       zone = entry.zone,
       spawnPoint = entry.spawnPoint,
@@ -1568,15 +1909,15 @@ end
 function NPCService:SpawnNPCAt(npcType: string, position: Vector3): any
   if npcType == "skeleton" then
     return spawnSkeleton(position, "manual", nil)
+  elseif npcType == "ghost_pirate" then
+    return spawnGhostPirate(position, "manual", nil)
   end
   warn("[NPCService] Unknown NPC type: " .. tostring(npcType))
   return nil
 end
 
 --[[
-  Spawns ambush NPCs at a position (e.g., Cursed Chest break).
-  Currently spawns Cursed Skeletons as placeholders.
-  TODO: When NPC-007 (Ghost Pirate) is implemented, spawn Ghost Pirates instead.
+  Spawns Ghost Pirate ambush NPCs at a position (e.g., Cursed Chest break).
   @param position World position to spawn at
   @param count Number of NPCs to spawn (1-2)
   @param zone Zone name for the spawned NPCs
@@ -1588,15 +1929,18 @@ function NPCService:SpawnAmbushNPCs(position: Vector3, count: number, zone: stri
     local offset = Vector3.new(math.cos(angle) * 3, 0, math.sin(angle) * 3)
     local spawnPos = position + offset
 
-    -- TODO: Replace with Ghost Pirate spawn when NPC-007 is done
-    local entry = spawnSkeleton(spawnPos, zone, nil)
+    local entry = spawnGhostPirate(spawnPos, zone, nil)
     if entry then
       -- Ambush NPCs are bonus (don't count toward budget)
       entry.isBonusNPC = true
-      BudgetSkeletonCount = math.max(0, BudgetSkeletonCount - 1)
+      BudgetGhostPirateCount = math.max(0, BudgetGhostPirateCount - 1)
+
+      -- Fire materialization signal immediately for ambush (they appear aggressively)
+      NPCService.Client.GhostPirateMaterialized:FireAll(entry.id, spawnPos)
+
       print(
         string.format(
-          "[NPCService] Ambush NPC #%d spawned at Cursed Chest location (zone: %s)",
+          "[NPCService] Ghost Pirate ambush #%d spawned at Cursed Chest location (zone: %s)",
           entry.id,
           zone
         )
@@ -1864,15 +2208,10 @@ function NPCService:KnitStart()
   -- Fill initial skeleton budget
   local initialSpawns = fillSkeletonBudget()
 
-  -- Ghost Pirate night spawn stub
+  -- Fill Ghost Pirate budget if night is active at start
+  local initialGhostPirates = 0
   if GhostPirateBudget > 0 then
-    warn(
-      string.format(
-        "[NPCService] Night active at start: Ghost Pirate budget = %d, "
-          .. "but NPC-007 is not yet implemented. Skipping.",
-        GhostPirateBudget
-      )
-    )
+    initialGhostPirates = fillGhostPirateBudget()
   end
 
   -- Listen for phase transitions to adjust budgets
@@ -1912,8 +2251,12 @@ function NPCService:KnitStart()
             if entry and respawn.spawnPoint then
               OccupiedSpawnPoints[respawn.spawnPoint] = entry.id
             end
+          elseif respawnType == "ghost_pirate" then
+            local entry = spawnGhostPirate(respawn.spawnPosition, respawn.zone, respawn.spawnPoint)
+            if entry and respawn.spawnPoint then
+              OccupiedSpawnPoints[respawn.spawnPoint] = entry.id
+            end
           end
-          -- Ghost pirate respawn: stubbed until NPC-007
         end
 
         table.remove(RespawnQueue, i)
@@ -1925,10 +2268,12 @@ function NPCService:KnitStart()
 
   print(
     string.format(
-      "[NPCService] Started — budget: %d skeletons, spawned %d, "
+      "[NPCService] Started — budget: %d skeletons (spawned %d), %d ghost pirates (spawned %d), "
         .. "spawn points: %d skeleton, %d ghost pirate",
       SkeletonBudget,
       initialSpawns,
+      GhostPirateBudget,
+      initialGhostPirates,
       #SkeletonSpawnPoints,
       #GhostPirateSpawnPoints
     )

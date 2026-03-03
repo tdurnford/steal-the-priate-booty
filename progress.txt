@@ -3161,3 +3161,82 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
   explicit PatrolWaypoints for hilly zones.
 - Next priorities: NPC-004 (SimplePath chase), NPC-007 (Ghost Pirate), NPC-008
   (Phantom Captain), NPC-005 (dormant mode)
+
+---
+
+## 2026-03-02 — NPC-007: Ghost Pirate NPC
+
+### What was done
+- Implemented the Ghost Pirate NPC entity in `src/server/Services/NPCService.lua`:
+  night-only semi-transparent ambush predator with spectral slash attack.
+- Added missing config fields to `src/shared/GameConfig.lua`: `slashRange = 8`,
+  `respawnTime = 90`, `displayName = "Ghost Pirate"`.
+- Replaced ALL Ghost Pirate stubs across NPCService (spawn budget, phase
+  transitions, respawn queue, ambush spawns, KnitStart initialization).
+
+### New functions added to NPCService
+1. **`getNPCConfig(npcType)`** — Returns SKELETON or GHOST_PIRATE config table
+   for a given NPC type. Allows shared AI logic to read type-appropriate values.
+2. **`createGhostPirateModel(position, npcId)`** — Creates spectral NPC model
+   with Neon material, teal/cyan color, translucent parts (0.3-0.6 transparency),
+   ghostly ParticleEmitter glow, icy cyan PointLight eyes, no weapon (spectral claws).
+3. **`spawnGhostPirate(position, zone, spawnPoint)`** — Spawns a Ghost Pirate
+   with correct config (10 HP, 1.0x speed), SimplePath, budget tracking, registers
+   in GhostPirateNPCIds for Dawn despawn.
+4. **`fillGhostPirateBudget()`** — Spawns Ghost Pirates to fill current budget
+   using available spawn points, mirrors fillSkeletonBudget() pattern.
+
+### AI changes — type-aware shared logic
+- `getEffectiveAggroRange(npcType)` and `getEffectiveSpeed(npcType, pos)` now
+  take npcType parameter and read from the appropriate config table.
+- `updateNPCAI()` now gets a `config` local via `getNPCConfig(entry.npcType)`.
+  All attack range/cooldown references use `config.` instead of hardcoded `SKELETON.`.
+- Ghost Pirates only use spectral slash (no lunge). The lunge attack path is
+  gated with `entry.npcType == "skeleton"`. Attack signal fires `"spectral_slash"`
+  for ghost pirates, `"slash"` for skeletons.
+- Slash windup in ATTACK_SLASH state reads `config.slashWindup` (0.6s for ghost
+  pirates vs 0.8s for skeletons).
+- `handleNPCHitPlayer()` reads ragdoll duration and spill percent from config,
+  and uses type-appropriate display name for combat feedback.
+- `DamageNPC()` reads flinch duration from config.
+- `KillNPC()` reads bonus drop range and respawn time from config, uses
+  type-appropriate log label.
+
+### Materialization system
+- `setState()` now detects when a Ghost Pirate enters CHASE from PATROL and
+  fires `GhostPirateMaterialized(npcId, position)` client signal.
+- Client can use this to play flash VFX + screech SFX at the ghost's position.
+- Ambush-spawned ghost pirates also fire the materialization signal immediately.
+
+### Stub replacements
+1. **`onPhaseChanged()` Night transition** — Calls `fillGhostPirateBudget()`
+   instead of warning. Prints actual spawn count.
+2. **`KnitStart()` initialization** — Calls `fillGhostPirateBudget()` if night
+   is active at server start.
+3. **Respawn queue** — Ghost pirate respawns now call `spawnGhostPirate()`
+   (was "stubbed until NPC-007").
+4. **`SpawnAmbushNPCs()`** — Now spawns Ghost Pirates (was spawning skeletons
+   as placeholders). Ambush NPCs are marked as bonus (don't count toward budget).
+5. **`SpawnNPCAt()`** — Now supports "ghost_pirate" type for testing/events.
+
+### Client signals added
+- `GhostPirateMaterialized(npcId: number, position: Vector3)` — fired when a
+  Ghost Pirate enters combat (materialize flash) or spawns as ambush.
+
+### What is NOT included (client-side, separate features)
+- Client-side visibility scaling (transparency by distance) — this is a client
+  controller concern. The server sends `NPCSpawned` with type "ghost_pirate";
+  a future client controller should read player distance per-frame and set
+  model transparency accordingly using the GameConfig visibility distance values.
+- Whisper SFX proximity audio — client-side SoundController concern.
+- Loot pickup behavior (NPC-002) — separate feature, not implemented yet.
+
+### Notes for next developer
+- No Roblox Studio MCP server available — couldn't test in-game. StyLua
+  formatting verified. rojo/luau-lsp have known aftman/rokit PATH conflicts.
+- Ghost Pirate model is a placeholder (primitive parts with Neon material).
+  Art pass (ART-003) will replace with proper meshes.
+- The ATTACK_LUNGE state still uses `SKELETON.` directly since only skeletons
+  lunge — this is intentional and correct.
+- Next priorities: NPC-008 (Phantom Captain), NPC-005 (dormant mode),
+  NPC-002 (skeleton loot pickup), NPC-009 (night NPC behavior modifiers)

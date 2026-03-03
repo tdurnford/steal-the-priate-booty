@@ -412,6 +412,7 @@ GameConfig.GhostPirate = {
 
   -- Spectral slash
   slashWindup = 0.6, -- seconds
+  slashRange = 8, -- studs
   slashCooldown = 2.5, -- seconds
   slashRagdollDuration = 2.0, -- seconds
   slashLootSpillPercent = 0.15, -- 15%
@@ -422,10 +423,14 @@ GameConfig.GhostPirate = {
   -- Loot
   deathBonusMin = 15,
   deathBonusMax = 40,
+  respawnTime = 90, -- seconds (same as skeleton, night-only respawn)
 
   -- Spawn budget (night only)
   nightCountMin = 4,
   nightCountMax = 6,
+
+  -- Display
+  displayName = "Ghost Pirate",
 }
 
 --------------------------------------------------------------------------------
