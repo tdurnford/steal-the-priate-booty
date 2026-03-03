@@ -2,7 +2,8 @@
   MapBootstrap.lua
   Pre-Knit workspace object creation for MAP-001 (Harbor Zone Layout),
   MAP-002 (Tutorial Beach Area), MAP-003 (NPC Spawn Zone Definitions),
-  MAP-004 (Container Spawn Point Placement), and MAP-005 (Hazard Placement).
+  MAP-004 (Container Spawn Point Placement), MAP-005 (Hazard Placement),
+  and MAP-006 (Event Spawn Point Placement).
 
   Called by Main.server.lua BEFORE any Knit services are loaded.
   Creates all required workspace objects that services expect to find:
@@ -21,6 +22,8 @@
     - QuicksandPatches folder with patch Parts (for QuicksandService)
     - TidalSurgeZones folder with zone Parts (for TidalSurgeService)
     - RogueWaveZones folder with zone Parts (for RogueWaveService)
+    - EventSpawnPoints folder with spawn position Parts (for EventService shipwrecks)
+    - LootSurgeZones folder with zone Parts (for EventService loot surges)
 
   All objects are created only if they don't already exist (idempotent).
   When Roblox Studio map assets are finalized, this module can be removed
@@ -1553,6 +1556,198 @@ local function setupRogueWaveZones()
 end
 
 --------------------------------------------------------------------------------
+-- EVENT SPAWN POINTS (MAP-006 — for EventService shipwreck events)
+--------------------------------------------------------------------------------
+
+--[[
+  Shipwreck event spawn locations: 10 points spread across the map.
+  Each point is a BasePart defining a potential shipwreck spawn position.
+  EventService loads these from workspace.EventSpawnPoints.
+
+  Placement rationale:
+    - Spread across all major regions so events pull players to different areas
+    - Accessible by foot (not buried inside walls/caves)
+    - Outside Harbor safe zone to avoid free-loot scenarios
+    - Mix of coastal, inland, and elevated positions for variety
+    - At least one point near each major zone so all areas see events
+]]
+local EVENT_SPAWN_POINT_DEFS = {
+  -- South coast (near tutorial beach, but offset to avoid overlap)
+  {
+    name = "Event_SouthBeach",
+    position = Vector3.new(140, 5, 250),
+  },
+
+  -- East coast (between harbor and watchtower)
+  {
+    name = "Event_EastCoast",
+    position = Vector3.new(300, 5, -30),
+  },
+
+  -- West coast (near deep jungle edge)
+  {
+    name = "Event_WestCoast",
+    position = Vector3.new(-320, 5, 80),
+  },
+
+  -- North wilderness (between volcano and skull cave)
+  {
+    name = "Event_NorthWild",
+    position = Vector3.new(-150, 10, -300),
+  },
+
+  -- Northeast (watchtower approaches)
+  {
+    name = "Event_NEApproach",
+    position = Vector3.new(280, 8, -180),
+  },
+
+  -- Northwest (skull cave outskirts)
+  {
+    name = "Event_NWOutskirts",
+    position = Vector3.new(-250, 5, -80),
+  },
+
+  -- Central wilderness (between harbor and volcano, major crossroads)
+  {
+    name = "Event_CentralNorth",
+    position = Vector3.new(50, 8, -200),
+  },
+
+  -- Southwest (deep jungle border)
+  {
+    name = "Event_SWJungle",
+    position = Vector3.new(-160, 5, 200),
+  },
+
+  -- Southeast (between pirate town and beach)
+  {
+    name = "Event_SEPath",
+    position = Vector3.new(200, 5, 80),
+  },
+
+  -- Far north (volcano foothills — higher risk, higher reward location)
+  {
+    name = "Event_VolcanoFoothills",
+    position = Vector3.new(-40, 18, -340),
+  },
+}
+
+--[[
+  Creates the EventSpawnPoints folder with Parts for each spawn location.
+  EventService reads this folder at KnitInit() to pick random shipwreck positions.
+]]
+local function setupEventSpawnPoints()
+  local folder = ensureFolder(workspace, "EventSpawnPoints")
+
+  if #folder:GetChildren() > 0 then
+    print("[MapBootstrap] EventSpawnPoints already populated, skipping")
+    return
+  end
+
+  for _, def in EVENT_SPAWN_POINT_DEFS do
+    ensurePart(folder, def.name, {
+      size = Vector3.new(4, 1, 4),
+      position = def.position,
+      transparency = ZONE_TRANSPARENCY,
+      canCollide = false,
+      canQuery = false,
+      canTouch = false,
+    })
+  end
+
+  print("[MapBootstrap] Created", #EVENT_SPAWN_POINT_DEFS, "event spawn points")
+end
+
+--------------------------------------------------------------------------------
+-- LOOT SURGE ZONES (MAP-006 — for EventService loot surge events)
+--------------------------------------------------------------------------------
+
+--[[
+  Loot surge zone locations: 6 zones in different parts of the map.
+  Each zone is a BasePart whose AABB defines the surge area. During a loot
+  surge event, containers spawn at 3x rate and yield 2x doubloons within
+  the active zone. EventService loads these from workspace.LootSurgeZones.
+
+  Placement rationale:
+    - Each zone covers a different gameplay area for variety
+    - Zones are large enough to contain multiple container spawn points
+    - Spread across the map so events attract players to different regions
+    - Outside Harbor safe zone
+    - Mix of danger and non-danger areas for risk/reward balance
+]]
+local LOOT_SURGE_ZONE_DEFS = {
+  -- Skull Cave region: high-risk surge in skeleton territory
+  {
+    name = "LootSurge_SkullCave",
+    position = Vector3.new(-280, 5, -130),
+    size = Vector3.new(120, 40, 100),
+  },
+
+  -- Volcano slopes: dangerous but lucrative
+  {
+    name = "LootSurge_Volcano",
+    position = Vector3.new(10, 20, -370),
+    size = Vector3.new(140, 60, 120),
+  },
+
+  -- Deep Jungle: ghost pirate territory
+  {
+    name = "LootSurge_Jungle",
+    position = Vector3.new(-190, 5, 160),
+    size = Vector3.new(120, 30, 120),
+  },
+
+  -- Watchtower grounds: moderate risk
+  {
+    name = "LootSurge_Watchtower",
+    position = Vector3.new(340, 10, -190),
+    size = Vector3.new(100, 40, 100),
+  },
+
+  -- Pirate Town: lighter enemy presence, popular area
+  {
+    name = "LootSurge_PirateTown",
+    position = Vector3.new(240, 5, -40),
+    size = Vector3.new(100, 25, 100),
+  },
+
+  -- South coast: open area near tutorial beach exit
+  {
+    name = "LootSurge_SouthCoast",
+    position = Vector3.new(160, 5, 180),
+    size = Vector3.new(120, 20, 80),
+  },
+}
+
+--[[
+  Creates the LootSurgeZones folder with Parts for each zone.
+  EventService reads this folder at KnitInit() to pick random surge zones.
+  The Part's Size defines the AABB for ContainerService surge spawn/yield checks.
+]]
+local function setupLootSurgeZones()
+  local folder = ensureFolder(workspace, "LootSurgeZones")
+
+  if #folder:GetChildren() > 0 then
+    print("[MapBootstrap] LootSurgeZones already populated, skipping")
+    return
+  end
+
+  for _, def in LOOT_SURGE_ZONE_DEFS do
+    ensurePart(folder, def.name, {
+      size = def.size,
+      position = def.position,
+      transparency = ZONE_TRANSPARENCY,
+      canCollide = false,
+      canQuery = false,
+      canTouch = false,
+    })
+  end
+
+  print("[MapBootstrap] Created", #LOOT_SURGE_ZONE_DEFS, "loot surge zone Parts")
+end
+
+--------------------------------------------------------------------------------
 -- PUBLIC API
 --------------------------------------------------------------------------------
 
@@ -1562,7 +1757,7 @@ end
   Idempotent — safe to call multiple times.
 ]]
 function MapBootstrap.setup()
-  print("[MapBootstrap] Setting up map layout (MAP-001 through MAP-005)...")
+  print("[MapBootstrap] Setting up map layout (MAP-001 through MAP-006)...")
 
   -- MAP-001: Harbor zone
   setupHarborZone()
@@ -1592,6 +1787,10 @@ function MapBootstrap.setup()
   setupQuicksandPatches()
   setupTidalSurgeZones()
   setupRogueWaveZones()
+
+  -- MAP-006: Event spawn points
+  setupEventSpawnPoints()
+  setupLootSurgeZones()
 
   print("[MapBootstrap] Map layout setup complete")
 end

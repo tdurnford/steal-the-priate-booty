@@ -5596,3 +5596,26 @@ opacity (0.3 TextTransparency) to indicate the entity is beyond the visible rang
 - No Roblox Studio MCP server was available for in-game testing. Code follows
   MapBootstrap's established patterns exactly.
 - Next priorities: MAP-005 (Hazard Placement), MAP-006 (Event Spawn Points), then MODEL/AUDIO
+
+## MAP-006: Event Spawn Point Placement (2026-03-03)
+
+### What was done
+- Added 10 shipwreck event spawn points to MapBootstrap (`workspace.EventSpawnPoints`)
+  - Spread across all major regions: south coast, east coast, west coast, north wilderness, NE (watchtower), NW (skull cave), central north, SW (jungle), SE (pirate town path), volcano foothills
+  - All outside Harbor safe zone (X:±150, Z:±100)
+  - Positions chosen at accessible ground level with varied Y heights
+- Added 6 loot surge zone regions to MapBootstrap (`workspace.LootSurgeZones`)
+  - Skull Cave (120×40×100), Volcano (140×60×120), Deep Jungle (120×30×120), Watchtower (100×40×100), Pirate Town (100×25×100), South Coast (120×20×80)
+  - Zones sized to contain multiple existing container spawn points
+  - Mix of danger zones (skull_cave, volcano, jungle) and non-danger zones (watchtower, pirate_town, south coast)
+- Updated `MapBootstrap.setup()` to call `setupEventSpawnPoints()` and `setupLootSurgeZones()`
+- Updated module header comment to include MAP-006
+- No changes needed to EventService — it already discovers these folders at KnitInit via `FindFirstChild`
+
+### Files changed
+- `src/server/MapBootstrap.lua` — added EVENT_SPAWN_POINT_DEFS (10 points), LOOT_SURGE_ZONE_DEFS (6 zones), setupEventSpawnPoints(), setupLootSurgeZones(), wired into setup()
+
+### Notes for next person
+- All MAP features (MAP-001 through MAP-006) are now complete
+- Remaining not-started features are MODEL-001 through MODEL-005 (3D model assets) and AUDIO-001 (audio assets) — these are asset-sourcing/creation tasks rather than code
+- The rojo/selene PATH issue persists (aftman/rokit conflict) — StyLua works via `~/.rokit/bin/stylua`
