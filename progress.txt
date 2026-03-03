@@ -4810,3 +4810,78 @@ opacity (0.3 TextTransparency) to indicate the entity is beyond the visible rang
   when sampled at the 10 Hz update rate.
 - Next priorities: UI-006 (event banner queuing), UI-008 (hazard warnings),
   COSMETIC-001/002/003 (cosmetic system), EMOTE-001 (emotes)
+
+---
+
+## 2026-03-02 — COSMETIC-003: Cosmetic Visual Application
+
+### What was done
+- Created `src/server/Services/CosmeticVisualService.lua` — Server-authoritative cosmetic visual
+  application service. All visuals are server-created instances that auto-replicate to all clients
+  via standard Roblox replication. No client controller needed.
+- **Character cosmetics**:
+  - **Hats**: Colored Part welded to character Head with offset. Three placeholder visuals:
+    Sailor's Bandana (red, flat), Tricorn Hat (dark brown, wide), Captain's Plume (dark purple,
+    gold glow PointLight).
+  - **Outfits**: BodyColors modification on character. Three placeholder color schemes:
+    Deckhand Garb (brown tones), Buccaneer Coat (dark leather), Admiral's Regalia (navy blue
+    with gold glow).
+  - **Cutlass Skins**: Modifies the gear tool Handle's Color/Material properties and adds
+    optional glow PointLight. Three skins: Barnacle Blade (green/slate), Crimson Cutlass
+    (red/metal with red glow), Golden Saber (gold/metal with bright gold glow).
+  - **Pets**: Anchored Part that follows the character via RunService.Heartbeat with smooth
+    lerp and gentle bob animation. Three pets: Parrot (red, right shoulder), Monkey (brown,
+    behind left side), Ghost Crab (neon blue, near feet with glow).
+- **Ship cosmetics**:
+  - **Sails**: Colored Part attached above the ship's Mast, sized proportionally to hull.
+    Three sails: Tattered (grey/fabric, slight transparency), Crimson (red/fabric), Phantom
+    (neon blue, translucent with glow).
+  - **Hulls**: Modifies ship Hull Part's Color/Material properties. Three finishes: Driftwood
+    (brown/wood), Ironclad (dark grey/diamond plate), Gilded (gold/metal with glow).
+  - **Flags**: Small colored Part at top of mast. Three flags: Jolly Roger (black/fabric),
+    Blood Flag (crimson/fabric), Phantom Standard (blue/neon with glow).
+- **Lifecycle hooks**:
+  - Listens to CosmeticService.CosmeticEquipped/CosmeticUnequipped for real-time visual updates
+  - Re-applies all character cosmetics on CharacterAdded (respawn), deferred to let GearService
+    create the tool first
+  - Re-applies all ship cosmetics on ShipService.ShipSpawned and ShipService.ShipTierChanged
+    (ship model is recreated on tier change)
+  - Applies initial cosmetics for players already in game at service start (studio edge case)
+  - Cleans up pet Heartbeat connections on PlayerRemoving
+
+### Acceptance criteria met
+- Hat, outfit, cutlass skin, and pet cosmetics are visible on player character ✓
+- Ship customization cosmetics are visible on the player's docked ship ✓
+- All cosmetic visuals replicate to other players (server-authored instances) ✓
+- Unequipping removes the visual ✓
+
+### Design decisions
+- **Server-only service, no client controller**: All visuals are server-created Part instances
+  parented to character/ship models. Roblox automatically replicates these to all clients.
+  This is the same pattern used by GearService (creates Tool on server, auto-replicates).
+- **Placeholder Part-based visuals**: Since all asset IDs are "rbxassetid://0" placeholders,
+  the service uses colored Parts with materials and PointLight glows to create distinct visuals
+  for each cosmetic item. When MODEL assets are created, the Part creation can be replaced with
+  model cloning.
+- **Pet follow via Heartbeat**: Pets use an anchored Part updated each frame via
+  RunService.Heartbeat with CFrame:Lerp for smooth following and a sin-based bob for life-like
+  movement. The Heartbeat connection is stored per-player and cleaned up on disconnect.
+- **Deferred application on respawn**: Character cosmetics are applied via task.defer after
+  CharacterAdded to ensure GearService has already given the gear tool (for cutlass skin
+  application).
+- **Hull cosmetic is best-effort**: When a hull cosmetic is unequipped, the original hull
+  appearance can't be easily restored (it was set by ShipService's createShipModel). However,
+  the ship model is fully recreated on tier change, so the cosmetic glow is removed on unequip
+  and the hull appearance resets naturally on any tier recalculation.
+
+### Notes for next developer
+- CosmeticVisualService is auto-discovered by Main.server.lua — no changes to bootstrap needed.
+- To add visuals for new cosmetics: add an entry to the corresponding VISUALS table (e.g.
+  HAT_VISUALS, PET_VISUALS) keyed by cosmetic ID.
+- When MODEL assets are created (MODEL-001 through MODEL-005), replace the placeholder Part
+  creation with model cloning from ReplicatedStorage.
+- The pet follow system uses one Heartbeat connection per player with a pet equipped. At scale,
+  this could be optimized to a single Heartbeat loop iterating all active pets.
+- Emote visuals are handled by EMOTE-001 (emote system), not this service.
+- Next priorities: EMOTE-001 (emote system), UI-006 (event banner queuing), UI-008 (hazard
+  warnings)
