@@ -5223,3 +5223,92 @@ opacity (0.3 TextTransparency) to indicate the entity is beyond the visible rang
 - Emote visuals are handled by EMOTE-001 (emote system), not this service.
 - Next priorities: EMOTE-001 (emote system), UI-006 (event banner queuing), UI-008 (hazard
   warnings)
+
+---
+
+## 2026-03-03 — MAP-001: Harbor Zone Layout
+
+### What was done
+- Created `src/server/MapBootstrap.lua` — Pre-Knit workspace object bootstrap module
+  that programmatically creates all Harbor zone infrastructure when the game starts.
+  Runs before any Knit services are loaded, ensuring workspace objects are available
+  for service KnitInit/KnitStart.
+
+- **HarborZone** (300×80×200 stud invisible Part): AABB boundary for HarborService safe
+  zone detection. PvP disable, threat pause, and auto-ship-unlock all depend on this.
+
+- **ShipDockPoints** (24 dock slot Parts): Arranged across 4 wooden piers (6 slots each),
+  with 30-stud spacing between slots and 60-stud spacing between piers. Each slot Part
+  has a `SlotIndex` attribute (1-24) as required by ShipService.
+
+- **Pier visuals**: 4 walkable wooden pier platforms extending from shore, with support
+  posts underneath and a connecting boardwalk along the shore. Wood material, pirate-port
+  aesthetic.
+
+- **HarborSpawn** Part: Tutorial waypoint target (steps 6-7), positioned at the inland
+  side of the harbor, oriented facing the docks. Used by TutorialService for compass
+  navigation and player teleport.
+
+- **ShopTrigger** Part: 20×10×20 trigger zone on the west side of the harbor for tutorial
+  step 9 (shop proximity detection). Includes a placeholder shop building with floor,
+  back wall, counter, and "PIRATE OUTFITTER" sign (SurfaceGui).
+
+- **Harbor ground**: Cobblestone main ground and sandy shore transition area.
+
+- **Boundary markers**: 8 tall wooden posts with PointLight lanterns at corners and
+  midpoints of the safe zone boundary.
+
+- **Torches**: 9 torches (wooden posts with Fire + PointLight) along the boardwalk, near
+  the shop, and near the spawn point. Compatible with DayNightLightingController's
+  Torches folder auto-toggle.
+
+- Modified `src/server/Main.server.lua` to require and call `MapBootstrap.setup()` before
+  loading Knit services, ensuring all workspace objects exist before any service
+  initialization.
+
+### Layout dimensions
+- Harbor center: (0, 0, 0)
+- Zone boundary: 300 studs (X) × 200 studs (Z), 80 studs tall
+- 4 piers starting at Z=-20, extending toward -Z, 6 slots each
+- Slot spacing: 30 studs along pier, 60 studs between piers
+- HarborSpawn at (0, 3, 50) — inland side
+- ShopTrigger at (-60, 3, 60) — west side with placeholder building
+
+### Acceptance criteria met
+- Harbor area has 24 functional dock slots ✓
+- Shop area is accessible within the Harbor ✓
+- Safe zone boundary is clearly defined (invisible HarborZone Part + visible boundary markers) ✓
+- Harbor has pirate port aesthetic (wooden piers, cobblestone ground, lanterns, torches) ✓
+- NPC pathfinding exclusion zone matches Harbor boundary (HarborService.IsPositionInHarbor used by NPCService already) ✓
+
+### Design decisions
+- **Pre-Knit bootstrap pattern**: MapBootstrap is a regular module (not a Knit service)
+  called from Main.server.lua before services are loaded. This guarantees workspace
+  objects exist before any service KnitInit/KnitStart. This avoids init-order dependency
+  issues between services.
+- **Idempotent creation**: Every object checks for existing instances before creating.
+  If the map is built in Studio later, the bootstrap detects existing objects and skips
+  creation. This allows gradual migration from procedural to Studio-placed assets.
+- **ensurePart/ensureFolder helpers**: Reusable functions that create Parts/Folders only
+  if they don't exist. These helpers will be reused when MAP-002 through MAP-006 are
+  implemented.
+- **Pier layout**: 4 piers × 6 slots = 24 slots. 30-stud slot spacing accommodates the
+  largest ship (War Galleon at 16×9×34 studs) with room for player access. 60-stud pier
+  spacing prevents ship overlap.
+- **No terrain modification**: The bootstrap creates Part-based ground surfaces instead
+  of modifying Roblox terrain, which requires Studio tools. The cobblestone/sand parts
+  provide a usable surface for gameplay.
+
+### Notes for next developer
+- MapBootstrap.lua is designed to be extended for MAP-002 through MAP-006. Add new
+  setup functions (e.g., setupTutorialBeach, setupNPCSpawnZones) and call them from
+  MapBootstrap.setup().
+- All layout constants are at the top of the file — adjust HARBOR_CENTER to relocate
+  the entire harbor, or change PIER_SPACING/SLOT_SPACING to modify dock layout.
+- The harbor sits at the world origin (0,0,0). Other map areas should be placed at
+  appropriate offsets (e.g., TutorialBeach at (200, 10, 200) matches the existing
+  default in TutorialService).
+- Selene cannot run locally due to the rokit/aftman PATH conflict. StyLua formatting
+  passes. CI will validate selene linting on push.
+- Next priorities: MAP-002 (Tutorial Beach), MAP-003 (NPC Spawn Zones), MAP-004
+  (Container Spawn Points), MAP-005 (Hazard Placement), MAP-006 (Event Spawn Points)

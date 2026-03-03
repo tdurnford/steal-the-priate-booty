@@ -4,8 +4,13 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local Packages = ReplicatedStorage:WaitForChild("Packages")
 local Knit = require(Packages:WaitForChild("Knit"))
 
--- Load all services from the Services folder
 local Server = ServerScriptService:WaitForChild("Server")
+
+-- Bootstrap map layout before loading services (creates workspace objects)
+local MapBootstrap = require(Server:WaitForChild("MapBootstrap"))
+MapBootstrap.setup()
+
+-- Load all services from the Services folder
 local ServicesFolder = Server:FindFirstChild("Services")
 
 if ServicesFolder then
