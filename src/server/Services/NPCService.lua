@@ -12,6 +12,13 @@
     - Basic patrol/chase movement via Humanoid:MoveTo
     - Respawn management per zone
 
+  Spawn Manager (NPC-006):
+    - Budget-driven spawning: 6-10 Cursed Skeletons during day
+    - Night scaling: skeleton count ×1.5, Ghost Pirates 4-6 (stub until NPC-007)
+    - Dawn cleanup: despawn Ghost Pirates (drop loot), reduce skeleton budget
+    - Budget-aware respawning: only respawn if under current budget
+    - Bonus threat NPCs (ThreatEffectsService) are separate from budget
+
   NPC spawn points are defined as Parts in workspace.NPCSpawnPoints.
   Each spawn point Part can have:
     - Attribute "Zone" (string): zone name (e.g., "jungle", "beach", "danger")
@@ -141,9 +148,235 @@ local NPCsFolder: Folder = nil
 -- Spawn points folder
 local SpawnPointsFolder: Folder? = nil
 
--- Respawn queue: { { spawnTime: number, spawnPosition: Vector3, zone: string, spawnPoint: Part? } }
-local RespawnQueue: { { spawnTime: number, spawnPosition: Vector3, zone: string, spawnPoint: Part? } } =
-  {}
+-- Respawn queue entries: { spawnTime, spawnPosition, zone, spawnPoint?, npcType }
+local RespawnQueue = {} :: any
+
+--------------------------------------------------------------------------------
+-- SPAWN BUDGET (NPC-006)
+--------------------------------------------------------------------------------
+
+-- Current target counts per NPC type (adjusted on phase transitions)
+local SkeletonBudget = 0
+local GhostPirateBudget = 0
+
+-- Cached spawn point lists by NPC type
+local SkeletonSpawnPoints: { BasePart } = {}
+local GhostPirateSpawnPoints: { BasePart } = {}
+
+-- Track which spawn points are currently occupied by a living budget NPC
+local OccupiedSpawnPoints: { [BasePart]: number } = {} -- spawnPoint → npcId
+
+-- Count budget NPCs (excludes bonus NPCs from ThreatEffectsService)
+local BudgetSkeletonCount = 0
+local BudgetGhostPirateCount = 0
+
+-- Track all Ghost Pirate NPC IDs for Dawn despawn
+local GhostPirateNPCIds: { [number]: boolean } = {}
+
+--[[
+  Picks a random skeleton budget target for the current phase.
+]]
+local function rollDaySkeletonBudget(): number
+  return math.random(SKELETON.dayCountMin, SKELETON.dayCountMax)
+end
+
+--[[
+  Returns the night skeleton budget based on day budget.
+]]
+local function getNightSkeletonBudget(dayBudget: number): number
+  return math.ceil(dayBudget * SKELETON.nightCountMultiplier)
+end
+
+--[[
+  Picks a random ghost pirate budget for night.
+]]
+local function rollNightGhostPirateBudget(): number
+  return math.random(GameConfig.GhostPirate.nightCountMin, GameConfig.GhostPirate.nightCountMax)
+end
+
+--[[
+  Returns an available (unoccupied) spawn point from the given list,
+  or nil if all are occupied. Prefers spawn points far from existing NPCs.
+]]
+local function pickAvailableSpawnPoint(spawnPoints: { BasePart }): BasePart?
+  -- Gather unoccupied points
+  local available: { BasePart } = {}
+  for _, point in spawnPoints do
+    if not OccupiedSpawnPoints[point] then
+      table.insert(available, point)
+    end
+  end
+
+  if #available == 0 then
+    return nil
+  end
+
+  -- Pick a random one from available
+  return available[math.random(1, #available)]
+end
+
+--[[
+  Spawns skeletons to fill the current budget, using available spawn points.
+  Returns the number of NPCs spawned.
+]]
+local function fillSkeletonBudget(): number
+  local spawned = 0
+  while BudgetSkeletonCount < SkeletonBudget do
+    local point = pickAvailableSpawnPoint(SkeletonSpawnPoints)
+    if not point then
+      -- No available spawn points, spawn at a random offset from an existing point
+      if #SkeletonSpawnPoints > 0 then
+        local randomPoint = SkeletonSpawnPoints[math.random(1, #SkeletonSpawnPoints)]
+        local zone = randomPoint:GetAttribute("Zone") or "unknown"
+        local offset = randomPositionAround(randomPoint.Position, 10)
+        local entry = spawnSkeleton(offset, zone, nil)
+        if entry then
+          spawned = spawned + 1
+        end
+      else
+        break
+      end
+    else
+      local zone = point:GetAttribute("Zone") or "unknown"
+      local entry = spawnSkeleton(point.Position, zone, point)
+      if entry then
+        OccupiedSpawnPoints[point] = entry.id
+        spawned = spawned + 1
+      end
+    end
+  end
+  return spawned
+end
+
+--[[
+  Despawns excess skeletons to bring count down to budget.
+  Prefers despawning NPCs furthest from any player.
+]]
+local function trimSkeletonBudget()
+  while BudgetSkeletonCount > SkeletonBudget do
+    -- Find the budget skeleton furthest from any player
+    local furthestId: number? = nil
+    local furthestDist = -1
+
+    for id, entry in ActiveNPCs do
+      if entry.alive and entry.npcType == "skeleton" and not entry.isBonusNPC then
+        local minPlayerDist = math.huge
+        for _, player in Players:GetPlayers() do
+          local hrp = getPlayerHRP(player)
+          if hrp then
+            local dist = (entry.position - hrp.Position).Magnitude
+            if dist < minPlayerDist then
+              minPlayerDist = dist
+            end
+          end
+        end
+        if minPlayerDist > furthestDist then
+          furthestDist = minPlayerDist
+          furthestId = id
+        end
+      end
+    end
+
+    if furthestId then
+      local entry = ActiveNPCs[furthestId]
+      if entry and entry.spawnPoint then
+        OccupiedSpawnPoints[entry.spawnPoint] = nil
+      end
+      despawnNPC(furthestId)
+    else
+      break
+    end
+  end
+end
+
+--[[
+  Despawns all Ghost Pirate NPCs (called at Dawn).
+  Drops their carried doubloons at death position.
+]]
+local function despawnAllGhostPirates()
+  local despawned = 0
+  for npcId in GhostPirateNPCIds do
+    local entry = ActiveNPCs[npcId]
+    if entry and entry.alive then
+      -- Drop carried loot
+      if entry.carriedDoubloons > 0 and DoubloonService then
+        DoubloonService:ScatterDoubloons(entry.position, entry.carriedDoubloons, 4)
+      end
+
+      entry.alive = false
+      setState(entry, AI_STATE.DEAD)
+      NPCService.Client.NPCDied:FireAll(npcId, entry.npcType, entry.position)
+
+      if entry.spawnPoint then
+        OccupiedSpawnPoints[entry.spawnPoint] = nil
+      end
+
+      task.delay(1, function()
+        despawnNPC(npcId)
+      end)
+      despawned = despawned + 1
+    end
+  end
+  GhostPirateNPCIds = {}
+  BudgetGhostPirateCount = 0
+
+  if despawned > 0 then
+    print(string.format("[NPCService] Dawn: despawned %d Ghost Pirates", despawned))
+  end
+end
+
+--[[
+  Handles phase transitions for spawn budget management.
+  Called by DayNightService.PhaseChanged signal.
+]]
+local function onPhaseChanged(newPhase: string, _previousPhase: string)
+  if newPhase == "Night" or newPhase == "Dusk" then
+    -- Scale up skeleton budget for night
+    local dayBudget = rollDaySkeletonBudget()
+    SkeletonBudget = getNightSkeletonBudget(dayBudget)
+    GhostPirateBudget = rollNightGhostPirateBudget()
+
+    local skeletonsFilled = fillSkeletonBudget()
+
+    -- Ghost Pirates: stub until NPC-007 is implemented
+    if GhostPirateBudget > 0 then
+      warn(
+        string.format(
+          "[NPCService] Night: Ghost Pirate budget = %d, "
+            .. "but NPC-007 (Ghost Pirate NPC) is not yet implemented. Skipping spawn.",
+          GhostPirateBudget
+        )
+      )
+    end
+
+    print(
+      string.format(
+        "[NPCService] Night budget: %d skeletons (spawned %d new), %d ghost pirates (stubbed)",
+        SkeletonBudget,
+        skeletonsFilled,
+        GhostPirateBudget
+      )
+    )
+  elseif newPhase == "Dawn" or newPhase == "Day" then
+    -- Despawn all Ghost Pirates at Dawn
+    despawnAllGhostPirates()
+
+    -- Reduce skeleton budget back to day level
+    SkeletonBudget = rollDaySkeletonBudget()
+    GhostPirateBudget = 0
+
+    -- Trim excess skeletons if we're over the day budget
+    trimSkeletonBudget()
+
+    print(
+      string.format(
+        "[NPCService] Day budget: %d skeletons (active: %d)",
+        SkeletonBudget,
+        BudgetSkeletonCount
+      )
+    )
+  end
+end
 
 --------------------------------------------------------------------------------
 -- NPC MODEL CREATION
@@ -499,6 +732,8 @@ local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?)
 
   ActiveNPCs[npcId] = entry
   ActiveNPCCount = ActiveNPCCount + 1
+  -- Budget count is tracked here; SpawnBonusSkeleton will decrement after marking isBonusNPC
+  BudgetSkeletonCount = BudgetSkeletonCount + 1
 
   -- Fire signals
   NPCService.Client.NPCSpawned:FireAll(npcId, "skeleton", position)
@@ -509,7 +744,7 @@ local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?)
 end
 
 --[[
-  Removes an NPC from the world.
+  Removes an NPC from the world. Decrements budget counters and frees spawn points.
   @param npcId The NPC instance ID
 ]]
 local function despawnNPC(npcId: number)
@@ -517,6 +752,23 @@ local function despawnNPC(npcId: number)
   if not entry then
     return
   end
+
+  -- Decrement budget counters (only for non-bonus NPCs)
+  if not entry.isBonusNPC then
+    if entry.npcType == "skeleton" then
+      BudgetSkeletonCount = math.max(0, BudgetSkeletonCount - 1)
+    elseif entry.npcType == "ghost_pirate" then
+      BudgetGhostPirateCount = math.max(0, BudgetGhostPirateCount - 1)
+    end
+  end
+
+  -- Free spawn point
+  if entry.spawnPoint and OccupiedSpawnPoints[entry.spawnPoint] == npcId then
+    OccupiedSpawnPoints[entry.spawnPoint] = nil
+  end
+
+  -- Clean up Ghost Pirate tracking
+  GhostPirateNPCIds[npcId] = nil
 
   if entry.model and entry.model.Parent then
     entry.model:Destroy()
@@ -1013,6 +1265,7 @@ function NPCService:KillNPC(npcId: number, killedByPlayer: Player?)
       spawnPosition = entry.spawnPosition,
       zone = entry.zone,
       spawnPoint = entry.spawnPoint,
+      npcType = entry.npcType,
     })
   end
 
@@ -1096,6 +1349,9 @@ function NPCService:SpawnAmbushNPCs(position: Vector3, count: number, zone: stri
     -- TODO: Replace with Ghost Pirate spawn when NPC-007 is done
     local entry = spawnSkeleton(spawnPos, zone, nil)
     if entry then
+      -- Ambush NPCs are bonus (don't count toward budget)
+      entry.isBonusNPC = true
+      BudgetSkeletonCount = math.max(0, BudgetSkeletonCount - 1)
       print(
         string.format(
           "[NPCService] Ambush NPC #%d spawned at Cursed Chest location (zone: %s)",
@@ -1120,6 +1376,8 @@ function NPCService:SpawnBonusSkeleton(position: Vector3, targetPlayer: Player):
   if entry then
     entry.forcedTarget = targetPlayer
     entry.isBonusNPC = true
+    -- Correct budget count: bonus NPCs don't count toward budget
+    BudgetSkeletonCount = math.max(0, BudgetSkeletonCount - 1)
     print(
       string.format(
         "[NPCService] Bonus skeleton #%d spawned targeting %s",
@@ -1154,6 +1412,48 @@ function NPCService:DespawnBonusNPC(npcId: number)
   end)
 
   print(string.format("[NPCService] Bonus NPC #%d despawned", npcId))
+end
+
+--[[
+  Returns the current spawn budget info.
+  @return { skeletonBudget, skeletonActive, ghostPirateBudget, ghostPirateActive, bonusNPCs }
+]]
+function NPCService:GetBudgetInfo(): {
+  skeletonBudget: number,
+  skeletonActive: number,
+  ghostPirateBudget: number,
+  ghostPirateActive: number,
+  bonusNPCs: number,
+}
+  local bonusCount = 0
+  for _, entry in ActiveNPCs do
+    if entry.alive and entry.isBonusNPC then
+      bonusCount = bonusCount + 1
+    end
+  end
+
+  return {
+    skeletonBudget = SkeletonBudget,
+    skeletonActive = BudgetSkeletonCount,
+    ghostPirateBudget = GhostPirateBudget,
+    ghostPirateActive = BudgetGhostPirateCount,
+    bonusNPCs = bonusCount,
+  }
+end
+
+--[[
+  Returns whether the spawn budget has room for more NPCs of a given type.
+  Used by other services to check before requesting manual spawns.
+  @param npcType The NPC type to check ("skeleton" or "ghost_pirate")
+  @return true if under budget
+]]
+function NPCService:HasBudgetRoom(npcType: string): boolean
+  if npcType == "skeleton" then
+    return BudgetSkeletonCount < SkeletonBudget
+  elseif npcType == "ghost_pirate" then
+    return BudgetGhostPirateCount < GhostPirateBudget
+  end
+  return false
 end
 
 --------------------------------------------------------------------------------
@@ -1197,29 +1497,73 @@ function NPCService:KnitStart()
   HarborService = Knit.GetService("HarborService")
   ThreatEffectsService = Knit.GetService("ThreatEffectsService")
 
-  -- Spawn initial NPCs at spawn points
-  local spawnPoints = SpawnPointsFolder and SpawnPointsFolder:GetChildren() or {}
-  local spawnedCount = 0
-  for _, point in spawnPoints do
+  -- Categorize spawn points by NPC type
+  local allSpawnPoints = SpawnPointsFolder and SpawnPointsFolder:GetChildren() or {}
+  for _, point in allSpawnPoints do
     if point:IsA("BasePart") then
       local npcType = point:GetAttribute("NPCType") or "skeleton"
       if npcType == "skeleton" then
-        local zone = point:GetAttribute("Zone") or "unknown"
-        spawnSkeleton(point.Position, zone, point)
-        spawnedCount = spawnedCount + 1
+        table.insert(SkeletonSpawnPoints, point)
+      elseif npcType == "ghost_pirate" then
+        table.insert(GhostPirateSpawnPoints, point)
       end
     end
   end
 
-  -- If no spawn points exist, spawn a few at default positions for testing
-  if spawnedCount == 0 then
-    warn("[NPCService] No NPC spawn points found. Spawning test skeletons near origin.")
-    for i = 1, 3 do
-      local angle = (i / 3) * math.pi * 2
-      local pos = Vector3.new(math.cos(angle) * 40, 5, math.sin(angle) * 40)
-      spawnSkeleton(pos, "test", nil)
+  -- If no skeleton spawn points exist, create test spawn points
+  if #SkeletonSpawnPoints == 0 then
+    warn("[NPCService] No skeleton spawn points found. Creating test spawn points near origin.")
+    for i = 1, 10 do
+      local angle = (i / 10) * math.pi * 2
+      local testPart = Instance.new("Part")
+      testPart.Name = "TestSpawn_" .. tostring(i)
+      testPart.Anchored = true
+      testPart.CanCollide = false
+      testPart.Transparency = 1
+      testPart.Size = Vector3.new(1, 1, 1)
+      testPart.Position = Vector3.new(math.cos(angle) * 40, 5, math.sin(angle) * 40)
+      testPart:SetAttribute("Zone", "test")
+      testPart:SetAttribute("NPCType", "skeleton")
+      testPart.Parent = SpawnPointsFolder
+      table.insert(SkeletonSpawnPoints, testPart)
     end
   end
+
+  -- Ghost pirate spawn points can share skeleton points if none are defined
+  if #GhostPirateSpawnPoints == 0 and #SkeletonSpawnPoints > 0 then
+    -- Ghost pirates can spawn at any skeleton spawn point at night
+    for _, point in SkeletonSpawnPoints do
+      table.insert(GhostPirateSpawnPoints, point)
+    end
+  end
+
+  -- Set initial budget based on current phase
+  local currentPhase = DayNightService:GetCurrentPhase()
+  if currentPhase == "Night" or currentPhase == "Dusk" then
+    local dayBudget = rollDaySkeletonBudget()
+    SkeletonBudget = getNightSkeletonBudget(dayBudget)
+    GhostPirateBudget = rollNightGhostPirateBudget()
+  else
+    SkeletonBudget = rollDaySkeletonBudget()
+    GhostPirateBudget = 0
+  end
+
+  -- Fill initial skeleton budget
+  local initialSpawns = fillSkeletonBudget()
+
+  -- Ghost Pirate night spawn stub
+  if GhostPirateBudget > 0 then
+    warn(
+      string.format(
+        "[NPCService] Night active at start: Ghost Pirate budget = %d, "
+          .. "but NPC-007 is not yet implemented. Skipping.",
+        GhostPirateBudget
+      )
+    )
+  end
+
+  -- Listen for phase transitions to adjust budgets
+  DayNightService.PhaseChanged:Connect(onPhaseChanged)
 
   -- Main AI update loop
   RunService.Heartbeat:Connect(function(dt: number)
@@ -1230,14 +1574,35 @@ function NPCService:KnitStart()
       end
     end
 
-    -- Process respawn queue
+    -- Process respawn queue (budget-aware)
     local now = os.clock()
     local i = 1
     while i <= #RespawnQueue do
       local respawn = RespawnQueue[i]
       if now >= respawn.spawnTime then
-        -- Respawn the NPC
-        spawnSkeleton(respawn.spawnPosition, respawn.zone, respawn.spawnPoint)
+        local shouldSpawn = false
+        local respawnType = respawn.npcType or "skeleton"
+
+        -- Check if under budget before respawning
+        if respawnType == "skeleton" and BudgetSkeletonCount < SkeletonBudget then
+          shouldSpawn = true
+        elseif respawnType == "ghost_pirate" and BudgetGhostPirateCount < GhostPirateBudget then
+          -- Ghost pirate respawns only at night
+          if DayNightService:IsNight() then
+            shouldSpawn = true
+          end
+        end
+
+        if shouldSpawn then
+          if respawnType == "skeleton" then
+            local entry = spawnSkeleton(respawn.spawnPosition, respawn.zone, respawn.spawnPoint)
+            if entry and respawn.spawnPoint then
+              OccupiedSpawnPoints[respawn.spawnPoint] = entry.id
+            end
+          end
+          -- Ghost pirate respawn: stubbed until NPC-007
+        end
+
         table.remove(RespawnQueue, i)
       else
         i = i + 1
@@ -1247,9 +1612,12 @@ function NPCService:KnitStart()
 
   print(
     string.format(
-      "[NPCService] Started — %d NPCs spawned, %d spawn points found",
-      ActiveNPCCount,
-      #spawnPoints
+      "[NPCService] Started — budget: %d skeletons, spawned %d, "
+        .. "spawn points: %d skeleton, %d ghost pirate",
+      SkeletonBudget,
+      initialSpawns,
+      #SkeletonSpawnPoints,
+      #GhostPirateSpawnPoints
     )
   )
 end

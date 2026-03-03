@@ -1,3 +1,70 @@
+## 2026-03-02 — NPC-006: NPC Spawn Manager
+
+### What was done
+- Extended `src/server/Services/NPCService.lua` with a budget-driven spawn manager
+  that replaces the old "one NPC per spawn point" approach.
+- Added day/night budget scaling via `DayNightService.PhaseChanged` listener.
+- Added Ghost Pirate budget tracking (stubbed until NPC-007 is implemented).
+- Made respawning budget-aware: killed NPCs only respawn if under current budget.
+- Added spawn point occupancy tracking to prevent double-spawning.
+
+### Spawn budget system
+1. **Day budget**: Random 6-10 Cursed Skeletons (from `GameConfig.CursedSkeleton`).
+   Budget is rolled fresh each Dawn/Day transition.
+2. **Night budget**: Day budget × 1.5 (rounded up). Example: day=8 → night=12.
+   Ghost Pirate budget = random 4-6 (stubbed, NPC-007 not yet implemented).
+3. **Dawn cleanup**: All Ghost Pirates despawn (drop carried doubloons), skeleton
+   budget reduces to new day roll, excess skeletons trimmed (furthest from players).
+4. **Budget-aware respawn**: Respawn queue checks `BudgetSkeletonCount < SkeletonBudget`
+   before spawning. Over-budget respawns are silently skipped.
+5. **Bonus NPC exclusion**: `SpawnBonusSkeleton()` and `SpawnAmbushNPCs()` mark NPCs
+   as `isBonusNPC = true` and correct the budget counter so they don't count.
+
+### Spawn point management
+1. **Categorized spawn points**: `NPCSpawnPoints` children sorted into
+   `SkeletonSpawnPoints` and `GhostPirateSpawnPoints` by `NPCType` attribute.
+2. **Occupancy tracking**: `OccupiedSpawnPoints[part] = npcId` prevents two budget
+   NPCs from sharing the same spawn point. Freed on despawn.
+3. **Overflow spawning**: If all spawn points are occupied but budget has room,
+   spawns at a random offset (10 studs) from an existing spawn point.
+4. **Test spawn points**: If no `NPCSpawnPoints` exist in workspace, creates 10
+   test points in a circle at radius 40 studs (development fallback).
+5. **Ghost pirate point sharing**: If no dedicated ghost pirate spawn points exist,
+   they share skeleton spawn points (ready for NPC-007).
+
+### Budget trim logic
+- `trimSkeletonBudget()` runs at Dawn to reduce skeleton count.
+- Prefers despawning NPCs **furthest from any player** to minimize visual disruption.
+- Iterates until `BudgetSkeletonCount <= SkeletonBudget`.
+
+### Public API added
+- `GetBudgetInfo()`: returns `{ skeletonBudget, skeletonActive, ghostPirateBudget, ghostPirateActive, bonusNPCs }`
+- `HasBudgetRoom(npcType)`: returns whether spawn budget allows more of the given type
+
+### Key design decisions
+- **Phase-driven budget**: Budget is recalculated on each phase transition, not
+  continuously adjusted. This gives predictable NPC populations per phase.
+- **Randomized budgets**: Each day/night cycle rolls a new random count within the
+  config range, adding variety between cycles.
+- **Graceful trim**: Excess skeletons at Dawn are immediately despawned (furthest
+  first), not left to die naturally. This ensures day budget is respected promptly.
+- **Ghost Pirate stub**: All Ghost Pirate budget tracking and spawn point management
+  is in place. When NPC-007 is implemented, it just needs to add a
+  `spawnGhostPirate()` function and call it from `fillGhostPirateBudget()`.
+
+### Notes for next developer
+- Ghost Pirate spawning is stubbed — implement in NPC-007. The spawn manager already
+  tracks `GhostPirateBudget`, `BudgetGhostPirateCount`, `GhostPirateNPCIds`, and
+  `GhostPirateSpawnPoints`. Add `spawnGhostPirate()` and wire it into
+  `onPhaseChanged()` when Night starts.
+- `despawnAllGhostPirates()` is already implemented and drops carried loot on Dawn.
+- `SpawnNPCAt()` still spawns budget-counted skeletons (used for testing).
+  Consider whether manual spawns should be budget-exempt.
+- Next priorities: NPC-003 (SimplePath patrol), NPC-007 (Ghost Pirate),
+  NPC-008 (Phantom Captain), NPC-005 (dormant mode)
+
+---
+
 ## 2026-03-02 — THREAT-004: Threat Level Effects — Tiers 4-5 (Cursed, Doomed)
 
 ### What was done
