@@ -5,7 +5,7 @@
   Handles:
     - Client purchase requests (validates via DataService)
     - Client equip requests (validates via DataService)
-    - Visual gear tool on player characters (placeholder — MODEL-004 will replace)
+    - Visual gear tool on player characters (detailed Part-based models via WeaponModels)
     - Gear replication to all clients
 
   Delegates all data persistence to DataService.
@@ -24,6 +24,7 @@ local GameConfig = require(Shared:WaitForChild("GameConfig"))
 
 local Server = ServerScriptService:WaitForChild("Server")
 local RateLimiter = require(Server:WaitForChild("RateLimiter"))
+local WeaponModels = require(Server:WaitForChild("WeaponModels"))
 
 local GearService = Knit.CreateService({
   Name = "GearService",
@@ -51,80 +52,41 @@ local ownedLimit = RateLimiter.new("GearService.GetOwnedGear", 2.0)
 local ActiveTools: { [Player]: Tool } = {}
 
 --------------------------------------------------------------------------------
--- GEAR TOOL VISUALS (placeholder — MODEL-004 will replace)
+-- GEAR TOOL CREATION (detailed Part-based models via WeaponModels)
 --------------------------------------------------------------------------------
 
--- Placeholder visual properties per gear tier
-local GEAR_VISUALS = {
-  driftwood = {
-    color = BrickColor.new("Reddish brown"),
-    size = Vector3.new(0.3, 0.3, 3.5),
-    material = Enum.Material.Wood,
-  },
-  rusty_cutlass = {
-    color = BrickColor.new("Dark stone grey"),
-    size = Vector3.new(0.2, 0.4, 3.5),
-    material = Enum.Material.Metal,
-  },
-  iron_cutlass = {
-    color = BrickColor.new("Medium stone grey"),
-    size = Vector3.new(0.2, 0.4, 3.5),
-    material = Enum.Material.Metal,
-  },
-  steel_cutlass = {
-    color = BrickColor.new("Institutional white"),
-    size = Vector3.new(0.2, 0.4, 3.8),
-    material = Enum.Material.Metal,
-  },
-  captains_saber = {
-    color = BrickColor.new("Bright yellow"),
-    size = Vector3.new(0.2, 0.4, 4.0),
-    material = Enum.Material.Metal,
-  },
-  legendary_blade = {
-    color = BrickColor.new("Bright orange"),
-    size = Vector3.new(0.25, 0.5, 4.5),
-    material = Enum.Material.Neon,
-  },
-}
-
 --[[
-  Creates a placeholder cutlass Tool for the given gear ID.
-  The Tool has a Handle part shaped like a sword blade.
-  MODEL-004 will replace this with proper 3D models.
+  Creates a detailed cutlass Tool for the given gear ID using WeaponModels.
+  Falls back to a simple single-Part tool if no builder exists.
   @param gearId The gear type ID
   @return Tool instance ready to parent to the player
 ]]
 local function createGearTool(gearId: string): Tool
-  local visual = GEAR_VISUALS[gearId] or GEAR_VISUALS.rusty_cutlass
+  local tool = WeaponModels.build(gearId)
+  if tool then
+    return tool
+  end
+
+  -- Fallback: simple box tool if WeaponModels has no builder
   local gearDef = GameConfig.GearById[gearId]
   local displayName = if gearDef then gearDef.name else "Cutlass"
 
-  local tool = Instance.new("Tool")
-  tool.Name = "Cutlass"
-  tool.CanBeDropped = false
-  tool.RequiresHandle = true
-  tool.ToolTip = displayName
+  local fallback = Instance.new("Tool")
+  fallback.Name = "Cutlass"
+  fallback.CanBeDropped = false
+  fallback.RequiresHandle = true
+  fallback.ToolTip = displayName
 
   local handle = Instance.new("Part")
   handle.Name = "Handle"
-  handle.Size = visual.size
-  handle.BrickColor = visual.color
-  handle.Material = visual.material
+  handle.Size = Vector3.new(0.2, 0.4, 3.5)
+  handle.Color = Color3.fromRGB(130, 130, 140)
+  handle.Material = Enum.Material.Metal
   handle.CanCollide = false
   handle.Massless = true
-  handle.Parent = tool
+  handle.Parent = fallback
 
-  -- Subtle glow for legendary blade
-  if gearId == "legendary_blade" then
-    local light = Instance.new("PointLight")
-    light.Color = Color3.fromRGB(255, 170, 0)
-    light.Brightness = 1
-    light.Range = 8
-    light.Parent = handle
-  end
-
-  return tool
+  return fallback
 end
 
 --[[

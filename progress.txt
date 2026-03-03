@@ -5727,3 +5727,33 @@ opacity (0.3 TextTransparency) to indicate the entity is beyond the visible rang
   patterns exactly (MapBootstrap for Part creation, ContainerService for model lifecycle).
 - Remaining not-started features: MODEL-002 (ships), MODEL-003 (NPCs), MODEL-004 (weapons),
   MODEL-005 (doubloons/purses), AUDIO-001 (audio assets)
+
+## MODEL-004: Cutlass Weapon Models (5 Tiers + Driftwood) — DONE (2026-03-03)
+
+### What was done
+Created detailed Part-based 3D models for all 6 cutlass weapon tiers, replacing the single-Part placeholder rectangles with multi-component weapons.
+
+### Files created
+- `src/server/WeaponModels.lua` — 831 lines, dedicated module with builder functions for each weapon type. Follows the same pattern as `ContainerModels.lua` (makePart helper, weld helper, builder registry, `.build()` entry point).
+
+### Files modified
+- `src/server/Services/GearService.lua` — Replaced `GEAR_VISUALS` placeholder table and simple `createGearTool()` with `WeaponModels.build()` call + fallback. Added `require(WeaponModels)`.
+- `src/server/Services/CosmeticVisualService.lua` — Extended `applyCutlassSkin()` to also recolor blade-related child parts (`BladeEdge`, `BladeCore`, `BladeTip`, `BladeEdgeGlow`, `BladeSpineGlow`) for visual consistency with multi-part weapons.
+
+### Weapon details
+- **Driftwood**: Rough wooden plank with bark strip, splintered tip, crude rope grip wrapping
+- **Rusty Cutlass**: Pitted metal blade with CorrodedMetal rust patches, simple flat cross-guard, worn leather grip, plain pommel
+- **Iron Cutlass**: Solid grey blade with fuller groove, cross-guard with ball end caps, leather-wrapped grip with 3 bands, iron disc pommel
+- **Steel Cutlass**: Polished bright blade, brass cross-guard with curved flourish tips, knuckle bow, fine leather grip with 4 brass rings, brass pommel
+- **Captain's Saber**: Elegant blade with gold accent near guard, elaborate gold cross-guard with filigree curls, full gold knuckle bow, ivory grip with gold wire wrap, gold pommel with ruby jewel inset, subtle gold PointLight glow
+- **Legendary Blade**: Neon golden blade with dark metal core, neon edge+spine glow, 4 glowing rune engravings, elaborate cross-guard with wing motifs + emerald center jewel, gold knuckle bow, deep purple velvet grip with gold wire, ornate pommel with sapphire jewel, strong gold PointLight, gold ParticleEmitter trail
+
+### Architecture notes
+- All decorative parts are parented to the Tool (not the Handle) and welded to the Handle via Weld constraints
+- Handle remains the blade part so CosmeticVisualService skin overrides (which recolor handle.Color/Material) continue to work
+- makePart defaults: Anchored=false, CanCollide/CanQuery/CanTouch=false, Massless=true, CastShadow=true
+- Builder registry maps gearId strings to builder functions, with `.build(gearId)` API matching ContainerModels pattern
+- GearService falls back to a simple box tool if WeaponModels has no builder for a given gearId
+
+### Next priorities
+Remaining not-started features: MODEL-002 (ships), MODEL-003 (NPCs), MODEL-005 (doubloons/purses), AUDIO-001 (audio assets)

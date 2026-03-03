@@ -373,9 +373,24 @@ local function applyCutlassSkin(character: Model, cosmeticId: string)
     return
   end
 
-  -- Apply skin visuals
+  -- Apply skin visuals to the blade handle
   handle.Color = visual.color
   handle.Material = visual.material
+
+  -- Also recolor blade-related child parts for visual consistency
+  local BLADE_PARTS = {
+    BladeEdge = true,
+    BladeCore = true,
+    BladeTip = true,
+    BladeEdgeGlow = true,
+    BladeSpineGlow = true,
+  }
+  for _, child in tool:GetChildren() do
+    if child:IsA("BasePart") and BLADE_PARTS[child.Name] then
+      child.Color = visual.color
+      child.Material = visual.material
+    end
+  end
 
   -- Remove old skin glow, add new one if applicable
   local oldGlow = handle:FindFirstChild("SkinGlow")
