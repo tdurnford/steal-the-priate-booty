@@ -3398,3 +3398,86 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
   request paths more frequently.
 - Next priorities: NPC-008 (Phantom Captain), NPC-009 (night NPC modifiers),
   LOOT-006 (player loot visibility)
+
+---
+
+## 2026-03-02 — LOOT-006: Loot Visibility Thresholds
+
+### What was done
+- Created `src/server/Services/LootVisibilityService.lua` — server-authoritative
+  player loot visibility system that attaches visual indicators to characters based
+  on held doubloons count.
+- Created `src/client/Controllers/LootVisibilityController.lua` — client-side handler
+  for tier change notifications and SFX feedback.
+
+### Visual tiers
+1. **None (0-49)**: No visual indicator on character.
+2. **Small (50-199)**: Small brown coin purse Part (ball shape, Fabric material),
+   welded to HumanoidRootPart at belt offset (-0.8, -0.5, 0.3).
+3. **Medium (200-499)**: Medium dark gold purse with PointLight (brightness 0.5,
+   range 6 studs) and gold shimmer ParticleEmitter (rate 6).
+4. **Large (500+)**: Large bright gold purse with PointLight (brightness 0.8,
+   range 8 studs), shimmer particles (rate 12), gold particle trail at feet
+   (separate welded Part with ParticleEmitter, drag 2, rate 15), and looping
+   3D coin jingle Sound (rolloff 5-40 studs, volume 0.3).
+
+### Night glow system
+- Players carrying 200+ doubloons get a faint gold PointLight (brightness 0.6,
+  range 15 studs) on HumanoidRootPart during Night phase.
+- Glow applied/removed on DayNightService.PhaseChanged transitions.
+- Glow also applies/removes dynamically as doubloons cross the 200 threshold
+  during Night phase.
+
+### Server-side architecture (LootVisibilityService)
+- Listens to `SessionStateService.StateChanged` for `heldDoubloons` field changes.
+- Computes tier via `GameConfig.getLootVisibilityTier(doubloons)`.
+- On tier change: clears all previous visuals, creates new tier-appropriate visuals.
+- Handles CharacterAdded to reapply visuals on respawn.
+- Handles PlayerRemoving to clean up state and disconnect connections.
+- Per-player state: `PlayerTier` map, `PlayerConnections` for cleanup.
+- All visual instances use unique Name tags (LootVisibility_Purse, _Trail,
+  _Jingle, _NightGlow) for reliable find-and-destroy.
+- `clearVisuals()` checks both character-level and HumanoidRootPart-level children.
+- Fires `TierChanged` client signal (newTier, oldTier, doubloons) and server-side
+  Signal (player, newTier, oldTier).
+- Public API: `GetTier(player)` returns current tier string.
+- Client-callable: `GetTier(player)` for initial sync.
+
+### Client-side architecture (LootVisibilityController)
+- Listens to `LootVisibilityService.TierChanged` client signal.
+- On tier increase: shows escalating notification via NotificationController
+  ("A small purse hangs at your belt...", "Your gold shimmer draws attention!",
+  "Your overflowing riches attract every pirate nearby!") with tier-specific colors.
+- On tier decrease (still > none): shows relief notification.
+- Plays `coinPickup` SFX on tier increase via SoundController.
+
+### Config used (already in GameConfig.lua)
+- `GameConfig.LootVisibility` — 4 tier definitions with min/max doubloon thresholds.
+- `GameConfig.NightGlowThreshold = 200` — night glow activation threshold.
+- `GameConfig.getLootVisibilityTier(doubloons)` — accessor function.
+
+### Design decisions
+- **Server-created visuals for replication**: All Parts, PointLights, ParticleEmitters,
+  and Sounds are created server-side so they automatically replicate to all clients.
+  No client-side visual creation needed.
+- **Consistent with NPC coin purse (NPC-002)**: Uses the same 50/200/500 tier
+  thresholds, similar Part properties (Ball, Fabric, belt weld offset), and matching
+  visual language (PointLight for medium, particles for large).
+- **3D Sound with RollOff for jingle**: The coin jingle is a looping 3D Sound on
+  HumanoidRootPart with Linear RollOff (5-40 studs) so nearby players hear it but
+  it doesn't spam everyone across the map.
+- **Night glow as separate PointLight**: Named differently from purse PointLight
+  so they can be managed independently. Night glow has larger range (15 studs)
+  to be visible through night fog.
+- **Minimal client controller**: Client only handles notifications and SFX for the
+  local player. All visual work is server-side for simplicity and correctness.
+
+### Notes for next developer
+- Coin purse uses `Enum.PartType.Ball` + `Enum.Material.Fabric` — replace with
+  proper Mesh/MeshPart when art assets are available.
+- Gold particle trail Part is transparent (Transparency=1) and acts only as a
+  ParticleEmitter host at feet level.
+- The `TierChanged` server signal can be used by other systems (e.g., NPCs could
+  prioritize chasing players with higher loot tiers).
+- Next priorities: NPC-008 (Phantom Captain), NPC-009 (night NPC modifiers),
+  SHIP-005 (ship lock state visuals), SHIP-006 (ship tier progression)
