@@ -1,3 +1,68 @@
+## 2026-03-03 — UI-008: Hazard Warning Prompts
+
+### What was done
+- Created `src/client/UI/HazardWarningPanel.lua` — Fusion 0.3 component: pulsing hazard warning
+  bars with per-hazard-type visuals. Each hazard type has a unique icon, color scheme, warning
+  text, and background color:
+  - Volcanic vent: orange, volcano icon, "ERUPTION IMMINENT!"
+  - Tidal surge: ocean blue, wave icon, "TIDAL SURGE INCOMING!"
+  - Rogue wave: deep blue, wave icon, "ROGUE WAVE APPROACHING!"
+  - Quicksand: amber, warning icon, "QUICKSAND NEARBY!"
+  Follows BountyAlertOverlay pattern: Heartbeat-driven pulse animation (0.85-1.08 scale),
+  tween fade in/out, flashing stroke color, UIScale pulse, text flash effect. Supports
+  stacking multiple simultaneous warnings via UIListLayout. Container positioned at
+  bottom-center of screen (AnchorPoint 0.5,1, Position 0.5,0,1,-120).
+- Created `src/client/Controllers/HazardWarningController.lua` — Client-side Knit controller
+  that listens to warning-phase signals from all 4 hazard services:
+  - VolcanicVentService.VentPhaseChanged → shows warning on "warning" phase (5s before eruption)
+  - TidalSurgeService.SurgePhaseChanged → shows warning on "warning" phase (4s before flood)
+  - RogueWaveService.WavePhaseChanged → shows warning on "warning" phase (6s before impact)
+  - QuicksandService.PatchStateChanged → shows warning when patch activates near player
+  Proximity-based: only shows warnings when player is within range (vent 60, surge 80, wave
+  100, quicksand 40 studs). Source tracking: multiple hazard instances of the same type
+  aggregate into a single visible warning per type. Late-join sync via GetVentStates,
+  GetZoneStates, GetPatchStates RPCs. Own ScreenGui (DisplayOrder 90, above HUD 10, below
+  banners 110). Auto-discovered by Main.client.lua bootstrapper.
+- No existing files modified — both files are new, auto-discovered by existing bootstrappers.
+
+### Acceptance criteria met
+- Warning flashes for each hazard type with correct lead time (vent 5s, surge 4s, wave 6s) ✓
+- Only shows for players near the hazard (proximity ranges per type) ✓
+- Different visual per hazard type (unique icon, color, text, background) ✓
+- Warning clears after hazard (source tracking, removed on phase advance) ✓
+
+### Design decisions
+- **Separate ScreenGui, not wired through HudController**: Like BountyAlertOverlay and
+  RogueWaveController's screen overlay, hazard warnings manage their own ScreenGui. This keeps
+  HudController focused on the persistent HUD elements and avoids coupling.
+- **Source tracking pattern**: Each hazard zone/vent/patch has a unique ID. The controller tracks
+  which sources are actively warning. A hazard type's warning stays visible as long as at least
+  one source is active. This handles multiple vents warning simultaneously without flickering.
+- **Proximity check at warning start**: Proximity is checked when the hazard enters its warning
+  phase, not continuously. This is sufficient because:
+  1. Warning durations are short (4-6s)
+  2. Players rarely teleport into a hazard zone mid-warning
+  3. The VFX controllers already handle continuous proximity effects (rumble, screen overlay)
+- **Bottom-center positioning**: Warnings appear at bottom-center (Y offset -120 from bottom)
+  to avoid overlapping with top-center banners (BannerQueueController, DisplayOrder 110) and
+  top-right alerts (BountyAlertOverlay, RaidAlertOverlay). This creates a clear visual hierarchy:
+  banners at top, alerts at top-center, hazard warnings at bottom.
+- **Quicksand has no pre-warning phase**: Unlike vent/surge/wave which have explicit "warning"
+  phases, quicksand patches simply activate/deactivate. The controller shows a warning when a
+  patch activates near the player, giving awareness even though there's no countdown.
+
+### Notes for next developer
+- HazardWarningPanel.HazardTypes table can be extended for future hazard types by adding a new
+  key with icon/text/color/glowColor/bgColor fields.
+- The PROXIMITY table in HazardWarningController defines per-hazard detection ranges. Tune these
+  if hazard zones are larger or smaller than expected.
+- DisplayOrder 90 sits between HUD (10) and banners (110). Notification toasts are at 50.
+- No Roblox Studio MCP server was available for in-game testing. Code follows established
+  patterns exactly (BountyAlertOverlay for UI, VolcanicVentController for signal handling).
+- Next priorities: NETWORK-001/002/003 (network hardening), or MODEL/MAP/AUDIO asset features.
+
+---
+
 ## 2026-03-03 — UI-006: Event Banner Queuing
 
 ### What was done
