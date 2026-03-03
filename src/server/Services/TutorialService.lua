@@ -32,6 +32,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local Packages = ReplicatedStorage:WaitForChild("Packages")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -39,6 +40,9 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Knit = require(Packages:WaitForChild("Knit"))
 local Signal = require(Packages:WaitForChild("GoodSignal"))
 local GameConfig = require(Shared:WaitForChild("GameConfig"))
+
+local Server = ServerScriptService:WaitForChild("Server")
+local RateLimiter = require(Server:WaitForChild("RateLimiter"))
 
 local TutorialService = Knit.CreateService({
   Name = "TutorialService",
@@ -59,6 +63,10 @@ local TutorialService = Knit.CreateService({
 -- Server-side signals for inter-service communication
 TutorialService.TutorialStarted = Signal.new() -- (player)
 TutorialService.TutorialFinished = Signal.new() -- (player)
+
+-- Rate limiters for client-callable methods
+local stateLimit = RateLimiter.new("TutorialService.GetTutorialState", 2.0)
+local skipLimit = RateLimiter.new("TutorialService.SkipTutorial", 5.0)
 
 -- Lazy-loaded service references (set in KnitStart)
 local SessionStateService = nil
@@ -924,6 +932,9 @@ end
   Client method to check tutorial state.
 ]]
 function TutorialService.Client:GetTutorialState(player: Player): { active: boolean, step: number }
+  if not stateLimit:check(player) then
+    return { active = false, step = 0 }
+  end
   local instance = ActiveTutorials[player]
   if instance then
     return { active = true, step = instance.currentStep }
@@ -935,6 +946,9 @@ end
   Skip tutorial (for testing or if player wants to skip).
 ]]
 function TutorialService.Client:SkipTutorial(player: Player): boolean
+  if not skipLimit:check(player) then
+    return false
+  end
   local instance = ActiveTutorials[player]
   if not instance then
     return false

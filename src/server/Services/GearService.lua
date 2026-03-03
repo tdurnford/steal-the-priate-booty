@@ -13,6 +13,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local Packages = ReplicatedStorage:WaitForChild("Packages")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -20,6 +21,9 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Knit = require(Packages:WaitForChild("Knit"))
 local Signal = require(Packages:WaitForChild("GoodSignal"))
 local GameConfig = require(Shared:WaitForChild("GameConfig"))
+
+local Server = ServerScriptService:WaitForChild("Server")
+local RateLimiter = require(Server:WaitForChild("RateLimiter"))
 
 local GearService = Knit.CreateService({
   Name = "GearService",
@@ -36,6 +40,12 @@ GearService.GearEquipped = Signal.new() -- (player, gearId)
 
 -- Lazy-loaded service reference
 local DataService = nil
+
+-- Rate limiters for client-callable methods
+local purchaseLimit = RateLimiter.new("GearService.PurchaseGear", 1.0)
+local equipLimit = RateLimiter.new("GearService.EquipGear", 0.5)
+local catalogLimit = RateLimiter.new("GearService.GetGearCatalog", 2.0)
+local ownedLimit = RateLimiter.new("GearService.GetOwnedGear", 2.0)
 
 -- Track active gear tools per player
 local ActiveTools: { [Player]: Tool } = {}
@@ -181,6 +191,9 @@ function GearService.Client:PurchaseGear(player: Player, gearId: string): (boole
   if type(gearId) ~= "string" then
     return false, "Invalid gear ID"
   end
+  if not purchaseLimit:check(player) then
+    return false, "Too many requests"
+  end
 
   local success, message = DataService:PurchaseGear(player, gearId)
   if success then
@@ -208,6 +221,9 @@ function GearService.Client:EquipGear(player: Player, gearId: string): (boolean,
   if type(gearId) ~= "string" then
     return false, "Invalid gear ID"
   end
+  if not equipLimit:check(player) then
+    return false, "Too many requests"
+  end
 
   local success, message = DataService:EquipGear(player, gearId)
   if success then
@@ -228,6 +244,9 @@ end
   @return { string } Array of owned gear IDs
 ]]
 function GearService.Client:GetOwnedGear(player: Player): { string }
+  if not ownedLimit:check(player) then
+    return {}
+  end
   local data = DataService:GetData(player)
   if not data then
     return {}
@@ -246,6 +265,9 @@ end
   @return Array of gear entries with ownership/equip info
 ]]
 function GearService.Client:GetGearCatalog(player: Player)
+  if not catalogLimit:check(player) then
+    return {}
+  end
   local data = DataService:GetData(player)
   local equippedGear = if data then data.equippedGear else nil
 

@@ -14,6 +14,7 @@
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local Packages = ReplicatedStorage:WaitForChild("Packages")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -21,6 +22,9 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Knit = require(Packages:WaitForChild("Knit"))
 local Signal = require(Packages:WaitForChild("GoodSignal"))
 local CosmeticConfig = require(Shared:WaitForChild("CosmeticConfig"))
+
+local Server = ServerScriptService:WaitForChild("Server")
+local RateLimiter = require(Server:WaitForChild("RateLimiter"))
 
 local CosmeticService = Knit.CreateService({
   Name = "CosmeticService",
@@ -36,6 +40,13 @@ local CosmeticService = Knit.CreateService({
 CosmeticService.CosmeticPurchased = Signal.new() -- (player, cosmeticId)
 CosmeticService.CosmeticEquipped = Signal.new() -- (player, cosmeticId, slotField)
 CosmeticService.CosmeticUnequipped = Signal.new() -- (player, slotField)
+
+-- Rate limiters for client-callable methods
+local purchaseLimit = RateLimiter.new("CosmeticService.PurchaseCosmetic", 1.0)
+local equipLimit = RateLimiter.new("CosmeticService.EquipCosmetic", 0.5)
+local unequipLimit = RateLimiter.new("CosmeticService.UnequipCosmetic", 0.5)
+local catalogLimit = RateLimiter.new("CosmeticService.GetCosmeticCatalog", 2.0)
+local equippedLimit = RateLimiter.new("CosmeticService.GetEquippedCosmetics", 2.0)
 
 -- Lazy-loaded service references (set in KnitStart)
 local DataService = nil
@@ -58,6 +69,9 @@ function CosmeticService.Client:PurchaseCosmetic(
 ): (boolean, string?)
   if type(cosmeticId) ~= "string" then
     return false, "Invalid cosmetic ID"
+  end
+  if not purchaseLimit:check(player) then
+    return false, "Too many requests"
   end
 
   local data = DataService:GetData(player)
@@ -110,6 +124,9 @@ function CosmeticService.Client:EquipCosmetic(
   if type(cosmeticId) ~= "string" or type(slotField) ~= "string" then
     return false, "Invalid arguments"
   end
+  if not equipLimit:check(player) then
+    return false, "Too many requests"
+  end
 
   local data = DataService:GetData(player)
   if not data then
@@ -149,6 +166,9 @@ function CosmeticService.Client:UnequipCosmetic(
   if type(slotField) ~= "string" then
     return false, "Invalid slot"
   end
+  if not unequipLimit:check(player) then
+    return false, "Too many requests"
+  end
 
   local data = DataService:GetData(player)
   if not data then
@@ -180,6 +200,9 @@ end
   @return Array of cosmetic entries with ownership/equip info
 ]]
 function CosmeticService.Client:GetCosmeticCatalog(player: Player)
+  if not catalogLimit:check(player) then
+    return {}
+  end
   local data = DataService:GetData(player)
 
   local catalog = {}
@@ -224,6 +247,9 @@ end
   @return EquippedCosmetics table (copy)
 ]]
 function CosmeticService.Client:GetEquippedCosmetics(player: Player)
+  if not equippedLimit:check(player) then
+    return {}
+  end
   local data = DataService:GetData(player)
   if not data then
     return {}

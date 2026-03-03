@@ -19,6 +19,21 @@ local ProfileService = require(ServerPackages:WaitForChild("ProfileService"))
 local Types = require(Shared:WaitForChild("Types"))
 local GameConfig = require(Shared:WaitForChild("GameConfig"))
 
+local Server = ServerScriptService:WaitForChild("Server")
+local RateLimiter = require(Server:WaitForChild("RateLimiter"))
+
+-- Rate limiters for client-callable methods
+local getDataLimit = RateLimiter.new("DataService.GetData", 1.0)
+local getTreasuryLimit = RateLimiter.new("DataService.GetTreasury", 1.0)
+local getGearLimit = RateLimiter.new("DataService.GetEquippedGear", 1.0)
+local settingLimit = RateLimiter.new("DataService.UpdateSetting", 0.5)
+
+-- Valid types for each setting key (for type validation)
+local SETTING_TYPES: { [string]: string } = {
+  sfxEnabled = "boolean",
+  musicEnabled = "boolean",
+}
+
 local PROFILE_STORE_NAME = "PlayerData_v1"
 local PROFILE_KEY_PREFIX = "Player_"
 
@@ -367,6 +382,9 @@ end
 --------------------------------------------------------------------------------
 
 function DataService.Client:GetData(player: Player)
+  if not getDataLimit:check(player) then
+    return nil
+  end
   local data = DataService:GetData(player)
   if data then
     return Types.deepCopyPlayerData(data)
@@ -375,14 +393,40 @@ function DataService.Client:GetData(player: Player)
 end
 
 function DataService.Client:GetTreasury(player: Player)
+  if not getTreasuryLimit:check(player) then
+    return 0
+  end
   return DataService:GetTreasury(player)
 end
 
 function DataService.Client:GetEquippedGear(player: Player)
+  if not getGearLimit:check(player) then
+    return nil
+  end
   return DataService:GetEquippedGear(player)
 end
 
-function DataService.Client:UpdateSetting(player: Player, settingKey: string, value: any)
+function DataService.Client:UpdateSetting(player: Player, settingKey: any, value: any)
+  if type(settingKey) ~= "string" then
+    return false
+  end
+  if not settingLimit:check(player) then
+    return false
+  end
+  -- Validate setting value type matches expected type
+  local expectedType = SETTING_TYPES[settingKey]
+  if expectedType and type(value) ~= expectedType then
+    warn(
+      string.format(
+        "[DataService] SUSPICIOUS: %s sent wrong type for setting %s (expected %s, got %s)",
+        player.Name,
+        settingKey,
+        expectedType,
+        type(value)
+      )
+    )
+    return false
+  end
   return DataService:UpdateSetting(player, settingKey, value)
 end
 

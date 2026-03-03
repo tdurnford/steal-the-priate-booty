@@ -1,3 +1,92 @@
+## 2026-03-03 — NETWORK-001 + NETWORK-002: Network Architecture & Input Validation
+
+### What was done
+- Created `src/server/RateLimiter.lua` — Reusable per-player, per-action rate limiter module.
+  Uses `os.clock()` timestamps per UserId, configurable cooldown per action, auto-cleanup on
+  PlayerRemoving. Tracks aggregate violation counts across a 60s sliding window and logs warnings
+  via `warn()` when a player exceeds 20 violations (potential exploit detection). All limiter
+  instances self-register for cleanup; no manual per-service cleanup needed.
+- Modified `src/server/Services/GearService.lua` — Added rate limiters: PurchaseGear (1s),
+  EquipGear (0.5s), GetOwnedGear (2s), GetGearCatalog (2s). All client RPCs now check rate
+  limit before processing. Type validation already existed (string check on gearId).
+- Modified `src/server/Services/CosmeticService.lua` — Added rate limiters: PurchaseCosmetic (1s),
+  EquipCosmetic (0.5s), UnequipCosmetic (0.5s), GetCosmeticCatalog (2s), GetEquippedCosmetics (2s).
+  Type validation already existed (string checks on all params).
+- Modified `src/server/Services/ShipService.lua` — Added rate limiters: DepositAll (1s),
+  LockShip (2s), StartRaid (3s), CancelRaid (1s), GetMyShip (2s), GetAllDockedShips (2s).
+  Added missing type check on StartRaid's `targetSlotIndex` parameter (was unchecked, now
+  rejects non-number values).
+- Modified `src/server/Services/DataService.lua` — Added rate limiters: GetData (1s),
+  GetTreasury (1s), GetEquippedGear (1s), UpdateSetting (0.5s). Added type validation for
+  UpdateSetting: validates settingKey is string, validates value type matches expected type
+  (boolean for sfxEnabled/musicEnabled), logs suspicious type mismatches with `warn()`.
+- Modified `src/server/Services/TutorialService.lua` — Added rate limiters: GetTutorialState (2s),
+  SkipTutorial (5s).
+- Modified `src/server/Services/LeaderboardService.lua` — Added rate limiter: GetLeaderboard (2s).
+- **NETWORK-001 marked done**: All RemoteEvents use the Knit service/controller pattern (already
+  implemented across all services). Client→server signals and RPCs cover all input types.
+  Server→client signals cover all feedback types. Payloads are minimal (IDs, numbers, strings,
+  Vector3s). No raw RemoteEvents folder needed — Knit handles creation automatically.
+
+### Acceptance criteria met (NETWORK-002)
+- All client inputs are validated server-side before processing ✓
+  (CombatService: state checks, cooldowns, type checks; GearService: type + ownership;
+  CosmeticService: type + ownership + slot; ShipService: type + state + proximity;
+  DataService: type validation for settings; EmoteService: state + cooldown + slot checks)
+- Invalid-state inputs are rejected silently ✓ (all methods return early or return false)
+- Attack rate limiting prevents faster-than-cooldown exploits ✓ (CombatService: 0.4s light,
+  1.2s heavy, 4s lunge, 5s spin; per-target 2s cooldown)
+- Exploit attempts are logged ✓ (RateLimiter: threshold-based aggregate violation warnings;
+  DataService: type mismatch warnings)
+
+### Acceptance criteria met (NETWORK-001)
+- All necessary RemoteEvents are defined and created ✓ (via Knit Client tables)
+- Client→server events cover all input types ✓ (attack, dash, block, deposit, lock, raid,
+  purchase, equip, unequip, emote, tutorial skip, settings)
+- Server→client events cover all feedback types ✓ (SwingResult, RagdollTrigger, BlockImpact,
+  DashConfirm, LootSpillVFX, GearChanged, CosmeticChanged, ShipSpawned/Despawned/TierChanged,
+  RaidStarted/Ended, BountyStarted/Ended, EventStarted/Ended, ThreatTierChanged, PhaseChanged,
+  all hazard warnings, TutorialStepChanged, LeaderboardUpdated, DataChanged, StateChanged)
+- Payloads are minimal (IDs and numbers only) ✓
+- Events follow the project's Knit networking pattern ✓
+
+### Design decisions
+- **Centralized RateLimiter module**: Rather than each service implementing its own cooldown
+  tracking, a shared module provides consistent behavior, aggregate violation tracking, and
+  single-point cleanup. Each service creates named limiter instances at module scope.
+- **Violation threshold logging**: Individual rate limit rejections are silent (to avoid log spam).
+  Aggregate tracking across a 60s window triggers a single `warn()` at 20 violations, indicating
+  a likely exploit attempt. This balances signal-to-noise ratio.
+- **Cooldown values by risk level**: State-modifying RPCs have tighter limits (purchase 1s, equip
+  0.5s, deposit 1s, lock 2s) vs read-only queries (2s). Raid has 3s since it already has a
+  per-ship 30s cooldown. Tutorial skip uses 5s since it's a one-time action.
+- **Auto-cleanup via PlayerRemoving**: The RateLimiter module connects to PlayerRemoving once
+  (deferred to run after services). Services don't need manual cleanup.
+- **Type validation on DataService.UpdateSetting**: Added a SETTING_TYPES table that maps setting
+  keys to expected value types. Mismatches are logged as suspicious and rejected. This prevents
+  exploiters from corrupting player settings with wrong types.
+- **NETWORK-001 retrospective**: All networking was already implemented via Knit's service/
+  controller pattern. Each Knit service `Client` table creates RemoteEvents (signals) and
+  RemoteFunctions (RPCs) automatically. No additional work needed — marked as done.
+
+### Notes for next developer
+- RateLimiter is at `src/server/RateLimiter.lua` (maps to `ServerScriptService.Server.RateLimiter`).
+  To add rate limiting to a new service: require it, create a limiter with `RateLimiter.new(name,
+  cooldownSeconds)`, call `limiter:check(player)` at the top of each client method.
+- VIOLATION_WARN_THRESHOLD (20) and VIOLATION_WINDOW (60s) are configurable at the top of
+  RateLimiter.lua. Tune these if the warn threshold is too sensitive or too lenient.
+- The SETTING_TYPES table in DataService.lua should be updated when new settings are added to
+  the player data schema. Any new setting key should have its expected type listed.
+- CombatService was NOT modified — it already had robust per-attack cooldowns, per-target hit
+  cooldowns, state validation, and type checking. Adding RateLimiter on top would be redundant.
+- EmoteService was NOT modified — it already has a 1s server-side cooldown and comprehensive
+  state validation.
+- No Roblox Studio MCP server was available for in-game testing. Code follows established
+  patterns exactly and has been formatted with StyLua.
+- Next priority: NETWORK-003 (server-side speed check), then MODEL/MAP/AUDIO asset features.
+
+---
+
 ## 2026-03-03 — UI-008: Hazard Warning Prompts
 
 ### What was done

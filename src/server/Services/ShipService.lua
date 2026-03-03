@@ -30,6 +30,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local Packages = ReplicatedStorage:WaitForChild("Packages")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -37,6 +38,9 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Knit = require(Packages:WaitForChild("Knit"))
 local Signal = require(Packages:WaitForChild("GoodSignal"))
 local GameConfig = require(Shared:WaitForChild("GameConfig"))
+
+local Server = ServerScriptService:WaitForChild("Server")
+local RateLimiter = require(Server:WaitForChild("RateLimiter"))
 
 local ShipService = Knit.CreateService({
   Name = "ShipService",
@@ -82,6 +86,14 @@ ShipService.DepositCompleted = Signal.new() -- (player, amountDeposited, newShip
 ShipService.LockCompleted = Signal.new() -- (player, amountLocked, newTreasury)
 ShipService.ShipUnlocked = Signal.new() -- (player)
 ShipService.RaidCompleted = Signal.new() -- (raider, owner, amountStolen)
+
+-- Rate limiters for client-callable methods
+local depositLimit = RateLimiter.new("ShipService.DepositAll", 1.0)
+local lockLimit = RateLimiter.new("ShipService.LockShip", 2.0)
+local raidLimit = RateLimiter.new("ShipService.StartRaid", 3.0)
+local cancelRaidLimit = RateLimiter.new("ShipService.CancelRaid", 1.0)
+local queryShipLimit = RateLimiter.new("ShipService.GetMyShip", 2.0)
+local queryAllLimit = RateLimiter.new("ShipService.GetAllDockedShips", 2.0)
 
 -- Lazy-loaded service references (set in KnitStart)
 local DataService = nil
@@ -835,6 +847,9 @@ end
   @return slotIndex, shipTierId, position — or nil if no ship docked
 ]]
 function ShipService.Client:GetMyShip(player: Player): (number?, string?, Vector3?)
+  if not queryShipLimit:check(player) then
+    return nil, nil, nil
+  end
   local entry = self.Server:GetDockedShip(player)
   if entry then
     return entry.slotIndex, entry.shipTierId, entry.position
@@ -856,6 +871,9 @@ function ShipService.Client:GetAllDockedShips(player: Player): {
     position: Vector3,
   }
 }
+  if not queryAllLimit:check(player) then
+    return {}
+  end
   return self.Server:GetAllDockedShips()
 end
 
@@ -867,6 +885,9 @@ end
   @return (success: boolean, message: string?)
 ]]
 function ShipService.Client:DepositAll(player: Player): (boolean, string?)
+  if not depositLimit:check(player) then
+    return false, "Too many requests"
+  end
   local entry = DockedShips[player]
   if not entry then
     return false, "No ship docked"
@@ -923,6 +944,9 @@ end
   @return (success: boolean, message: string?)
 ]]
 function ShipService.Client:LockShip(player: Player): (boolean, string?)
+  if not lockLimit:check(player) then
+    return false, "Too many requests"
+  end
   local entry = DockedShips[player]
   if not entry then
     return false, "No ship docked"
@@ -1077,6 +1101,14 @@ end
   @return (success: boolean, message: string?)
 ]]
 function ShipService.Client:StartRaid(player: Player, targetSlotIndex: number): (boolean, string?)
+  -- Type check
+  if type(targetSlotIndex) ~= "number" then
+    return false, "Invalid slot index"
+  end
+  if not raidLimit:check(player) then
+    return false, "Too many requests"
+  end
+
   -- Validate: no double-raiding
   if ActiveRaids[player] then
     return false, "Already raiding"
@@ -1237,6 +1269,9 @@ end
   @param player The raiding player (injected by Knit)
 ]]
 function ShipService.Client:CancelRaid(player: Player)
+  if not cancelRaidLimit:check(player) then
+    return
+  end
   ShipService:CancelRaid(player, "Cancelled by player")
 end
 

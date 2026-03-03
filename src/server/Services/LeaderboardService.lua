@@ -9,12 +9,16 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local Packages = ReplicatedStorage:WaitForChild("Packages")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 
 local Knit = require(Packages:WaitForChild("Knit"))
 local GameConfig = require(Shared:WaitForChild("GameConfig"))
+
+local Server = ServerScriptService:WaitForChild("Server")
+local RateLimiter = require(Server:WaitForChild("RateLimiter"))
 
 local LeaderboardService = Knit.CreateService({
   Name = "LeaderboardService",
@@ -24,6 +28,9 @@ local LeaderboardService = Knit.CreateService({
     LeaderboardUpdated = Knit.CreateSignal(),
   },
 })
+
+-- Rate limiter for leaderboard queries
+local leaderboardLimit = RateLimiter.new("LeaderboardService.GetLeaderboard", 2.0)
 
 -- Lazy-loaded service references (set in KnitStart)
 local DataService = nil
@@ -108,6 +115,9 @@ end
   @return { held: array, treasury: array, notoriety: array }
 ]]
 function LeaderboardService.Client:GetLeaderboard(_player: Player)
+  if not leaderboardLimit:check(_player) then
+    return { held = {}, treasury = {}, notoriety = {} }
+  end
   return {
     held = CachedHeldDoubloons,
     treasury = CachedTreasury,
