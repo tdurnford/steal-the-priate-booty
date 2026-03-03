@@ -1,3 +1,69 @@
+## 2026-03-02 — EVENT-003: Loot Surge World Event
+
+### What was done
+- Modified `src/server/Services/EventService.lua` — Extended world event manager with loot surge
+  event type. Added LootSurgeZones folder support (workspace.LootSurgeZones Parts define surge
+  zones). Random event type selection (50/50 shipwreck vs loot surge). Loot surge triggers
+  ContainerService:SetLootSurge() with zone Part, spawn rate multiplier, and yield multiplier.
+  Event ends after 45s via endActiveEvent() which calls ContainerService:ClearLootSurge().
+  GetActiveEvent RPC includes zoneSize for late-join zone highlight rendering. Added
+  GetLootSurgeZonePart() public API for server-side zone queries.
+- Modified `src/server/Services/ContainerService.lua` — Added loot surge support: SetLootSurge()
+  and ClearLootSurge() public methods, isPositionInSurgeZone() AABB check,
+  getAvailableSurgeSpawnPoints() for zone-aware spawning, trySpawnInSurgeZone() preferring
+  in-zone spawn points. Spawn timer uses LootSurgeSpawnRateMultiplier (3x during surge).
+  BreakContainer yield calculation applies LootSurgeYieldMultiplier (2x) for containers inside
+  the surge zone.
+- Modified `src/client/Controllers/EventController.lua` — Added loot_surge to BANNER_CONFIG
+  (green-themed "LOOT SURGE!" banner with subtitle). Added zone highlight system:
+  createSurgeHighlight() creates a glowing neon cylinder boundary, vertical beacon column
+  (200 studs tall), particle emitter, PointLight, and BillboardGui "LOOT SURGE" label.
+  clearSurgeHighlight() removes on event end. Late-join sync reconstructs zoneSize from
+  GetActiveEvent RPC for highlight rendering.
+- Modified `src/shared/GameConfig.lua` — Added bannerDuration (6s) to LootSurgeEvent config.
+
+### Acceptance criteria met
+- Triggers every 5-8 minutes if no other major event is active ✓
+- Zone is highlighted visually for all players (neon boundary, beacon, particles, label) ✓
+- 3x spawn rate and 2x yield in the zone ✓
+- Announced via banner and audio to all players ✓
+  (Minimap marker DEFERRED — UI-005 minimap not yet implemented;
+  EventController exposes position API for future integration)
+- Lasts 45 seconds then reverts ✓
+- Cannot overlap with Shipwreck event ✓
+
+### Design decisions
+- **Extends EventService rather than new service**: The one-at-a-time event gate, timer loop,
+  and client signal pattern were already built for EVENT-002. Adding a second event type to the
+  same service keeps the exclusion logic centralized and avoids timer coordination issues.
+- **ContainerService owns spawn/yield multipliers**: Rather than having EventService directly
+  manipulate container spawning, the surge state is injected via SetLootSurge/ClearLootSurge.
+  This keeps container logic self-contained and testable.
+- **AABB zone detection**: Surge zones are defined as Parts in workspace.LootSurgeZones. The
+  AABB check (PointToObjectSpace) matches the pattern used by DangerZoneService, TidalSurgeService.
+- **Preferred in-zone spawning**: During a surge, the spawn timer preferentially picks spawn
+  points inside the zone (getAvailableSurgeSpawnPoints). If none are available (all occupied),
+  it falls back to regular spawning. This ensures the zone fills with containers quickly.
+- **Zone size sent to clients**: The zone Part's Size is serialized as {X, Y, Z} in the
+  EventStarted signal (4th arg) and GetActiveEvent RPC so clients can render the highlight
+  boundary at the correct scale.
+- **Green theme for surge**: Distinct from the gold shipwreck theme. The green color
+  communicates "bonus/opportunity" rather than "danger".
+- **Vertical beacon**: A 200-stud tall neon cylinder is visible from anywhere on the map,
+  guiding players to the surge zone.
+
+### Notes for next developer
+- LootSurgeZones folder: Place Parts in workspace.LootSurgeZones to define where loot surges
+  can occur. Each Part defines a zone boundary. If the folder is empty, loot surge events are
+  skipped and only shipwreck events trigger.
+- The zone highlight is client-side only (created by EventController). It's cleaned up
+  automatically when the event ends.
+- EventController exposes GetActiveEventPosition() for minimap integration (UI-005).
+- Next priorities: HAZARD-003 (quicksand), HAZARD-004 (rogue wave), UI-005 (minimap),
+  COSMETIC-001/002/003 (cosmetic system), UI-006 (event banner queuing)
+
+---
+
 ## 2026-03-02 — EVENT-002: Shipwreck World Event
 
 ### What was done

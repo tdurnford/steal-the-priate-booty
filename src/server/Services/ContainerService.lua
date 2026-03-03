@@ -152,6 +152,11 @@ local OccupiedSpawnPoints: { [Part]: boolean } = {}
 local spawnTimer = 0
 local BASE_SPAWN_INTERVAL = 8 -- seconds between spawn attempts (base rate)
 
+-- Loot Surge event state (set by EventService via SetLootSurge/ClearLootSurge)
+local LootSurgeZonePart: BasePart? = nil -- the zone Part defining the surge area
+local LootSurgeSpawnRateMultiplier = 1 -- spawn rate multiplier (3x during surge)
+local LootSurgeYieldMultiplier = 1 -- yield multiplier (2x during surge)
+
 -- Cursed chest state for current night
 local cursedChestsSpawnedThisNight = 0
 local cursedChestTargetThisNight = 0
@@ -376,6 +381,59 @@ local function trySpawnRegularContainer()
 end
 
 --[[
+  Checks whether a position is inside the active loot surge zone Part's AABB.
+  @param position The world position to check
+  @return true if inside the surge zone
+]]
+local function isPositionInSurgeZone(position: Vector3): boolean
+  if not LootSurgeZonePart then
+    return false
+  end
+  local cf = LootSurgeZonePart.CFrame
+  local halfSize = LootSurgeZonePart.Size / 2
+  local localPos = cf:PointToObjectSpace(position)
+  return math.abs(localPos.X) <= halfSize.X
+    and math.abs(localPos.Y) <= halfSize.Y
+    and math.abs(localPos.Z) <= halfSize.Z
+end
+
+--[[
+  Returns all unoccupied spawn points that are inside the active loot surge zone.
+  Falls back to all available spawn points if none are in the zone.
+  @return Array of available spawn point Parts
+]]
+local function getAvailableSurgeSpawnPoints(): { Part }
+  local inZone = {}
+  for _, point in getSpawnPoints() do
+    if not OccupiedSpawnPoints[point] and isPositionInSurgeZone(point.Position) then
+      table.insert(inZone, point)
+    end
+  end
+  return inZone
+end
+
+--[[
+  Attempts to spawn a container inside the active loot surge zone.
+  Falls back to a regular spawn if no surge zone points are available.
+]]
+local function trySpawnInSurgeZone()
+  if ActiveContainerCount >= GameConfig.ContainerSystem.maxActiveContainers then
+    return
+  end
+
+  -- Try to spawn inside the surge zone first
+  local surgePoints = getAvailableSurgeSpawnPoints()
+  if #surgePoints > 0 then
+    local point = surgePoints[math.random(1, #surgePoints)]
+    local containerDef = pickRandomContainerType()
+    spawnContainer(point, containerDef)
+  else
+    -- Fallback: no points available in the zone, spawn normally
+    trySpawnRegularContainer()
+  end
+end
+
+--[[
   Spawns Cursed Chests at danger zone spawn points for the current night.
   Called once when night begins.
 ]]
@@ -514,8 +572,14 @@ function ContainerService:BreakContainer(containerId: string, attackingPlayer: P
   local isNight = DayNightService and DayNightService:IsNight() or false
   if isNight then
     yield = yield * GameConfig.ContainerSystem.nightYieldMultiplier
-    yield = math.floor(yield)
   end
+
+  -- Apply loot surge yield multiplier if container is in the surge zone
+  if LootSurgeYieldMultiplier > 1 and isPositionInSurgeZone(entry.position) then
+    yield = yield * LootSurgeYieldMultiplier
+  end
+
+  yield = math.floor(yield)
 
   -- Scatter doubloons (even traps scatter loot first)
   if DoubloonService and yield > 0 then
@@ -622,6 +686,42 @@ function ContainerService:GetActiveContainerCount(): number
 end
 
 --[[
+  Activates a loot surge in the given zone Part. Containers in the zone
+  spawn at the given rate multiplier and yield the given yield multiplier.
+  Called by EventService when a Loot Surge event starts.
+  @param zonePart The Part defining the surge zone boundary
+  @param spawnRateMultiplier number (e.g. 3 for 3x)
+  @param yieldMultiplier number (e.g. 2 for 2x)
+]]
+function ContainerService:SetLootSurge(
+  zonePart: BasePart,
+  spawnRateMultiplier: number,
+  yieldMultiplier: number
+)
+  LootSurgeZonePart = zonePart
+  LootSurgeSpawnRateMultiplier = spawnRateMultiplier
+  LootSurgeYieldMultiplier = yieldMultiplier
+  spawnTimer = 0 -- reset timer so the first surge spawn happens quickly
+  print(
+    string.format(
+      "[ContainerService] Loot surge active — %dx spawn rate, %dx yield",
+      spawnRateMultiplier,
+      yieldMultiplier
+    )
+  )
+end
+
+--[[
+  Clears the active loot surge. Called by EventService when a Loot Surge event ends.
+]]
+function ContainerService:ClearLootSurge()
+  LootSurgeZonePart = nil
+  LootSurgeSpawnRateMultiplier = 1
+  LootSurgeYieldMultiplier = 1
+  print("[ContainerService] Loot surge cleared")
+end
+
+--[[
   Spawns a container at a specific position (for events, testing, etc.).
   @param containerTypeId The container type ID from GameConfig
   @param position World position
@@ -700,16 +800,24 @@ function ContainerService:KnitStart()
   RunService.Heartbeat:Connect(function(dt: number)
     spawnTimer = spawnTimer + dt
 
-    -- Calculate effective spawn interval (faster at night)
+    -- Calculate effective spawn interval (faster at night, faster during loot surge)
     local isNight = DayNightService:IsNight()
     local interval = BASE_SPAWN_INTERVAL
     if isNight then
       interval = interval / GameConfig.ContainerSystem.nightSpawnRateMultiplier
     end
+    if LootSurgeSpawnRateMultiplier > 1 then
+      interval = interval / LootSurgeSpawnRateMultiplier
+    end
 
     if spawnTimer >= interval then
       spawnTimer = spawnTimer - interval
-      trySpawnRegularContainer()
+      -- During a loot surge, prefer spawning in the surge zone
+      if LootSurgeZonePart then
+        trySpawnInSurgeZone()
+      else
+        trySpawnRegularContainer()
+      end
     end
 
     -- Track night transitions for runtime (backup to signal)

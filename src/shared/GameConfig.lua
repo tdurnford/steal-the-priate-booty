@@ -700,6 +700,7 @@ GameConfig.LootSurgeEvent = {
   spawnRateMultiplier = 3,
   yieldMultiplier = 2,
   duration = 45, -- seconds
+  bannerDuration = 6, -- seconds the announcement banner shows
 }
 
 --------------------------------------------------------------------------------

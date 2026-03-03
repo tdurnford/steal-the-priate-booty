@@ -2,13 +2,17 @@
   EventService.lua
   Server-authoritative world event manager.
 
-  Currently implements:
+  Implements:
     - Shipwreck event (EVENT-002): spawns a wrecked ship model at a random
       location containing 3-5 high-value containers (Reinforced Trunks and
       Captain's Vaults). Announced to all players. Despawns after 60 seconds.
+    - Loot Surge event (EVENT-003): highlights a zone on the map where
+      containers spawn at 3x rate and yield 2x doubloons. Lasts 45 seconds.
+      Announced to all players with zone position.
 
   Timer runs on Heartbeat, randomized interval between events.
-  Only one major event active at a time.
+  Only one major event active at a time. The timer alternates between
+  event types randomly.
 
   Depends on: ContainerService, DayNightService.
 ]]
@@ -48,6 +52,7 @@ local ActiveEvent: {
   position: Vector3,
   containerIds: { string },
   model: Model?,
+  zonePart: BasePart?, -- for loot surge: the zone Part
   startTime: number,
   duration: number,
 }? =
@@ -57,18 +62,25 @@ local ActiveEvent: {
 local TimerAccumulator = 0
 local NextEventInterval = 0 -- seconds until next event attempt
 local EventsFolder: Folder? = nil -- workspace.EventSpawnPoints
+local LootSurgeZonesFolder: Folder? = nil -- workspace.LootSurgeZones
 
 --------------------------------------------------------------------------------
 -- HELPERS
 --------------------------------------------------------------------------------
 
 --[[
-  Picks a random interval for the next shipwreck event.
+  Picks a random interval for the next event.
+  Uses the shorter of the two event intervals for more dynamic timing.
   @return number Seconds until next event
 ]]
 local function rollNextInterval(): number
-  local config = GameConfig.ShipwreckEvent
-  return math.random(config.intervalMin, config.intervalMax)
+  -- Use the shorter interval range (shipwreck 3-5min) so events feel frequent.
+  -- The actual event type is chosen randomly at trigger time.
+  local shipwreckConfig = GameConfig.ShipwreckEvent
+  local surgeConfig = GameConfig.LootSurgeEvent
+  local minInterval = math.min(shipwreckConfig.intervalMin, surgeConfig.intervalMin)
+  local maxInterval = math.min(shipwreckConfig.intervalMax, surgeConfig.intervalMax)
+  return math.random(minInterval, maxInterval)
 end
 
 --[[
@@ -117,6 +129,25 @@ local function getEventSpawnPositions(): { Vector3 }
   end
 
   return positions
+end
+
+--[[
+  Returns all loot surge zone Parts from workspace.LootSurgeZones.
+  @return { BasePart }
+]]
+local function getLootSurgeZones(): { BasePart }
+  local zones = {}
+  if not LootSurgeZonesFolder then
+    return zones
+  end
+
+  for _, child in LootSurgeZonesFolder:GetChildren() do
+    if child:IsA("BasePart") then
+      table.insert(zones, child)
+    end
+  end
+
+  return zones
 end
 
 --[[
@@ -279,6 +310,7 @@ local function triggerShipwreckEvent()
     position = spawnPos,
     containerIds = containerIds,
     model = wreckModel,
+    zonePart = nil,
     startTime = os.clock(),
     duration = config.duration,
   }
@@ -299,26 +331,83 @@ local function triggerShipwreckEvent()
 end
 
 --[[
-  Ends the active shipwreck event. Removes unbroken containers and
-  the wreck model.
+  Triggers a loot surge world event in a random zone.
+  Does nothing if an event is already active or no surge zones exist.
 ]]
-local function endShipwreckEvent()
+local function triggerLootSurgeEvent()
+  if ActiveEvent then
+    return -- only one event at a time
+  end
+
+  local zones = getLootSurgeZones()
+  if #zones == 0 then
+    warn("[EventService] No LootSurgeZones found in workspace; skipping loot surge event")
+    return
+  end
+
+  -- Pick a random zone
+  local zonePart = zones[math.random(1, #zones)]
+  local config = GameConfig.LootSurgeEvent
+  local zoneCenter = zonePart.Position
+
+  -- Activate loot surge on ContainerService
+  ContainerService:SetLootSurge(zonePart, config.spawnRateMultiplier, config.yieldMultiplier)
+
+  -- Set up active event
+  ActiveEvent = {
+    eventType = "loot_surge",
+    position = zoneCenter,
+    containerIds = {},
+    model = nil,
+    zonePart = zonePart,
+    startTime = os.clock(),
+    duration = config.duration,
+  }
+
+  -- Announce to all clients (send zone center position + zone size for highlighting)
+  local zoneSize = zonePart.Size
+  EventService.Client.EventStarted:FireAll("loot_surge", zoneCenter, config.duration, zoneSize)
+  EventService.EventStarted:Fire("loot_surge", zoneCenter, config.duration, zoneSize)
+
+  print(
+    string.format(
+      "[EventService] Loot Surge event started at zone '%s' (%.0f, %.0f, %.0f) — %dx spawn, %dx yield for %ds",
+      zonePart.Name,
+      zoneCenter.X,
+      zoneCenter.Y,
+      zoneCenter.Z,
+      config.spawnRateMultiplier,
+      config.yieldMultiplier,
+      config.duration
+    )
+  )
+end
+
+--[[
+  Ends the active event (shipwreck or loot surge).
+]]
+local function endActiveEvent()
   if not ActiveEvent then
     return
   end
 
   local eventType = ActiveEvent.eventType
 
-  -- Remove any unbroken containers
-  for _, containerId in ActiveEvent.containerIds do
-    if ContainerService:GetContainer(containerId) then
-      ContainerService:RemoveContainer(containerId, true)
+  if eventType == "shipwreck" then
+    -- Remove any unbroken containers
+    for _, containerId in ActiveEvent.containerIds do
+      if ContainerService:GetContainer(containerId) then
+        ContainerService:RemoveContainer(containerId, true)
+      end
     end
-  end
 
-  -- Remove wreck model
-  if ActiveEvent.model and ActiveEvent.model.Parent then
-    ActiveEvent.model:Destroy()
+    -- Remove wreck model
+    if ActiveEvent.model and ActiveEvent.model.Parent then
+      ActiveEvent.model:Destroy()
+    end
+  elseif eventType == "loot_surge" then
+    -- Clear loot surge multipliers on ContainerService
+    ContainerService:ClearLootSurge()
   end
 
   ActiveEvent = nil
@@ -327,7 +416,32 @@ local function endShipwreckEvent()
   EventService.Client.EventEnded:FireAll(eventType)
   EventService.EventEnded:Fire(eventType)
 
-  print("[EventService] Shipwreck event ended")
+  print(string.format("[EventService] %s event ended", eventType))
+end
+
+--[[
+  Picks a random event type to trigger. Equal chance of shipwreck or loot surge,
+  but falls back to the other type if one can't be triggered (e.g. no zones).
+]]
+local function triggerRandomEvent()
+  local hasShipwreckPoints = #getEventSpawnPositions() > 0
+  local hasSurgeZones = #getLootSurgeZones() > 0
+
+  if hasShipwreckPoints and hasSurgeZones then
+    -- Both available: pick randomly (50/50)
+    if math.random() < 0.5 then
+      triggerShipwreckEvent()
+    else
+      triggerLootSurgeEvent()
+    end
+  elseif hasShipwreckPoints then
+    triggerShipwreckEvent()
+  elseif hasSurgeZones then
+    triggerLootSurgeEvent()
+  else
+    -- Neither available; just shipwreck with fallback position
+    triggerShipwreckEvent()
+  end
 end
 
 --------------------------------------------------------------------------------
@@ -337,12 +451,13 @@ end
 --[[
   Returns info about the currently active event, or nil if none.
   Used for late-join sync.
-  @return { eventType: string, position: Vector3, remainingTime: number }?
+  @return { eventType: string, position: { number }, remainingTime: number, zoneSize: { number }? }?
 ]]
 function EventService.Client:GetActiveEvent(_player: Player): {
   eventType: string,
   position: { number },
   remainingTime: number,
+  zoneSize: { number }?,
 }?
   if not ActiveEvent then
     return nil
@@ -352,11 +467,19 @@ function EventService.Client:GetActiveEvent(_player: Player): {
   local remaining = math.max(0, ActiveEvent.duration - elapsed)
 
   -- Serialize Vector3 for Knit RPC
-  return {
+  local result: any = {
     eventType = ActiveEvent.eventType,
     position = { ActiveEvent.position.X, ActiveEvent.position.Y, ActiveEvent.position.Z },
     remainingTime = remaining,
   }
+
+  -- Include zone size for loot surge so clients can render the highlight
+  if ActiveEvent.eventType == "loot_surge" and ActiveEvent.zonePart then
+    local size = ActiveEvent.zonePart.Size
+    result.zoneSize = { size.X, size.Y, size.Z }
+  end
+
+  return result
 end
 
 --------------------------------------------------------------------------------
@@ -382,6 +505,18 @@ function EventService:GetActiveEventType(): string?
   return nil
 end
 
+--[[
+  Returns the active loot surge zone Part, or nil.
+  Used by other server services to check if a position is in the surge zone.
+  @return BasePart?
+]]
+function EventService:GetLootSurgeZonePart(): BasePart?
+  if ActiveEvent and ActiveEvent.eventType == "loot_surge" then
+    return ActiveEvent.zonePart
+  end
+  return nil
+end
+
 --------------------------------------------------------------------------------
 -- KNIT LIFECYCLE
 --------------------------------------------------------------------------------
@@ -398,6 +533,17 @@ function EventService:KnitInit()
     )
   end
 
+  -- Look for LootSurgeZones folder in workspace
+  LootSurgeZonesFolder = workspace:FindFirstChild("LootSurgeZones")
+  if not LootSurgeZonesFolder then
+    LootSurgeZonesFolder = Instance.new("Folder")
+    LootSurgeZonesFolder.Name = "LootSurgeZones"
+    LootSurgeZonesFolder.Parent = workspace
+    warn(
+      "[EventService] Created empty LootSurgeZones folder — add Parts to define loot surge zones"
+    )
+  end
+
   print("[EventService] Initialized")
 end
 
@@ -410,7 +556,7 @@ function EventService:KnitStart()
 
   -- Listen for containers being broken so we can track event container removal
   ContainerService.ContainerBroken:Connect(function(entry, _player)
-    if ActiveEvent then
+    if ActiveEvent and ActiveEvent.containerIds then
       -- Remove broken container from our tracking list
       local idx = table.find(ActiveEvent.containerIds, entry.id)
       if idx then
@@ -425,7 +571,7 @@ function EventService:KnitStart()
     if ActiveEvent then
       local elapsed = os.clock() - ActiveEvent.startTime
       if elapsed >= ActiveEvent.duration then
-        endShipwreckEvent()
+        endActiveEvent()
         -- Roll next interval after event ends
         NextEventInterval = rollNextInterval()
         TimerAccumulator = 0
@@ -437,15 +583,16 @@ function EventService:KnitStart()
     TimerAccumulator = TimerAccumulator + dt
     if TimerAccumulator >= NextEventInterval then
       TimerAccumulator = 0
-      triggerShipwreckEvent()
+      triggerRandomEvent()
     end
   end)
 
   print(
     string.format(
-      "[EventService] Started — next event in %.0fs, %d spawn points",
+      "[EventService] Started — next event in %.0fs, %d spawn points, %d surge zones",
       NextEventInterval,
-      #getEventSpawnPositions()
+      #getEventSpawnPositions(),
+      #getLootSurgeZones()
     )
   )
 end
