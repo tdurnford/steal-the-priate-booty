@@ -3328,3 +3328,73 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
   lunge — this is intentional and correct.
 - Next priorities: NPC-008 (Phantom Captain), NPC-005 (dormant mode),
   NPC-002 (skeleton loot pickup), NPC-009 (night NPC behavior modifiers)
+
+---
+
+## 2026-03-02 — NPC-005: NPC Dormant Mode & Performance Budget
+
+### What was done
+- Extended `src/server/Services/NPCService.lua` with three performance optimizations:
+  dormant mode, per-frame path calculation budget, and staggered NPC AI updates.
+
+### Dormant mode
+1. **Distance check**: Each Heartbeat, a cached list of player HumanoidRootParts is
+   built once (`rebuildPlayerHRPCache`). Each NPC's squared distance to the nearest
+   player is computed via `nearestPlayerDistSq` (avoids sqrt per NPC).
+2. **Enter dormant**: If an NPC is >150 studs from all players, `enterDormant()` is
+   called: SimplePath is stopped, WalkSpeed set to 0, `isDormant = true`.
+3. **Exit dormant**: When a player comes within 150 studs, `exitDormant()` restores
+   base WalkSpeed (effective speed recalculated by `updateNPCAI` on next tick) and
+   resets patrol timing so the NPC resumes smoothly.
+4. **Dormant NPCs skip AI**: The Heartbeat loop `continue`s past dormant NPCs —
+   no state machine, no aggro checks, no pathfinding.
+5. **Wake on damage**: `DamageNPC()` calls `exitDormant()` before processing damage,
+   so a player hitting an NPC at the boundary edge wakes it immediately.
+
+### Path calculation budget
+1. **`budgetedPathRun(entry, target)`**: Wraps all `SimplePath:Run()` calls. If the
+   per-frame budget (`maxPathRecalcsPerFrame = 3`) is not exhausted, the path starts
+   immediately and the counter increments. Otherwise, the request is queued.
+2. **`PathQueue`**: Array of `{ entry, target }` for deferred path requests.
+3. **`drainPathQueue()`**: Called at the start of each Heartbeat, processes queued
+   requests up to the frame budget. Dead/dormant entries are silently dropped.
+4. **All 4 SimplePath:Run() call sites** in `updateNPCAI` (patrol waypoint advance,
+   loot pickup path, leash-return path, chase recalc) now go through `budgetedPathRun`.
+
+### Staggered NPC updates
+1. **2-frame round-robin**: Each NPC ticks based on `entry.id % NPC_UPDATE_STAGGER`
+   vs `FrameCounter % NPC_UPDATE_STAGGER`. Non-urgent NPCs (idle, patrol, loot_pickup)
+   only update every 2nd frame.
+2. **Urgent states bypass stagger**: NPCs in CHASE, ATTACK_SLASH, ATTACK_LUNGE, or
+   FLINCH always update every frame for responsive combat.
+3. **FrameCounter**: Incremented each Heartbeat, used for stagger scheduling.
+
+### NPCEntry type changes
+- Added `isDormant: boolean` field (defaults to `false` in both `spawnSkeleton` and
+  `spawnGhostPirate`).
+
+### GameConfig values used (already existed)
+- `NPCBehavior.dormantDistance = 150` studs
+- `NPCBehavior.maxPathRecalcsPerFrame = 3`
+
+### Performance characteristics
+- **Player HRP cache**: O(P) rebuild per frame (P = player count), O(P) per NPC
+  distance check. Total dormant check: O(N×P) per frame.
+- **Squared distance**: No sqrt calls — cheaper comparison for dormant threshold.
+- **Path budget**: Guarantees ≤3 PathfindingService computations per frame regardless
+  of NPC count. Queued paths resolve within 1-2 frames under normal load.
+- **Stagger**: Halves per-frame AI tick count for non-combat NPCs. Patrol and loot
+  pickup behavior is time-based (not frame-based), so 2-frame stagger is invisible
+  to players.
+
+### Notes for next developer
+- The stagger constant `NPC_UPDATE_STAGGER = 2` can be increased (e.g., 3) if NPC
+  count grows significantly. Higher values save more CPU but add latency to patrol
+  waypoint transitions.
+- Dormant NPCs still exist in `ActiveNPCs` and their models are replicated to clients.
+  A future optimization could hide dormant NPC models on clients far from them.
+- The path queue has no priority system — all queued paths are first-come-first-served.
+  Chase paths are naturally prioritized because chase NPCs update every frame and
+  request paths more frequently.
+- Next priorities: NPC-008 (Phantom Captain), NPC-009 (night NPC modifiers),
+  LOOT-006 (player loot visibility)

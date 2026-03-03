@@ -16,6 +16,12 @@
     - SimplePath-based chase: 0.3s path recalculation, leash, stuck detection, Harbor boundary stop
     - Respawn management per zone
 
+  Dormant Mode & Performance Budget (NPC-005):
+    - NPCs 150+ studs from all players enter dormant mode (stop pathfinding, freeze)
+    - Resume normal behavior when any player comes within 150 studs
+    - Path calculation budget: max 3 SimplePath:Run() calls per frame
+    - NPC AI updates staggered across frames (2-frame round-robin by NPC ID)
+
   Spawn Manager (NPC-006):
     - Budget-driven spawning: 6-10 Cursed Skeletons during day
     - Night scaling: skeleton count ×1.5, Ghost Pirates 4-6
@@ -187,6 +193,9 @@ type NPCEntry = {
   -- Threat effects (bonus NPCs)
   forcedTarget: Player?, -- if set, this NPC always chases this player
   isBonusNPC: boolean, -- true if spawned by ThreatEffectsService (not from normal budget)
+
+  -- Dormant mode (NPC-005)
+  isDormant: boolean, -- true if NPC is frozen due to no players nearby
 }
 
 local ActiveNPCs: { [number]: NPCEntry } = {}
@@ -234,6 +243,138 @@ local AGENT_PARAMS = {
   AgentHeight = NPC_BEHAVIOR.agentHeight,
   AgentCanJump = NPC_BEHAVIOR.agentCanJump,
 }
+
+--------------------------------------------------------------------------------
+-- DORMANT MODE & PERFORMANCE BUDGET (NPC-005)
+--------------------------------------------------------------------------------
+
+-- Per-frame path recalculation budget (reset each Heartbeat)
+local PathRecalcsThisFrame = 0
+local MAX_PATH_RECALCS = NPC_BEHAVIOR.maxPathRecalcsPerFrame -- 3
+
+-- Dormant mode distance threshold
+local DORMANT_DISTANCE = NPC_BEHAVIOR.dormantDistance -- 150 studs
+local DORMANT_DISTANCE_SQ = DORMANT_DISTANCE * DORMANT_DISTANCE
+
+-- Frame counter for staggered NPC updates (2-frame round-robin)
+local FrameCounter = 0
+local NPC_UPDATE_STAGGER = 2 -- update each NPC every Nth frame
+
+-- Queued path requests that couldn't fit in this frame's budget.
+-- Entries: { entry: NPCEntry, target: Vector3 }
+-- Drained at start of next frame before normal AI ticks.
+local PathQueue: { { entry: NPCEntry, target: Vector3 } } = {}
+
+--[[
+  Attempts to call SimplePath:Run(target) within the per-frame budget.
+  If the budget is exhausted, queues the request for next frame.
+  Returns true if the path was started immediately, false if queued.
+]]
+local function budgetedPathRun(entry: NPCEntry, target: Vector3): boolean
+  if PathRecalcsThisFrame < MAX_PATH_RECALCS then
+    PathRecalcsThisFrame = PathRecalcsThisFrame + 1
+    entry.simplePath:Run(target)
+    return true
+  end
+  -- Queue for next frame
+  table.insert(PathQueue, { entry = entry, target = target })
+  return false
+end
+
+--[[
+  Drains the path queue at the start of each frame, up to the budget limit.
+  Stale entries (dead or dormant NPCs) are skipped.
+]]
+local function drainPathQueue()
+  local remaining = {}
+  for _, req in PathQueue do
+    if PathRecalcsThisFrame >= MAX_PATH_RECALCS then
+      -- Budget exhausted this frame, keep for next frame
+      table.insert(remaining, req)
+    elseif req.entry.alive and not req.entry.isDormant and req.entry.simplePath then
+      PathRecalcsThisFrame = PathRecalcsThisFrame + 1
+      req.entry.simplePath:Run(req.target)
+    end
+    -- Dead/dormant entries are silently dropped
+  end
+  PathQueue = remaining
+end
+
+--[[
+  Returns the cached list of player HumanoidRootParts for this frame.
+  Built once per Heartbeat for dormant distance checks.
+]]
+local cachedPlayerHRPs: { BasePart } = {}
+local function rebuildPlayerHRPCache()
+  table.clear(cachedPlayerHRPs)
+  for _, player in Players:GetPlayers() do
+    local char = player.Character
+    if char then
+      local hrp = char:FindFirstChild("HumanoidRootPart")
+      if hrp then
+        table.insert(cachedPlayerHRPs, hrp)
+      end
+    end
+  end
+end
+
+--[[
+  Returns the squared distance from a position to the nearest player HRP.
+  Uses cachedPlayerHRPs (must call rebuildPlayerHRPCache first).
+  Returns math.huge if no players are online.
+]]
+local function nearestPlayerDistSq(pos: Vector3): number
+  local minDistSq = math.huge
+  for _, hrp in cachedPlayerHRPs do
+    local dx = pos.X - hrp.Position.X
+    local dy = pos.Y - hrp.Position.Y
+    local dz = pos.Z - hrp.Position.Z
+    local distSq = dx * dx + dy * dy + dz * dz
+    if distSq < minDistSq then
+      minDistSq = distSq
+    end
+  end
+  return minDistSq
+end
+
+--[[
+  Puts an NPC into dormant mode: stops pathfinding and freezes the Humanoid.
+]]
+local function enterDormant(entry: NPCEntry)
+  if entry.isDormant then
+    return
+  end
+  entry.isDormant = true
+  -- Stop any active pathfinding
+  if entry.simplePath and entry.simplePath:IsRunning() then
+    entry.simplePath:Stop()
+  end
+  -- Freeze the humanoid
+  if entry.humanoid and entry.humanoid.Parent then
+    entry.humanoid.WalkSpeed = 0
+  end
+end
+
+--[[
+  Wakes an NPC from dormant mode: restores movement speed and resumes patrol.
+  Walk speed is set to the NPC config base; updateNPCAI will recalculate it
+  with night/threat bonuses on the very next tick.
+]]
+local function exitDormant(entry: NPCEntry)
+  if not entry.isDormant then
+    return
+  end
+  entry.isDormant = false
+  -- Set base walk speed; updateNPCAI corrects to effective speed next tick
+  if entry.humanoid and entry.humanoid.Parent then
+    local config = getNPCConfig(entry.npcType)
+    entry.humanoid.WalkSpeed = config.speedMultiplier * PLAYER_BASE_SPEED
+  end
+  -- Reset patrol timing so the NPC doesn't immediately skip waypoints
+  if entry.aiState == AI_STATE.PATROL or entry.aiState == AI_STATE.IDLE then
+    entry.lastPatrolMoveTime = os.clock()
+  end
+end
 
 --[[
   Picks a random skeleton budget target for the current phase.
@@ -1083,6 +1224,8 @@ local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?)
 
     forcedTarget = nil,
     isBonusNPC = false,
+
+    isDormant = false,
   }
 
   -- Create SimplePath instance for pathfinding (NPC-003)
@@ -1205,6 +1348,8 @@ local function spawnGhostPirate(position: Vector3, zone: string, spawnPoint: Par
 
     forcedTarget = nil,
     isBonusNPC = false,
+
+    isDormant = false,
   }
 
   -- Create SimplePath instance for pathfinding
@@ -1696,7 +1841,7 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
           entry.lootTargetPosition = pickupPos
           setState(entry, AI_STATE.LOOT_PICKUP)
           if entry.simplePath then
-            entry.simplePath:Run(pickupPos)
+            budgetedPathRun(entry, pickupPos)
           elseif entry.humanoid then
             entry.humanoid:MoveTo(pickupPos)
           end
@@ -1717,7 +1862,7 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
         -- Advance to next patrol waypoint (loop)
         entry.patrolWaypointIndex = (entry.patrolWaypointIndex % #entry.patrolWaypoints) + 1
         local nextWaypoint = entry.patrolWaypoints[entry.patrolWaypointIndex]
-        entry.simplePath:Run(nextWaypoint)
+        budgetedPathRun(entry, nextWaypoint)
       end
       -- SimplePath handles movement via MoveToFinished — don't call Humanoid:MoveTo()
 
@@ -1843,7 +1988,7 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
         setState(entry, AI_STATE.PATROL)
         -- Use SimplePath to navigate back toward spawn
         if entry.simplePath then
-          entry.simplePath:Run(entry.spawnPosition)
+          budgetedPathRun(entry, entry.spawnPosition)
         elseif entry.humanoid then
           entry.humanoid:MoveTo(entry.spawnPosition)
         end
@@ -1928,12 +2073,12 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
       entry.chaseStuckTime = now
     end
 
-    -- Recalculate path on interval (0.3s)
+    -- Recalculate path on interval (0.3s), respecting per-frame budget (NPC-005)
     if
       entry.simplePath and now - entry.lastChaseRecalcTime >= NPC_BEHAVIOR.chasePathRecalcInterval
     then
       entry.lastChaseRecalcTime = now
-      entry.simplePath:Run(targetPos)
+      budgetedPathRun(entry, targetPos)
     end
 
     -- Re-evaluate: check if another player is closer (skip for forced-target NPCs)
@@ -2041,6 +2186,11 @@ function NPCService:DamageNPC(
   local entry = ActiveNPCs[npcId]
   if not entry or not entry.alive then
     return false, nil
+  end
+
+  -- Wake from dormant on damage (NPC-005)
+  if entry.isDormant then
+    exitDormant(entry)
   end
 
   entry.hp = math.max(0, entry.hp - damage)
@@ -2498,13 +2648,52 @@ function NPCService:KnitStart()
   -- Listen for phase transitions to adjust budgets
   DayNightService.PhaseChanged:Connect(onPhaseChanged)
 
-  -- Main AI update loop
+  -- Main AI update loop with dormant mode, staggered updates, path budget (NPC-005)
   RunService.Heartbeat:Connect(function(dt: number)
-    -- Update all active NPCs
+    -- Reset per-frame path budget and advance frame counter
+    PathRecalcsThisFrame = 0
+    FrameCounter = FrameCounter + 1
+
+    -- Build player HRP cache once per frame for dormant distance checks
+    rebuildPlayerHRPCache()
+
+    -- Drain any queued path requests from previous frame(s)
+    drainPathQueue()
+
+    -- Update all active NPCs (staggered: each NPC ticks every NPC_UPDATE_STAGGER frames)
     for _, entry in ActiveNPCs do
-      if entry.alive then
-        updateNPCAI(entry, dt)
+      if not entry.alive then
+        continue
       end
+
+      -- Dormant check: if NPC is far from all players, enter/stay dormant
+      local distSq = nearestPlayerDistSq(entry.position)
+      if distSq > DORMANT_DISTANCE_SQ then
+        if not entry.isDormant then
+          enterDormant(entry)
+        end
+        -- Skip AI update for dormant NPCs
+        continue
+      else
+        -- Player is nearby: wake from dormant if needed
+        if entry.isDormant then
+          exitDormant(entry)
+        end
+      end
+
+      -- Staggered update: only tick this NPC if it's this frame's turn
+      -- NPCs in CHASE or ATTACK states always update every frame for responsiveness
+      local isUrgent = entry.aiState == AI_STATE.CHASE
+        or entry.aiState == AI_STATE.ATTACK_SLASH
+        or entry.aiState == AI_STATE.ATTACK_LUNGE
+        or entry.aiState == AI_STATE.FLINCH
+      if
+        not isUrgent and (entry.id % NPC_UPDATE_STAGGER) ~= (FrameCounter % NPC_UPDATE_STAGGER)
+      then
+        continue
+      end
+
+      updateNPCAI(entry, dt)
     end
 
     -- Process respawn queue (budget-aware)
