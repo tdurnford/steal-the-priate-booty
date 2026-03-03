@@ -64,6 +64,7 @@ local DoubloonService = nil
 local ThreatService = nil
 local DayNightService = nil
 local HarborService = nil
+local ThreatEffectsService = nil
 
 --------------------------------------------------------------------------------
 -- NPC TYPES & CONSTANTS
@@ -124,6 +125,10 @@ type NPCEntry = {
   -- Respawn
   respawnTime: number?,
   alive: boolean,
+
+  -- Threat effects (bonus NPCs)
+  forcedTarget: Player?, -- if set, this NPC always chases this player
+  isBonusNPC: boolean, -- true if spawned by ThreatEffectsService (not from normal budget)
 }
 
 local ActiveNPCs: { [number]: NPCEntry } = {}
@@ -333,11 +338,35 @@ end
 --[[
   Returns the closest valid player target within aggro range of an NPC.
   Excludes: dead players, ragdolling players, players in Harbor, no character.
+  Uses per-player aggro range overrides from ThreatEffectsService (Hunted = 60 studs).
   @param npcEntry The NPC
-  @param aggroRange The aggro range in studs
+  @param baseAggroRange The base aggro range in studs
   @return The closest valid player or nil, and the distance
 ]]
-local function findClosestTarget(npcEntry: NPCEntry, aggroRange: number): (Player?, number)
+local function findClosestTarget(npcEntry: NPCEntry, baseAggroRange: number): (Player?, number)
+  -- If this NPC has a forced target, only consider that player
+  if npcEntry.forcedTarget then
+    local target = npcEntry.forcedTarget
+    if not target.Parent then
+      npcEntry.forcedTarget = nil
+      return nil, math.huge
+    end
+    if SessionStateService and SessionStateService:IsInHarbor(target) then
+      return nil, math.huge
+    end
+    local hrp = getPlayerHRP(target)
+    if not hrp then
+      return nil, math.huge
+    end
+    local humanoid = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+    if not humanoid or humanoid.Health <= 0 then
+      return nil, math.huge
+    end
+    local dist = (hrp.Position - npcEntry.rootPart.Position).Magnitude
+    -- Forced targets use extended range (no aggro limit, only leash)
+    return target, dist
+  end
+
   local npcPos = npcEntry.rootPart.Position
   local closest: Player? = nil
   local closestDist = math.huge
@@ -359,8 +388,17 @@ local function findClosestTarget(npcEntry: NPCEntry, aggroRange: number): (Playe
       continue
     end
 
+    -- Per-player aggro range: Hunted+ players have extended aggro range
+    local playerAggroRange = baseAggroRange
+    if ThreatEffectsService then
+      local override = ThreatEffectsService:GetAggroRangeForPlayer(player)
+      if override and override > playerAggroRange then
+        playerAggroRange = override
+      end
+    end
+
     local dist = (hrp.Position - npcPos).Magnitude
-    if dist <= aggroRange and dist < closestDist then
+    if dist <= playerAggroRange and dist < closestDist then
       closest = player
       closestDist = dist
     end
@@ -390,12 +428,20 @@ local function getEffectiveAggroRange(): number
 end
 
 --[[
-  Gets the effective walk speed, accounting for night bonus.
+  Gets the effective walk speed, accounting for night bonus and threat effects.
+  @param npcPosition Optional NPC position for threat-based speed bonus lookup
 ]]
-local function getEffectiveSpeed(): number
+local function getEffectiveSpeed(npcPosition: Vector3?): number
   local speed = PLAYER_BASE_SPEED * SKELETON.speedMultiplier
   if DayNightService and DayNightService:IsNight() then
     speed = speed * (1 + NPC_BEHAVIOR.nightSpeedBonus)
+  end
+  -- Add threat-based speed bonus from nearby Uneasy+ players
+  if npcPosition and ThreatEffectsService then
+    local threatBonus = ThreatEffectsService:GetSpeedBonusNearPosition(npcPosition)
+    if threatBonus > 0 then
+      speed = speed * (1 + threatBonus)
+    end
   end
   return speed
 end
@@ -446,6 +492,9 @@ local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?)
 
     respawnTime = nil,
     alive = true,
+
+    forcedTarget = nil,
+    isBonusNPC = false,
   }
 
   ActiveNPCs[npcId] = entry
@@ -611,9 +660,9 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
     entry.position = entry.rootPart.Position
   end
 
-  -- Update humanoid speed for night bonus
+  -- Update humanoid speed for night bonus + threat effects
   if entry.humanoid and entry.humanoid.Parent then
-    entry.humanoid.WalkSpeed = getEffectiveSpeed()
+    entry.humanoid.WalkSpeed = getEffectiveSpeed(entry.position)
   end
 
   local now = os.clock()
@@ -642,6 +691,13 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
   end
 
   if entry.aiState == AI_STATE.PATROL then
+    -- Forced target NPCs always chase their target
+    if entry.forcedTarget and entry.forcedTarget.Parent then
+      entry.targetPlayer = entry.forcedTarget
+      setState(entry, AI_STATE.CHASE)
+      return
+    end
+
     -- Check for players in aggro range
     local target, targetDist = findClosestTarget(entry, aggroRange)
     if target then
@@ -679,6 +735,9 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
     local target = entry.targetPlayer
     if not target or not target.Parent then
       entry.targetPlayer = nil
+      if entry.forcedTarget == target then
+        entry.forcedTarget = nil
+      end
       setState(entry, AI_STATE.PATROL)
       return
     end
@@ -686,34 +745,39 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
     local targetHRP = getPlayerHRP(target)
     if not targetHRP then
       entry.targetPlayer = nil
+      if entry.forcedTarget == target then
+        entry.forcedTarget = nil
+      end
       setState(entry, AI_STATE.PATROL)
       return
     end
 
-    -- Check if target entered Harbor
+    -- Check if target entered Harbor (forced-target NPCs wait outside)
     if SessionStateService and SessionStateService:IsInHarbor(target) then
       entry.targetPlayer = nil
       setState(entry, AI_STATE.PATROL)
       return
     end
 
-    -- Check leash distance from spawn
-    local distFromSpawn = (entry.position - entry.spawnPosition).Magnitude
-    if distFromSpawn > NPC_BEHAVIOR.leashDistance then
-      entry.targetPlayer = nil
-      setState(entry, AI_STATE.PATROL)
-      -- Move back toward spawn
-      if entry.humanoid then
-        entry.humanoid:MoveTo(entry.spawnPosition)
+    -- Check leash distance from spawn (skip for forced-target bonus NPCs)
+    if not entry.forcedTarget then
+      local distFromSpawn = (entry.position - entry.spawnPosition).Magnitude
+      if distFromSpawn > NPC_BEHAVIOR.leashDistance then
+        entry.targetPlayer = nil
+        setState(entry, AI_STATE.PATROL)
+        -- Move back toward spawn
+        if entry.humanoid then
+          entry.humanoid:MoveTo(entry.spawnPosition)
+        end
+        return
       end
-      return
     end
 
     local targetPos = targetHRP.Position
     local distToTarget = (entry.position - targetPos).Magnitude
 
-    -- Check if target moved out of aggro range (with some hysteresis)
-    if distToTarget > aggroRange * 1.5 then
+    -- Check if target moved out of aggro range (skip for forced-target bonus NPCs)
+    if not entry.forcedTarget and distToTarget > aggroRange * 1.5 then
       entry.targetPlayer = nil
       setState(entry, AI_STATE.PATROL)
       return
@@ -762,10 +826,12 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
       entry.humanoid:MoveTo(targetPos)
     end
 
-    -- Re-evaluate: check if another player is closer
-    local closerTarget, closerDist = findClosestTarget(entry, aggroRange)
-    if closerTarget and closerTarget ~= target and closerDist < distToTarget * 0.6 then
-      entry.targetPlayer = closerTarget
+    -- Re-evaluate: check if another player is closer (skip for forced-target NPCs)
+    if not entry.forcedTarget then
+      local closerTarget, closerDist = findClosestTarget(entry, aggroRange)
+      if closerTarget and closerTarget ~= target and closerDist < distToTarget * 0.6 then
+        entry.targetPlayer = closerTarget
+      end
     end
     return
   end
@@ -940,13 +1006,15 @@ function NPCService:KillNPC(npcId: number, killedByPlayer: Player?)
     )
   )
 
-  -- Queue respawn
-  table.insert(RespawnQueue, {
-    spawnTime = os.clock() + SKELETON.respawnTime,
-    spawnPosition = entry.spawnPosition,
-    zone = entry.zone,
-    spawnPoint = entry.spawnPoint,
-  })
+  -- Queue respawn (skip for bonus NPCs — ThreatEffectsService handles their lifecycle)
+  if not entry.isBonusNPC then
+    table.insert(RespawnQueue, {
+      spawnTime = os.clock() + SKELETON.respawnTime,
+      spawnPosition = entry.spawnPosition,
+      zone = entry.zone,
+      spawnPoint = entry.spawnPoint,
+    })
+  end
 
   -- Remove the NPC model after a brief delay (so death VFX can play)
   task.delay(2, function()
@@ -1039,6 +1107,55 @@ function NPCService:SpawnAmbushNPCs(position: Vector3, count: number, zone: stri
   end
 end
 
+--[[
+  Spawns a bonus Cursed Skeleton that targets a specific player.
+  Used by ThreatEffectsService for Hunted tier effect.
+  Bonus NPCs do NOT count toward normal NPC budget and do NOT respawn normally.
+  @param position World position to spawn at
+  @param targetPlayer The player this NPC should target
+  @return NPCEntry or nil
+]]
+function NPCService:SpawnBonusSkeleton(position: Vector3, targetPlayer: Player): any
+  local entry = spawnSkeleton(position, "threat_bonus", nil)
+  if entry then
+    entry.forcedTarget = targetPlayer
+    entry.isBonusNPC = true
+    print(
+      string.format(
+        "[NPCService] Bonus skeleton #%d spawned targeting %s",
+        entry.id,
+        targetPlayer.Name
+      )
+    )
+  end
+  return entry
+end
+
+--[[
+  Despawns a bonus NPC by ID. Used by ThreatEffectsService when
+  a player's threat drops below Hunted tier.
+  @param npcId The NPC instance ID to despawn
+]]
+function NPCService:DespawnBonusNPC(npcId: number)
+  local entry = ActiveNPCs[npcId]
+  if not entry then
+    return
+  end
+
+  if entry.alive then
+    entry.alive = false
+    setState(entry, AI_STATE.DEAD)
+    NPCService.Client.NPCDied:FireAll(npcId, entry.npcType, entry.position)
+  end
+
+  -- Remove immediately (no respawn queue for bonus NPCs)
+  task.delay(1, function()
+    despawnNPC(npcId)
+  end)
+
+  print(string.format("[NPCService] Bonus NPC #%d despawned", npcId))
+end
+
 --------------------------------------------------------------------------------
 -- CLIENT-EXPOSED METHODS
 --------------------------------------------------------------------------------
@@ -1078,6 +1195,7 @@ function NPCService:KnitStart()
   ThreatService = Knit.GetService("ThreatService")
   DayNightService = Knit.GetService("DayNightService")
   HarborService = Knit.GetService("HarborService")
+  ThreatEffectsService = Knit.GetService("ThreatEffectsService")
 
   -- Spawn initial NPCs at spawn points
   local spawnPoints = SpawnPointsFolder and SpawnPointsFolder:GetChildren() or {}

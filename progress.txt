@@ -2771,3 +2771,94 @@ Built at require-time for O(1) access: `ContainerById`, `GearById`, `ShipTierByN
 - Rojo/selene toolchain issues persist; StyLua formatting passes.
 - Next priorities: NPC-003 (SimplePath patrol), NPC-004 (SimplePath chase),
   NPC-006 (spawn manager), or DAYNIGHT-004 (night loot modifiers)
+
+---
+
+## 2026-03-02 — THREAT-003: Threat Level Effects — Tiers 1-3 (Calm, Uneasy, Hunted)
+
+### What was done
+- Created `src/server/Services/ThreatEffectsService.lua` — server-authoritative threat tier
+  effects manager that listens to SessionStateService.StateChanged for threat level changes,
+  detects tier transitions, and activates/deactivates gameplay effects per player.
+- Created `src/client/Controllers/ThreatEffectsController.lua` — client-side controller for
+  threat tier VFX and audio (eerie ambient sound for Uneasy, fog vignette for Hunted,
+  tier transition notifications).
+- Modified `src/server/Services/NPCService.lua` — added forced target support, per-player
+  aggro range overrides, threat-based NPC speed bonuses, bonus NPC spawn/despawn methods.
+
+### Threat tier effects implemented
+
+| Tier | Range | Server Effects | Client Effects |
+|------|-------|----------------|----------------|
+| Calm | 0-19 | None | None |
+| Uneasy | 20-39 | NPCs within 60 studs gain +10% speed | Faint eerie ambient audio loop |
+| Hunted | 40-59 | Bonus skeleton spawns targeting player; NPCs use 60-stud aggro range | Fog vignette overlay + louder eerie audio + notification |
+
+### ThreatEffectsService features
+1. **Tier tracking**: Listens to `SessionStateService.StateChanged` for `threatLevel` changes.
+   Computes tier from `GameConfig.getThreatTier()` and detects transitions up/down.
+2. **Uneasy speed bonus**: `GetSpeedBonusNearPosition(pos)` returns +10% bonus if any
+   Uneasy+ player is within 60 studs. NPCService queries this during each AI tick.
+3. **Hunted aggro override**: `GetAggroRangeForPlayer(player)` returns 60 studs for
+   Hunted+ players (vs default 40). NPCService checks per-player in `findClosestTarget()`.
+4. **Bonus skeleton**: Spawns one Cursed Skeleton with `forcedTarget` set to the Hunted
+   player. No leash distance, no aggro range limit — it always chases the target.
+   Respawns 10s after death if player still Hunted+. Despawns when threat drops.
+5. **Client signal**: `ThreatTierChanged(tierId, tierName, isUpward)` fires per player on
+   tier transitions. Late-join sync via `GetThreatTier()` client RPC.
+6. **Cleanup**: Despawns bonus NPCs and clears tracking on player disconnect.
+
+### NPCService changes
+1. **`forcedTarget` field**: NPCEntry can have a forced target player. When set, the NPC
+   skips normal target selection and always chases that player. Leash distance and aggro
+   range checks are bypassed for forced-target NPCs.
+2. **`isBonusNPC` field**: Bonus NPCs skip the normal respawn queue on death. Their
+   lifecycle is managed by ThreatEffectsService.
+3. **`SpawnBonusSkeleton(pos, player)`**: Spawns a skeleton with forcedTarget and isBonusNPC.
+4. **`DespawnBonusNPC(npcId)`**: Immediately despawns a bonus NPC (no respawn queue).
+5. **Per-player aggro range**: `findClosestTarget()` now checks
+   `ThreatEffectsService:GetAggroRangeForPlayer()` per player to allow Hunted players to
+   be detected at 60 studs instead of the base 40.
+6. **Threat speed bonus**: `getEffectiveSpeed(npcPosition)` now queries
+   `ThreatEffectsService:GetSpeedBonusNearPosition()` for additional speed multiplier
+   from nearby Uneasy+ players.
+
+### ThreatEffectsController features
+1. **Eerie ambient audio**: Looped Sound in SoundService with volume fade-in/out.
+   Uneasy = 0.08 volume (barely audible), Hunted = 0.15 volume (more noticeable).
+2. **Fog vignette**: ScreenGui with fullscreen Frame + UIGradient for radial vignette
+   (dark edges, transparent center). Pulses between 0.55-0.70 transparency on a 3s sine
+   loop for unsettling feel. Fades in on Hunted, fades out on tier decrease.
+3. **Tier notifications**: Shows toast notification via NotificationController on each
+   tier transition with tier-specific color and message.
+4. **Late-join sync**: Queries server for current tier on start and applies effects.
+5. **Respawn sync**: Re-syncs tier from server after character respawn.
+
+### Config values used (already in GameConfig.Threat)
+- `uneasySkeletonSpeedBonus` = 0.10 (+10%)
+- `huntedBonusSkeletonCount` = 1
+- `huntedAggroRange` = 60 studs
+- `cursedNpcSpeedBonus` = 0.20 (+20%, pre-wired for THREAT-004)
+
+### Design decisions
+- **Per-NPC speed query**: ThreatEffectsService checks all Uneasy+ players each time
+  NPCService queries speed. This is O(uneasy_players) per NPC per frame, but typically
+  very few players are Uneasy at once, so performance impact is minimal.
+- **Forced target lifecycle**: Bonus skeletons respawn 10s after death (not 90s normal
+  respawn) to maintain pressure. They despawn immediately when threat drops.
+- **Vignette pulsing**: Sine wave oscillation gives an organic "breathing" feel rather
+  than a static overlay, creating unease without being annoying.
+- **Pre-wired Cursed/Doomed**: GetSpeedBonusNearPosition already returns the Cursed +20%
+  bonus for Cursed+ tier players, ready for THREAT-004. Only the additional Cursed/Doomed
+  effects (trap containers, Phantom Captain, ghostly footprints, dark aura) remain.
+
+### Notes for next developer
+- All threat effect config values are in `GameConfig.Threat` — change amounts there.
+- The eerie audio uses `rbxassetid://9114046944` (foghorn) at very low volume. Replace
+  with a proper ambient drone/whisper track when audio assets are available (AUDIO-001).
+- THREAT-004 (Cursed/Doomed effects) can extend ThreatEffectsService by adding handlers
+  in onThreatChanged for TIER_ORDER.cursed and TIER_ORDER.doomed transitions.
+- The vignette UIGradient uses NumberSequence for radial transparency. For a more
+  sophisticated look, replace with a pre-rendered vignette ImageLabel.
+- Next priorities: THREAT-004 (Cursed/Doomed effects), NPC-003 (SimplePath patrol),
+  NPC-006 (spawn manager), NPC-007 (Ghost Pirate)
