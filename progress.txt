@@ -1,3 +1,76 @@
+## 2026-03-02 — NPC-004: SimplePath Chase Behavior
+
+### What was done
+- Upgraded NPC chase movement in `src/server/Services/NPCService.lua` from basic
+  `Humanoid:MoveTo()` to SimplePath pathfinding with 0.3s recalculation intervals.
+- Added stuck detection: 3s triggers path recalculation, 6s triggers teleport
+  to nearest patrol waypoint with poof VFX signal.
+- Added Harbor boundary waiting: NPC stops at boundary for 5s before returning
+  to patrol. If target leaves Harbor during wait, chase resumes.
+- Added `NPCTeleported` client signal for poof VFX when NPCs teleport due to
+  stuck detection.
+
+### Chase state changes (lines 1180-1331)
+1. **SimplePath:Run() replaces Humanoid:MoveTo()**: Chase now uses PathfindingService
+   via SimplePath, recalculating every 0.3s (`NPC_BEHAVIOR.chasePathRecalcInterval`).
+   This lets NPCs navigate around obstacles instead of walking into walls.
+2. **0.3s recalc interval**: `lastChaseRecalcTime` tracks when SimplePath was last
+   called. Prevents excessive path recomputation each frame.
+3. **SimplePath signal handling**: Reached/Blocked/Error signals now check aiState.
+   During chase, they reset `lastChaseRecalcTime = 0` to force immediate recalc
+   (e.g., if path is blocked by a new obstacle, NPC immediately recomputes).
+
+### Stuck detection system
+1. **Position tracking**: `chaseStuckPos` and `chaseStuckTime` track the NPC's
+   position at the start of each stuck-check window.
+2. **Movement threshold**: If NPC hasn't moved ≥2 studs (`stuckMoveThreshold`)
+   within the window, it accumulates stuck time.
+3. **3s recalc**: After 3s stuck, forces path recalculation (resets recalc timer).
+4. **6s teleport**: After 6s stuck, calls `teleportToNearestWaypoint()` which
+   finds the closest patrol waypoint in the NPC's zone and teleports there.
+   Fires `NPCTeleported` signal for client-side poof VFX.
+5. **Reset**: When the NPC moves enough, the stuck window resets.
+
+### Harbor boundary wait
+1. **5s wait**: When target enters Harbor, NPC stops SimplePath and waits at
+   its current position for `harborReturnDelay` (5s).
+2. **Resume on exit**: If the target leaves Harbor during the wait, chase resumes
+   immediately with a forced path recalculation.
+3. **Timeout**: After 5s, NPC gives up chase and returns to patrol.
+
+### setState changes
+- `setState()` now stops SimplePath when leaving chase state (previously only
+  stopped when leaving patrol).
+- Entering chase resets all chase tracking fields: `lastChaseRecalcTime`,
+  `chaseStuckPos`, `chaseStuckTime`, `harborWaitStart`.
+
+### Leash return improvement
+- When NPC exceeds 80-stud leash, it now uses `SimplePath:Run(spawnPosition)`
+  to pathfind back (previously used `Humanoid:MoveTo()` which could get stuck
+  on obstacles).
+
+### New NPCEntry fields
+- `lastChaseRecalcTime: number` — last time SimplePath:Run() called during chase
+- `chaseStuckPos: Vector3?` — position at start of stuck-check window
+- `chaseStuckTime: number` — time when stuck check started
+- `harborWaitStart: number?` — if non-nil, NPC is waiting at Harbor boundary
+
+### New client signal
+- `NPCTeleported(npcId, fromPosition, toPosition)` — fired when NPC teleports
+  due to stuck detection. Clients can show a poof/smoke VFX at both positions.
+
+### Notes for next developer
+- No Roblox Studio MCP server is configured for this project — couldn't test
+  in-game. Changes are structurally verified via StyLua formatting.
+- The stuck detection teleport picks the nearest waypoint in the NPC's zone.
+  If the NPC has no patrol waypoints, it falls back to `spawnPosition`.
+- Target re-evaluation during chase now resets `lastChaseRecalcTime = 0` when
+  switching to a closer target, ensuring immediate path recomputation.
+- Next priorities: NPC-007 (Ghost Pirate), NPC-008 (Phantom Captain),
+  NPC-005 (dormant mode), NPC-002 (skeleton loot pickup)
+
+---
+
 ## 2026-03-02 — NPC-006: NPC Spawn Manager
 
 ### What was done

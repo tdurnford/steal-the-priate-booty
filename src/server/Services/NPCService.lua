@@ -10,7 +10,7 @@
     - NPC hit reception: flinch (0.2s pause), death (loot drop), respawn (90s)
     - Hit detection against players: ragdoll 2.0s, spill 20% held doubloons
     - SimplePath-based patrol: walk between zone waypoints using PathfindingService
-    - Basic chase movement via Humanoid:MoveTo (NPC-004 will upgrade to SimplePath)
+    - SimplePath-based chase: 0.3s path recalculation, leash, stuck detection, Harbor boundary stop
     - Respawn management per zone
 
   Spawn Manager (NPC-006):
@@ -68,6 +68,9 @@ local NPCService = Knit.CreateService({
     -- Fired to ALL players when an NPC flinches (for VFX).
     -- Args: (npcId: number)
     NPCFlinch = Knit.CreateSignal(),
+    -- Fired to ALL players when an NPC teleports (stuck detection poof VFX).
+    -- Args: (npcId: number, fromPosition: Vector3, toPosition: Vector3)
+    NPCTeleported = Knit.CreateSignal(),
   },
 })
 
@@ -132,10 +135,16 @@ type NPCEntry = {
   patrolTarget: Vector3?, -- legacy fallback (unused when SimplePath is active)
   carriedDoubloons: number,
 
-  -- SimplePath patrol (NPC-003)
+  -- SimplePath patrol (NPC-003) and chase (NPC-004)
   simplePath: any?, -- SimplePath instance for this NPC
   patrolWaypoints: { Vector3 }, -- ordered list of patrol waypoints for this NPC's zone
   patrolWaypointIndex: number, -- current index in patrolWaypoints (loops)
+
+  -- SimplePath chase tracking (NPC-004)
+  lastChaseRecalcTime: number, -- last time SimplePath:Run() was called during chase
+  chaseStuckPos: Vector3?, -- position at start of stuck check window
+  chaseStuckTime: number, -- time when stuck check started
+  harborWaitStart: number?, -- if non-nil, NPC is waiting at Harbor boundary
 
   -- Flinch tracking
   flinchEndTime: number,
@@ -730,6 +739,55 @@ local function getEffectiveSpeed(npcPosition: Vector3?): number
   return speed
 end
 
+--[[
+  Teleports an NPC to the nearest patrol waypoint in their zone (or spawn position
+  as fallback). Used by stuck detection when an NPC is stuck for 6+ seconds.
+  Fires NPCTeleported signal for client-side poof VFX.
+  @param entry The NPC entry to teleport
+]]
+local function teleportToNearestWaypoint(entry: NPCEntry)
+  local fromPos = entry.position
+
+  -- Find the nearest waypoint in this NPC's zone
+  local bestPos = entry.spawnPosition -- fallback
+  local bestDist = (fromPos - bestPos).Magnitude
+
+  for _, wp in entry.patrolWaypoints do
+    local dist = (fromPos - wp).Magnitude
+    if dist < bestDist then
+      bestDist = dist
+      bestPos = wp
+    end
+  end
+
+  -- Don't teleport if already near the best waypoint
+  if bestDist < NPC_BEHAVIOR.stuckMoveThreshold then
+    bestPos = entry.spawnPosition
+  end
+
+  -- Teleport the NPC
+  if entry.rootPart and entry.rootPart.Parent then
+    entry.rootPart.CFrame = CFrame.new(bestPos + Vector3.new(0, 3, 0))
+    entry.position = bestPos
+  end
+
+  -- Reset stuck tracking
+  entry.chaseStuckPos = bestPos
+  entry.chaseStuckTime = os.clock()
+  entry.lastChaseRecalcTime = 0 -- force immediate recalc after teleport
+
+  -- Fire VFX signal to clients
+  NPCService.Client.NPCTeleported:FireAll(entry.id, fromPos, bestPos)
+
+  print(
+    string.format(
+      "[NPCService] NPC #%d stuck-teleported to nearest waypoint (moved %.0f studs)",
+      entry.id,
+      (fromPos - bestPos).Magnitude
+    )
+  )
+end
+
 --------------------------------------------------------------------------------
 -- NPC SPAWN / DESPAWN
 --------------------------------------------------------------------------------
@@ -769,10 +827,16 @@ local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?)
     patrolTarget = nil,
     carriedDoubloons = 0,
 
-    -- SimplePath patrol (NPC-003)
+    -- SimplePath patrol (NPC-003) and chase (NPC-004)
     simplePath = nil, -- created below
     patrolWaypoints = {},
     patrolWaypointIndex = 0,
+
+    -- SimplePath chase tracking (NPC-004)
+    lastChaseRecalcTime = 0,
+    chaseStuckPos = nil,
+    chaseStuckTime = 0,
+    harborWaitStart = nil,
 
     flinchEndTime = 0,
 
@@ -792,18 +856,33 @@ local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?)
   entry.patrolWaypoints = getPatrolWaypointsForZone(zone, position)
   entry.patrolWaypointIndex = math.random(1, math.max(1, #entry.patrolWaypoints))
 
-  -- Wire SimplePath signals
+  -- Wire SimplePath signals (patrol NPC-003 + chase NPC-004)
   path.Reached:Connect(function()
-    -- Mark arrival time so patrol state pauses before next waypoint
-    entry.lastPatrolMoveTime = os.clock()
+    if entry.aiState == AI_STATE.CHASE then
+      -- During chase, reaching destination means recalculate immediately
+      entry.lastChaseRecalcTime = 0
+    else
+      -- Patrol: mark arrival time so patrol state pauses before next waypoint
+      entry.lastPatrolMoveTime = os.clock()
+    end
   end)
   path.Blocked:Connect(function()
-    -- Path blocked mid-traversal: skip to next waypoint on next tick
-    entry.lastPatrolMoveTime = os.clock() - 2 -- no pause, try next waypoint immediately
+    if entry.aiState == AI_STATE.CHASE then
+      -- During chase, blocked path → force immediate recalculation
+      entry.lastChaseRecalcTime = 0
+    else
+      -- Patrol: skip to next waypoint on next tick
+      entry.lastPatrolMoveTime = os.clock() - 2
+    end
   end)
   path.Error:Connect(function()
-    -- Path computation failed: skip to next waypoint on next tick
-    entry.lastPatrolMoveTime = os.clock() - 2
+    if entry.aiState == AI_STATE.CHASE then
+      -- During chase, path error → force immediate recalculation
+      entry.lastChaseRecalcTime = 0
+    else
+      -- Patrol: skip to next waypoint on next tick
+      entry.lastPatrolMoveTime = os.clock() - 2
+    end
   end)
 
   ActiveNPCs[npcId] = entry
@@ -866,14 +945,25 @@ end
 
 --[[
   Transitions an NPC to a new AI state.
-  Stops SimplePath if leaving patrol state.
+  Stops SimplePath if leaving patrol or chase state.
+  Resets chase tracking fields when entering chase.
 ]]
 local function setState(entry: NPCEntry, newState: string)
-  -- Stop SimplePath when leaving patrol (NPC-003)
-  if entry.aiState == AI_STATE.PATROL and newState ~= AI_STATE.PATROL then
+  local oldState = entry.aiState
+
+  -- Stop SimplePath when leaving patrol or chase (NPC-003, NPC-004)
+  if (oldState == AI_STATE.PATROL or oldState == AI_STATE.CHASE) and newState ~= oldState then
     if entry.simplePath and entry.simplePath:IsRunning() then
       entry.simplePath:Stop()
     end
+  end
+
+  -- Reset chase tracking when entering chase (NPC-004)
+  if newState == AI_STATE.CHASE and oldState ~= AI_STATE.CHASE then
+    entry.lastChaseRecalcTime = 0
+    entry.chaseStuckPos = nil
+    entry.chaseStuckTime = os.clock()
+    entry.harborWaitStart = nil
   end
 
   entry.aiState = newState
@@ -1109,11 +1199,28 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
       return
     end
 
-    -- Check if target entered Harbor (forced-target NPCs wait outside)
+    -- Harbor boundary handling (NPC-004): stop at boundary, wait 5s, then return to patrol
     if SessionStateService and SessionStateService:IsInHarbor(target) then
-      entry.targetPlayer = nil
-      setState(entry, AI_STATE.PATROL)
+      if not entry.harborWaitStart then
+        -- Target just entered Harbor — stop movement and start waiting
+        entry.harborWaitStart = now
+        if entry.simplePath and entry.simplePath:IsRunning() then
+          entry.simplePath:Stop()
+        end
+      elseif now - entry.harborWaitStart >= NPC_BEHAVIOR.harborReturnDelay then
+        -- Wait expired — return to patrol
+        entry.targetPlayer = nil
+        entry.harborWaitStart = nil
+        setState(entry, AI_STATE.PATROL)
+      end
+      -- While waiting, NPC stands still at Harbor boundary
       return
+    else
+      -- Target left Harbor during wait — resume chase
+      if entry.harborWaitStart then
+        entry.harborWaitStart = nil
+        entry.lastChaseRecalcTime = 0 -- force immediate recalc
+      end
     end
 
     -- Check leash distance from spawn (skip for forced-target bonus NPCs)
@@ -1122,8 +1229,10 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
       if distFromSpawn > NPC_BEHAVIOR.leashDistance then
         entry.targetPlayer = nil
         setState(entry, AI_STATE.PATROL)
-        -- Move back toward spawn
-        if entry.humanoid then
+        -- Use SimplePath to navigate back toward spawn
+        if entry.simplePath then
+          entry.simplePath:Run(entry.spawnPosition)
+        elseif entry.humanoid then
           entry.humanoid:MoveTo(entry.spawnPosition)
         end
         return
@@ -1178,9 +1287,36 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
       end
     end
 
-    -- Move toward target
-    if entry.humanoid then
-      entry.humanoid:MoveTo(targetPos)
+    -- SimplePath chase movement with stuck detection (NPC-004)
+    -- Stuck detection: check if NPC has moved enough since last check
+    if entry.chaseStuckPos then
+      local moved = (entry.position - entry.chaseStuckPos).Magnitude
+      if moved < NPC_BEHAVIOR.stuckMoveThreshold then
+        local stuckDuration = now - entry.chaseStuckTime
+        if stuckDuration >= NPC_BEHAVIOR.stuckTimeTeleport then
+          -- Stuck for 6+ seconds: teleport to nearest patrol waypoint
+          teleportToNearestWaypoint(entry)
+        elseif stuckDuration >= NPC_BEHAVIOR.stuckTimeRecalc then
+          -- Stuck for 3+ seconds: force path recalculation
+          entry.lastChaseRecalcTime = 0
+        end
+      else
+        -- Moved enough, reset stuck detection window
+        entry.chaseStuckPos = entry.position
+        entry.chaseStuckTime = now
+      end
+    else
+      -- Initialize stuck detection
+      entry.chaseStuckPos = entry.position
+      entry.chaseStuckTime = now
+    end
+
+    -- Recalculate path on interval (0.3s)
+    if
+      entry.simplePath and now - entry.lastChaseRecalcTime >= NPC_BEHAVIOR.chasePathRecalcInterval
+    then
+      entry.lastChaseRecalcTime = now
+      entry.simplePath:Run(targetPos)
     end
 
     -- Re-evaluate: check if another player is closer (skip for forced-target NPCs)
@@ -1188,6 +1324,7 @@ local function updateNPCAI(entry: NPCEntry, dt: number)
       local closerTarget, closerDist = findClosestTarget(entry, aggroRange)
       if closerTarget and closerTarget ~= target and closerDist < distToTarget * 0.6 then
         entry.targetPlayer = closerTarget
+        entry.lastChaseRecalcTime = 0 -- force immediate recalc for new target
       end
     end
     return
