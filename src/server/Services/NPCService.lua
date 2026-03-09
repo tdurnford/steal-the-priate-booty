@@ -446,6 +446,14 @@ local function pickAvailableSpawnPoint(spawnPoints: { BasePart }): BasePart?
   return available[math.random(1, #available)]
 end
 
+-- Forward declarations for functions defined later but called by budget/phase logic
+local spawnSkeleton
+local spawnGhostPirate
+local randomPositionAround
+local despawnNPC
+local setState
+local getPlayerHRP
+
 --[[
   Spawns skeletons to fill the current budget, using available spawn points.
   Returns the number of NPCs spawned.
@@ -1357,7 +1365,7 @@ end
 --[[
   Gets the HumanoidRootPart for a player, or nil if unavailable.
 ]]
-local function getPlayerHRP(player: Player): BasePart?
+function getPlayerHRP(player: Player): BasePart?
   local character = player.Character
   if not character then
     return nil
@@ -1440,7 +1448,7 @@ end
 --[[
   Returns a random position within a radius of the given center, on the same Y level.
 ]]
-local function randomPositionAround(center: Vector3, radius: number): Vector3
+function randomPositionAround(center: Vector3, radius: number): Vector3
   local angle = math.random() * math.pi * 2
   local dist = math.random() * radius
   return center + Vector3.new(math.cos(angle) * dist, 0, math.sin(angle) * dist)
@@ -1565,7 +1573,7 @@ end
   @param spawnPoint Optional spawn point Part
   @return The NPC entry, or nil if spawn failed
 ]]
-local function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?): NPCEntry?
+function spawnSkeleton(position: Vector3, zone: string, spawnPoint: Part?): NPCEntry?
   local npcId = nextNPCId
   nextNPCId = nextNPCId + 1
 
@@ -1694,7 +1702,7 @@ end
   @param spawnPoint Optional spawn point Part
   @return The NPC entry, or nil if spawn failed
 ]]
-local function spawnGhostPirate(position: Vector3, zone: string, spawnPoint: Part?): NPCEntry?
+function spawnGhostPirate(position: Vector3, zone: string, spawnPoint: Part?): NPCEntry?
   local npcId = nextNPCId
   nextNPCId = nextNPCId + 1
 
@@ -1947,7 +1955,7 @@ end
   Removes an NPC from the world. Decrements budget counters and frees spawn points.
   @param npcId The NPC instance ID
 ]]
-local function despawnNPC(npcId: number)
+function despawnNPC(npcId: number)
   local entry = ActiveNPCs[npcId]
   if not entry then
     return
@@ -2017,7 +2025,7 @@ end
   Stops SimplePath if leaving patrol or chase state.
   Resets chase tracking fields when entering chase.
 ]]
-local function setState(entry: NPCEntry, newState: string)
+function setState(entry: NPCEntry, newState: string)
   local oldState = entry.aiState
 
   -- Stop SimplePath when leaving patrol, chase, or loot_pickup (NPC-003, NPC-004, NPC-002)

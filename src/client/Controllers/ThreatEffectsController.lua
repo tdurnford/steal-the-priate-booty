@@ -392,8 +392,10 @@ local function onCharacterAdded(character: Model)
   if ThreatEffectsService then
     task.delay(1, function()
       local tierId, tierName = ThreatEffectsService:GetThreatTier()
-      if tierId ~= CurrentTierId then
-        onThreatTierChanged(tierId, tierName, TIER_ORDER[tierId] > TIER_ORDER[CurrentTierId])
+      if tierId and tierId ~= CurrentTierId then
+        local newOrder = TIER_ORDER[tierId] or 1
+        local oldOrder = TIER_ORDER[CurrentTierId] or 1
+        onThreatTierChanged(tierId, tierName, newOrder > oldOrder)
       end
     end)
   end
