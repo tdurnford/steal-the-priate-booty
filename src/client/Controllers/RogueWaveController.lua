@@ -33,6 +33,7 @@ local LocalPlayer = Players.LocalPlayer
 -- Lazy-loaded references (set in KnitStart)
 local RogueWaveService = nil
 local NotificationController = nil
+local SoundController = nil
 
 -- Colors
 local WAVE_COLOR = Color3.fromRGB(20, 80, 140) -- deep ocean blue
@@ -204,24 +205,27 @@ local function createWarningVFX(zonePart: BasePart, vfx: any)
     CFrame = zonePart.CFrame * CFrame.new(0, 3, 0),
   }):Play()
 
-  -- Roaring wave buildup SFX (louder and more dramatic than tidal surge)
-  local sound = Instance.new("Sound")
-  sound.Name = "WaveWarning"
-  sound.SoundId = "rbxassetid://9116222901" -- deep rumble / rushing water
-  sound.Volume = 0
-  sound.Looped = true
-  sound.RollOffMinDistance = 20
-  sound.RollOffMaxDistance = SFX_RANGE
-  sound.PlaybackSpeed = 0.8 -- deeper, more ominous
-  sound.Parent = zonePart
-  sound:Play()
-  vfx.warningSound = sound
+  -- Roaring wave buildup SFX (louder and more dramatic than tidal surge, respects sfxEnabled)
+  if not SoundController or SoundController:IsSfxEnabled() then
+    local sound = Instance.new("Sound")
+    sound.Name = "WaveWarning"
+    sound.SoundId = SoundController and SoundController:GetSoundId("rogueWaveRoar")
+      or "rbxassetid://9116222901"
+    sound.Volume = 0
+    sound.Looped = true
+    sound.RollOffMinDistance = 20
+    sound.RollOffMaxDistance = SFX_RANGE
+    sound.PlaybackSpeed = 0.8 -- deeper, more ominous
+    sound.Parent = zonePart
+    sound:Play()
+    vfx.warningSound = sound
 
-  -- Fade volume up to louder than tidal surge
-  TweenService:Create(sound, TweenInfo.new(5, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
-    Volume = 0.8,
-    PlaybackSpeed = 1.2, -- pitch rises as wave approaches
-  }):Play()
+    -- Fade volume up to louder than tidal surge
+    TweenService:Create(sound, TweenInfo.new(5, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+      Volume = SoundController and SoundController:GetVolume("rogueWaveRoar") or 0.8,
+      PlaybackSpeed = 1.2, -- pitch rises as wave approaches
+    }):Play()
+  end
 
   -- Screen-edge water VFX if player is nearby
   local character = LocalPlayer.Character
@@ -310,18 +314,21 @@ local function createImpactVFX(zonePart: BasePart, vfx: any)
   light.Parent = water
   vfx.waterLight = light
 
-  -- Wave crash sound
-  local sound = Instance.new("Sound")
-  sound.Name = "WaveImpact"
-  sound.SoundId = "rbxassetid://9114227726" -- wave crash
-  sound.Volume = 1.0
-  sound.Looped = false
-  sound.RollOffMinDistance = 25
-  sound.RollOffMaxDistance = SFX_RANGE
-  sound.PlaybackSpeed = 0.9 -- slightly deeper for rogue wave
-  sound.Parent = zonePart
-  sound:Play()
-  vfx.impactSound = sound
+  -- Wave crash sound (respects sfxEnabled)
+  if not SoundController or SoundController:IsSfxEnabled() then
+    local sound = Instance.new("Sound")
+    sound.Name = "WaveImpact"
+    sound.SoundId = SoundController and SoundController:GetSoundId("rogueWaveImpact")
+      or "rbxassetid://9114227726"
+    sound.Volume = SoundController and SoundController:GetVolume("rogueWaveImpact") or 1.0
+    sound.Looped = false
+    sound.RollOffMinDistance = 25
+    sound.RollOffMaxDistance = SFX_RANGE
+    sound.PlaybackSpeed = 0.9 -- slightly deeper for rogue wave
+    sound.Parent = zonePart
+    sound:Play()
+    vfx.impactSound = sound
+  end
 
   -- Flash the screen overlay brighter on impact
   setScreenOverlayVisible(true, 0.3)
@@ -519,6 +526,7 @@ end
 function RogueWaveController:KnitStart()
   RogueWaveService = Knit.GetService("RogueWaveService")
   NotificationController = Knit.GetController("NotificationController")
+  SoundController = Knit.GetController("SoundController")
 
   -- Listen for wave phase changes from server
   RogueWaveService.WavePhaseChanged:Connect(

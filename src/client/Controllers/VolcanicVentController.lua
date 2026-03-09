@@ -152,21 +152,25 @@ local function createWarningVFX(part: BasePart): (ParticleEmitter, PointLight, S
     Brightness = 3,
   }):Play()
 
-  -- Rumble sound (placeholder audio ID — ground rumble)
-  local sound = Instance.new("Sound")
-  sound.Name = "VentRumble"
-  sound.SoundId = "rbxassetid://9116222901" -- deep rumble
-  sound.Volume = 0
-  sound.Looped = true
-  sound.RollOffMinDistance = 10
-  sound.RollOffMaxDistance = WARNING_SFX_RANGE
-  sound.Parent = part
-  sound:Play()
+  -- Rumble sound (ground rumble, respects sfxEnabled)
+  local sound = nil
+  if not SoundController or SoundController:IsSfxEnabled() then
+    sound = Instance.new("Sound")
+    sound.Name = "VentRumble"
+    sound.SoundId = SoundController and SoundController:GetSoundId("ventRumble")
+      or "rbxassetid://9116222901"
+    sound.Volume = 0
+    sound.Looped = true
+    sound.RollOffMinDistance = 10
+    sound.RollOffMaxDistance = WARNING_SFX_RANGE
+    sound.Parent = part
+    sound:Play()
 
-  -- Fade rumble volume in
-  TweenService:Create(sound, TweenInfo.new(3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
-    Volume = 0.6,
-  }):Play()
+    -- Fade rumble volume in
+    TweenService:Create(sound, TweenInfo.new(3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+      Volume = SoundController and SoundController:GetVolume("ventRumble") or 0.6,
+    }):Play()
+  end
 
   return emitter, light, sound
 end
@@ -212,16 +216,20 @@ local function createEruptionVFX(part: BasePart): (ParticleEmitter, PointLight, 
   light.Range = 40
   light.Parent = part
 
-  -- Eruption sound
-  local sound = Instance.new("Sound")
-  sound.Name = "VentEruption"
-  sound.SoundId = "rbxassetid://9114227726" -- fiery eruption burst
-  sound.Volume = 0.8
-  sound.Looped = false
-  sound.RollOffMinDistance = 15
-  sound.RollOffMaxDistance = 120
-  sound.Parent = part
-  sound:Play()
+  -- Eruption sound (respects sfxEnabled)
+  local sound = nil
+  if not SoundController or SoundController:IsSfxEnabled() then
+    sound = Instance.new("Sound")
+    sound.Name = "VentEruption"
+    sound.SoundId = SoundController and SoundController:GetSoundId("ventEruption")
+      or "rbxassetid://9114227726"
+    sound.Volume = SoundController and SoundController:GetVolume("ventEruption") or 0.8
+    sound.Looped = false
+    sound.RollOffMinDistance = 15
+    sound.RollOffMaxDistance = 120
+    sound.Parent = part
+    sound:Play()
+  end
 
   return emitter, light, sound
 end

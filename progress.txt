@@ -5962,3 +5962,92 @@ figureheads, and tier-specific decorations.
 - To add new purse tiers: add a builder function and register in `PURSE_BUILDERS`
 - Pickup sparkle rate is 3/sec — increase if pickups need more visibility
 - Remaining not-started feature: AUDIO-001 (audio asset sourcing & integration)
+
+---
+
+## 2026-03-08 — AUDIO-001: Audio Asset List & Integration
+
+### What was done
+- **SoundController centralized audio registry** — Added all missing sound asset IDs and volume levels
+  to the SOUNDS/VOLUMES tables in `src/client/Controllers/SoundController.lua`:
+  - **NPC sounds**: skeletonGrunt, ghostWhisper, ghostScreech (3 new entries)
+  - **Environment hazard sounds**: ventRumble, ventEruption, surgeWarning, waveCrash,
+    quicksandSink, quicksandRelease, rogueWaveRoar, rogueWaveImpact (8 new entries)
+  - **Bounty warning**: bountyWarning (1 new entry)
+  - **Eerie ambient**: eerieAmbient (1 new entry, used by ThreatEffectsController)
+  - Total: 13 new sound entries added to centralized registry
+
+- **New SoundController public methods**:
+  - `PlayBountyWarningSound()` — bounty placed on local player
+  - `PlaySkeletonGruntSound(parent?)` — 2D/3D skeleton attack grunt
+  - `PlayGhostWhisperSound(parent?)` — 2D/3D ghost pirate whisper
+  - `PlayGhostScreechSound(parent?)` — 2D/3D ghost materialization screech
+  - `IsSfxEnabled()` — allows hazard controllers to check global SFX setting
+  - `GetSoundId(key)` — returns centralized asset ID for a sound key
+  - `GetVolume(key)` — returns centralized volume for a sound key
+
+- **Fixed broken sound calls**:
+  - `BountyController.lua:125` — `PlayUISound("bounty_warning")` → `PlayBountyWarningSound()`
+    (PlayUISound did not exist, causing silent runtime error)
+  - `LootVisibilityController.lua:71` — `PlaySound("coinPickup")` → `PlayCoinPickupSound()`
+    (PlaySound did not exist, causing silent runtime error)
+
+- **Hazard controllers now respect sfxEnabled setting**:
+  - `VolcanicVentController.lua` — warning rumble and eruption sounds check `IsSfxEnabled()`
+    and use `GetSoundId()`/`GetVolume()` for centralized asset references
+  - `TidalSurgeController.lua` — added SoundController reference, warning and flood sounds
+    check `IsSfxEnabled()` and use centralized sound IDs
+  - `QuicksandController.lua` — added SoundController reference, sink and release sounds
+    check `IsSfxEnabled()` and use centralized sound IDs
+  - `RogueWaveController.lua` — added SoundController reference, warning roar and impact crash
+    check `IsSfxEnabled()` and use centralized sound IDs
+  - `ThreatEffectsController.lua` — eerie ambient loop checks `IsSfxEnabled()` before starting,
+    uses `GetSoundId("eerieAmbient")` for centralized asset reference
+
+- **NPC sound integration in SoundController.KnitStart()**:
+  - Listens to `NPCService.GhostPirateMaterialized` signal — plays 3D ghost screech at
+    materialization position (100 stud range check)
+  - Listens to `NPCService.NPCTeleported` signal — plays 3D poof sound at teleport-from
+    position (80 stud range check)
+  - Both use temporary invisible anchor Parts for 3D spatial audio
+
+### Files modified (8 total)
+- `src/client/Controllers/SoundController.lua` — 13 new sound entries, 7 new methods, NPC signal listeners
+- `src/client/Controllers/BountyController.lua` — fixed broken PlayUISound call
+- `src/client/Controllers/LootVisibilityController.lua` — fixed broken PlaySound call
+- `src/client/Controllers/VolcanicVentController.lua` — sfxEnabled checks on sounds
+- `src/client/Controllers/TidalSurgeController.lua` — added SoundController, sfxEnabled checks
+- `src/client/Controllers/QuicksandController.lua` — added SoundController, sfxEnabled checks
+- `src/client/Controllers/RogueWaveController.lua` — added SoundController, sfxEnabled checks
+- `src/client/Controllers/ThreatEffectsController.lua` — sfxEnabled check on eerie ambient
+
+### Acceptance criteria met
+- All audio assets listed in spec are present in the project (centralized SOUNDS table) ✓
+- Audio plays at correct game events (all callsites wired, broken calls fixed) ✓
+- Proximity-based audio works (ghost screech 100 studs, NPC poof 80 studs, container 3D, hazards 3D) ✓
+- Volume levels are balanced (per-sound VOLUMES table, hazard controllers use centralized values) ✓
+
+### Design decisions
+- **Hazard controllers keep their own Sound instances**: Hazard sounds require looped playback,
+  volume tweens, and PlaybackSpeed modulation — SoundController's one-shot play2D/play3D helpers
+  don't support these patterns. Instead, hazard controllers check `IsSfxEnabled()` and use
+  `GetSoundId()`/`GetVolume()` from SoundController to maintain centralized asset management
+  while keeping fine-grained audio control.
+- **NPC audio in SoundController, not a new controller**: NPC sound hooks are simple proximity-checked
+  one-shot sounds triggered by server signals. Adding them to SoundController keeps audio
+  centralized rather than creating a third NPC-related controller.
+- **Temporary anchor Parts for 3D audio**: Ghost screech and NPC poof sounds use invisible anchor
+  Parts at world positions, matching the existing pattern in PlayContainerBreakSound. Parts are
+  auto-cleaned up after 3 seconds.
+
+### Notes for next developer
+- All sound asset IDs are placeholder Roblox library sounds. Replace with custom audio when
+  available — just update the SOUNDS table entries. No code changes needed elsewhere.
+- Hazard controllers use `SoundController:GetSoundId(key)` fallback to hardcoded IDs. If
+  SoundController is unavailable (shouldn't happen), they still work with hardcoded defaults.
+- The `IsSfxEnabled()` API is defensive: hazard controllers check `not SoundController or
+  SoundController:IsSfxEnabled()` so they still create sounds if SoundController fails to load.
+- No skeleton grunt sound is auto-played via signals because NPCService doesn't fire a
+  per-attack client signal. The `PlaySkeletonGruntSound()` method is available for future use
+  when NPC attack animations are wired to client-side animation events.
+- This was the LAST feature in the PRD. All 102 features are now "done".

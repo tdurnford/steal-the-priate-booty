@@ -30,6 +30,7 @@ local LocalPlayer = Players.LocalPlayer
 -- Lazy-loaded references (set in KnitStart)
 local QuicksandService = nil
 local NotificationController = nil
+local SoundController = nil
 
 -- Colors
 local SAND_COLOR = Color3.fromRGB(210, 180, 110) -- sandy yellow
@@ -279,15 +280,16 @@ local function onQuicksandTrapped(patchPosition: Vector3, duration: number)
   -- Create sinking VFX
   createTrapVFX()
 
-  -- Play sinking sound
+  -- Play sinking sound (respects sfxEnabled)
   local character = LocalPlayer.Character
-  if character then
+  if character and (not SoundController or SoundController:IsSfxEnabled()) then
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if hrp then
       local sound = Instance.new("Sound")
       sound.Name = "QuicksandSink"
-      sound.SoundId = "rbxassetid://9116222901" -- bubbling/sinking
-      sound.Volume = 0.4
+      sound.SoundId = SoundController and SoundController:GetSoundId("quicksandSink")
+        or "rbxassetid://9116222901"
+      sound.Volume = SoundController and SoundController:GetVolume("quicksandSink") or 0.4
       sound.Looped = false
       sound.Parent = hrp
       sound:Play()
@@ -328,15 +330,16 @@ local function onQuicksandReleased(ejectPosition: Vector3)
     TrapCleanupThread = nil
   end
 
-  -- Pop-out sound
+  -- Pop-out sound (respects sfxEnabled)
   local character = LocalPlayer.Character
-  if character then
+  if character and (not SoundController or SoundController:IsSfxEnabled()) then
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if hrp then
       local sound = Instance.new("Sound")
       sound.Name = "QuicksandRelease"
-      sound.SoundId = "rbxassetid://9114227726" -- pop/burst
-      sound.Volume = 0.3
+      sound.SoundId = SoundController and SoundController:GetSoundId("quicksandRelease")
+        or "rbxassetid://9114227726"
+      sound.Volume = SoundController and SoundController:GetVolume("quicksandRelease") or 0.3
       sound.Looped = false
       sound.Parent = hrp
       sound:Play()
@@ -358,6 +361,7 @@ end
 function QuicksandController:KnitStart()
   QuicksandService = Knit.GetService("QuicksandService")
   NotificationController = Knit.GetController("NotificationController")
+  SoundController = Knit.GetController("SoundController")
 
   -- Listen for patch state changes from server
   QuicksandService.PatchStateChanged:Connect(

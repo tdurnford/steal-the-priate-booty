@@ -122,7 +122,7 @@ local function onBountyStarted(targetUserId: number, targetDisplayName: string)
     end
     -- Play warning sound
     if SoundController then
-      SoundController:PlayUISound("bounty_warning")
+      SoundController:PlayBountyWarningSound()
     end
   else
     if NotificationController then

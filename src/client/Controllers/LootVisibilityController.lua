@@ -68,7 +68,7 @@ local function onTierChanged(newTier: string, oldTier: string, _doubloons: numbe
     end
     -- Play an escalating coin sound
     if SoundController then
-      SoundController:PlaySound("coinPickup")
+      SoundController:PlayCoinPickupSound()
     end
   elseif newOrder < oldOrder and newOrder > 0 then
     -- Tier decreased but still visible: show relief message

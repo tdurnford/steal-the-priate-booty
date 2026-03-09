@@ -65,6 +65,27 @@ local SOUNDS = {
 
   -- World event sounds
   eventAnnouncement = "rbxassetid://9114046944", -- dramatic horn blast (shared with dusk)
+
+  -- Bounty warning
+  bountyWarning = "rbxassetid://9114046944", -- urgent warning horn (bounty placed on you)
+
+  -- NPC sounds
+  skeletonGrunt = "rbxassetid://3932505093", -- skeleton attack grunt
+  ghostWhisper = "rbxassetid://9114046944", -- ghost pirate whisper (eerie proximity)
+  ghostScreech = "rbxassetid://9114227726", -- ghost pirate materialization screech
+
+  -- Environment hazard sounds (referenced by hazard controllers)
+  ventRumble = "rbxassetid://9116222901", -- volcanic vent ground rumble (looped)
+  ventEruption = "rbxassetid://9114227726", -- fiery eruption burst
+  surgeWarning = "rbxassetid://9116222901", -- rushing water buildup (looped)
+  waveCrash = "rbxassetid://9114227726", -- tidal surge / wave crash
+  quicksandSink = "rbxassetid://9116222901", -- bubbling sinking
+  quicksandRelease = "rbxassetid://9114227726", -- pop/burst release
+  rogueWaveRoar = "rbxassetid://9116222901", -- deep roaring wave buildup (looped)
+  rogueWaveImpact = "rbxassetid://9114227726", -- massive wave crash
+
+  -- Eerie ambient (used by ThreatEffectsController)
+  eerieAmbient = "rbxassetid://9114046944", -- low droning foghorn loop
 }
 
 -- Volume settings per sound type
@@ -99,6 +120,25 @@ local VOLUMES = {
 
   -- World event sounds
   eventAnnouncement = 0.7,
+
+  -- Bounty warning
+  bountyWarning = 0.8,
+
+  -- NPC sounds
+  skeletonGrunt = 0.5,
+  ghostWhisper = 0.15,
+  ghostScreech = 0.7,
+
+  -- Environment hazard sounds
+  ventRumble = 0.6,
+  ventEruption = 0.8,
+  surgeWarning = 0.5,
+  waveCrash = 0.7,
+  quicksandSink = 0.4,
+  quicksandRelease = 0.3,
+  rogueWaveRoar = 0.8,
+  rogueWaveImpact = 1.0,
+  eerieAmbient = 0.15,
 }
 
 -- References
@@ -285,6 +325,77 @@ function SoundController:PlayEventAnnouncementSound()
 end
 
 --[[
+	Plays the bounty warning sound (when a bounty is placed on the local player).
+]]
+function SoundController:PlayBountyWarningSound()
+  play2DSound(SOUNDS.bountyWarning, VOLUMES.bountyWarning)
+end
+
+--[[
+	Plays the skeleton attack grunt sound at a 3D position.
+	@param parent BasePart to attach the sound to
+]]
+function SoundController:PlaySkeletonGruntSound(parent: BasePart?)
+  if parent then
+    play3DSound(SOUNDS.skeletonGrunt, VOLUMES.skeletonGrunt, parent)
+  else
+    play2DSound(SOUNDS.skeletonGrunt, VOLUMES.skeletonGrunt)
+  end
+end
+
+--[[
+	Plays the ghost pirate whisper sound at a 3D position (eerie proximity).
+	@param parent BasePart to attach the sound to
+]]
+function SoundController:PlayGhostWhisperSound(parent: BasePart?)
+  if parent then
+    play3DSound(SOUNDS.ghostWhisper, VOLUMES.ghostWhisper, parent)
+  else
+    play2DSound(SOUNDS.ghostWhisper, VOLUMES.ghostWhisper)
+  end
+end
+
+--[[
+	Plays the ghost pirate materialization screech at a 3D position.
+	@param parent BasePart to attach the sound to
+]]
+function SoundController:PlayGhostScreechSound(parent: BasePart?)
+  if parent then
+    play3DSound(SOUNDS.ghostScreech, VOLUMES.ghostScreech, parent)
+  else
+    play2DSound(SOUNDS.ghostScreech, VOLUMES.ghostScreech)
+  end
+end
+
+--[[
+	Returns whether sound effects are currently enabled.
+	Hazard controllers should check this before creating their own Sound instances.
+	@return boolean
+]]
+function SoundController:IsSfxEnabled(): boolean
+  return SfxEnabled
+end
+
+--[[
+	Returns the sound asset ID for a given key.
+	Allows hazard controllers to use centralized sound IDs.
+	@param key string Sound key from the SOUNDS table
+	@return string? Asset ID or nil if not found
+]]
+function SoundController:GetSoundId(key: string): string?
+  return SOUNDS[key]
+end
+
+--[[
+	Returns the default volume for a given sound key.
+	@param key string Sound key from the VOLUMES table
+	@return number Default volume or 0.5
+]]
+function SoundController:GetVolume(key: string): number
+  return VOLUMES[key] or 0.5
+end
+
+--[[
 	Plays the phase transition sound for a day/night phase.
 	Called by DayNightBannerController on Dawn and Dusk transitions.
 	@param phase "Dawn" | "Dusk"
@@ -446,6 +557,85 @@ function SoundController:KnitStart()
         :catch(function() end)
     end
   end)
+
+  -- NPC sound integration: listen for server signals
+  local NPCService = Knit.GetService("NPCService")
+
+  -- Ghost pirate materialization screech (3D at NPC position)
+  NPCService.GhostPirateMaterialized:Connect(function(_npcId: string, position: Vector3)
+    if not isSfxEnabled() then
+      return
+    end
+    -- Check proximity: only play if within range
+    local character = LocalPlayer.Character
+    if not character then
+      return
+    end
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+      return
+    end
+    local dist = (hrp.Position - position).Magnitude
+    if dist > 100 then
+      return
+    end
+
+    -- Create a temporary anchor for 3D sound at NPC position
+    local anchor = Instance.new("Part")
+    anchor.Name = "GhostScreechAnchor"
+    anchor.Size = Vector3.new(1, 1, 1)
+    anchor.Position = position
+    anchor.Anchored = true
+    anchor.CanCollide = false
+    anchor.CanQuery = false
+    anchor.CanTouch = false
+    anchor.Transparency = 1
+    anchor.Parent = workspace
+    play3DSound(SOUNDS.ghostScreech, VOLUMES.ghostScreech, anchor)
+    task.delay(3, function()
+      if anchor and anchor.Parent then
+        anchor:Destroy()
+      end
+    end)
+  end)
+
+  -- NPC teleport poof: play a poof sound at the teleport-from position
+  NPCService.NPCTeleported:Connect(
+    function(_npcId: string, fromPosition: Vector3, _toPosition: Vector3)
+      if not isSfxEnabled() then
+        return
+      end
+      local character = LocalPlayer.Character
+      if not character then
+        return
+      end
+      local hrp = character:FindFirstChild("HumanoidRootPart")
+      if not hrp then
+        return
+      end
+      local dist = (hrp.Position - fromPosition).Magnitude
+      if dist > 80 then
+        return
+      end
+
+      local anchor = Instance.new("Part")
+      anchor.Name = "NPCPoofAnchor"
+      anchor.Size = Vector3.new(1, 1, 1)
+      anchor.Position = fromPosition
+      anchor.Anchored = true
+      anchor.CanCollide = false
+      anchor.CanQuery = false
+      anchor.CanTouch = false
+      anchor.Transparency = 1
+      anchor.Parent = workspace
+      play3DSound(SOUNDS.ghostScreech, 0.3, anchor)
+      task.delay(3, function()
+        if anchor and anchor.Parent then
+          anchor:Destroy()
+        end
+      end)
+    end
+  )
 
   print("[SoundController] Started")
 end

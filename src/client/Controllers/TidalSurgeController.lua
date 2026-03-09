@@ -35,6 +35,7 @@ local LocalPlayer = Players.LocalPlayer
 -- Lazy-loaded references (set in KnitStart)
 local TidalSurgeService = nil
 local NotificationController = nil
+local SoundController = nil
 
 -- Colors
 local WATER_COLOR = Color3.fromRGB(40, 120, 180) -- ocean blue
@@ -120,22 +121,25 @@ local function createWarningVFX(zonePart: BasePart, vfx: any)
     Color = WARNING_COLOR,
   }):Play()
 
-  -- Rushing water buildup sound
-  local sound = Instance.new("Sound")
-  sound.Name = "SurgeWarning"
-  sound.SoundId = "rbxassetid://9116222901" -- deep rumble / rushing water
-  sound.Volume = 0
-  sound.Looped = true
-  sound.RollOffMinDistance = 15
-  sound.RollOffMaxDistance = SFX_RANGE
-  sound.Parent = zonePart
-  sound:Play()
-  vfx.warningSound = sound
+  -- Rushing water buildup sound (respects sfxEnabled)
+  if not SoundController or SoundController:IsSfxEnabled() then
+    local sound = Instance.new("Sound")
+    sound.Name = "SurgeWarning"
+    sound.SoundId = SoundController and SoundController:GetSoundId("surgeWarning")
+      or "rbxassetid://9116222901"
+    sound.Volume = 0
+    sound.Looped = true
+    sound.RollOffMinDistance = 15
+    sound.RollOffMaxDistance = SFX_RANGE
+    sound.Parent = zonePart
+    sound:Play()
+    vfx.warningSound = sound
 
-  -- Fade volume in
-  TweenService:Create(sound, TweenInfo.new(3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
-    Volume = 0.5,
-  }):Play()
+    -- Fade volume in
+    TweenService:Create(sound, TweenInfo.new(3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+      Volume = SoundController and SoundController:GetVolume("surgeWarning") or 0.5,
+    }):Play()
+  end
 end
 
 --[[
@@ -194,17 +198,20 @@ local function createFloodVFX(zonePart: BasePart, vfx: any)
   light.Parent = water
   vfx.waterLight = light
 
-  -- Crash/splash sound
-  local sound = Instance.new("Sound")
-  sound.Name = "SurgeFlood"
-  sound.SoundId = "rbxassetid://9114227726" -- wave crash
-  sound.Volume = 0.7
-  sound.Looped = false
-  sound.RollOffMinDistance = 20
-  sound.RollOffMaxDistance = SFX_RANGE
-  sound.Parent = zonePart
-  sound:Play()
-  vfx.floodSound = sound
+  -- Crash/splash sound (respects sfxEnabled)
+  if not SoundController or SoundController:IsSfxEnabled() then
+    local sound = Instance.new("Sound")
+    sound.Name = "SurgeFlood"
+    sound.SoundId = SoundController and SoundController:GetSoundId("waveCrash")
+      or "rbxassetid://9114227726"
+    sound.Volume = SoundController and SoundController:GetVolume("waveCrash") or 0.7
+    sound.Looped = false
+    sound.RollOffMinDistance = 20
+    sound.RollOffMaxDistance = SFX_RANGE
+    sound.Parent = zonePart
+    sound:Play()
+    vfx.floodSound = sound
+  end
 end
 
 --[[
@@ -382,6 +389,7 @@ end
 function TidalSurgeController:KnitStart()
   TidalSurgeService = Knit.GetService("TidalSurgeService")
   NotificationController = Knit.GetController("NotificationController")
+  SoundController = Knit.GetController("SoundController")
 
   -- Listen for surge phase changes from server
   TidalSurgeService.SurgePhaseChanged:Connect(

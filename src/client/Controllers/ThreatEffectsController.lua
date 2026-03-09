@@ -107,10 +107,16 @@ local VIGNETTE_SETTINGS = {
   @param volume Target volume (based on tier)
 ]]
 local function startEerieAudio(volume: number)
+  -- Respect sfxEnabled setting
+  if SoundController and not SoundController:IsSfxEnabled() then
+    return
+  end
+
   if not EerieSound then
     EerieSound = Instance.new("Sound")
     EerieSound.Name = "ThreatEerieAmbient"
-    EerieSound.SoundId = EERIE_SOUND_ID
+    EerieSound.SoundId = SoundController and SoundController:GetSoundId("eerieAmbient")
+      or EERIE_SOUND_ID
     EerieSound.Volume = 0
     EerieSound.Looped = true
     EerieSound.Parent = SoundService
