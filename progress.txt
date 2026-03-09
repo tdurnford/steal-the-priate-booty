@@ -5883,3 +5883,82 @@ figureheads, and tier-specific decorations.
   patterns exactly.
 - Remaining not-started features: MODEL-003 (NPCs), MODEL-005 (doubloons/purses), AUDIO-001
   (audio assets)
+
+---
+
+## 2026-03-08 — MODEL-005: Doubloon Pickup & Coin Purse Models
+
+### What was done
+- Created `src/server/DoubloonModels.lua` — Part-based model builders for doubloon pickups
+  and 3-tier coin purses, following the same patterns as ContainerModels/WeaponModels.
+
+- **Doubloon ground pickup** (`buildPickup(position, value)`):
+  - Main gold coin: Metal cylinder lying flat, with darker face detail and edge rim
+  - Value-scaled complexity: >5 doubloons adds a second tilted coin, >15 adds a third
+  - Gold PointLight (range 6, brightness 0.5) for visibility
+  - Subtle sparkle ParticleEmitter (rate 3, light emission)
+  - All Parts are Anchored (static world objects), parented as children of root coin
+
+- **Small coin purse** (`buildPurse("small")`, 50-199 doubloons):
+  - Modest brown leather ball pouch (0.55×0.5×0.55, Fabric material)
+  - Drawstring top (thin cylinder ring) + tie-off knot (small ball)
+  - Bottom seam detail (darker strip)
+
+- **Medium coin purse** (`buildPurse("medium")`, 200-499 doubloons):
+  - Larger dark-gold pouch (0.75×0.7×0.75)
+  - Drawstring + knot
+  - 2 gold coins peeking from the opening (tilted cylinders)
+  - Belt loop strap on back
+
+- **Large coin purse** (`buildPurse("large")`, 500+ doubloons):
+  - Bulging bright gold sack (0.95×0.9×0.95)
+  - Open top (no drawstring — overflowing) with visible gold fill
+  - 3 coins spilling out at various angles
+  - 1 fallen coin hanging below (about to drop)
+  - Thick belt strap + reinforcement patch (sack is straining)
+
+- **DoubloonService integration** (`src/server/Services/DoubloonService.lua`):
+  - `createPickupPart()` now calls `DoubloonModels.buildPickup()` instead of
+    creating a single placeholder cylinder
+  - Existing pickup tracking, despawn, and collection code unchanged (root Part
+    destruction cascades to children)
+
+- **LootVisibilityService integration** (`src/server/Services/LootVisibilityService.lua`):
+  - `createPurse()` now calls `DoubloonModels.buildPurse(tier)` instead of creating
+    a single placeholder Ball
+  - Tier-specific PointLight and shimmer particles still added by LootVisibilityService
+    (on top of DoubloonModels' structural detail)
+  - `createPurse()` signature extended with `tier: string` parameter
+
+- **NPCService integration** (`src/server/Services/NPCService.lua`):
+  - `COIN_PURSE_THRESHOLDS` simplified (removed size/color fields, added `tierName`)
+  - `updateCoinPurseVisual()` now calls `DoubloonModels.buildPurse(def.tierName)`
+    instead of creating a placeholder Ball
+  - Existing PointLight and shimmer particles for medium/large NPCs preserved
+
+### Acceptance criteria met
+- Doubloon pickup model is visible on the ground (multi-coin pile with glow + sparkle) ✓
+- 3 coin purse tiers are visually distinct (small pouch → medium with coins → large overflowing) ✓
+- Purses attach correctly to character belt area (Welded to HumanoidRootPart via LootVisibilityService/NPCService) ✓
+- Particle effects work for medium and large tiers (shimmer/trail handled by LootVisibilityService, shimmer by NPCService) ✓
+
+### Design decisions
+- **Children parented to root Part, not Model**: Pickups use a root Part with child Parts.
+  This preserves the existing `pickup.part:Destroy()` cleanup pattern in DoubloonService
+  without changing the pickup tracking data structure.
+- **Purse root is CoinPurse Part with Welded children**: LootVisibilityService and NPCService
+  both search for `FindFirstChild("CoinPurse"/"LootVisibility_Purse")`. Using a root Part
+  (not Model) preserves this pattern and lets existing `Weld` attachment code work unchanged.
+- **Value-scaled pickup complexity**: Small pickups (<=5 doubloons) show a single coin to
+  keep visual noise low near container breaks. Larger-value pickups get 2-3 coins to signal
+  higher value at a glance.
+- **No duplicate PointLight/particles in DoubloonModels purses**: Light and shimmer effects
+  are tier-dependent features managed by the consuming services (LootVisibilityService and
+  NPCService). DoubloonModels provides only the structural model.
+
+### Notes for next person
+- `DoubloonModels.lua` at `src/server/DoubloonModels.lua` → `ServerScriptService.Server.DoubloonModels`
+- Required via `Server:WaitForChild("DoubloonModels")` (same pattern as ContainerModels, WeaponModels)
+- To add new purse tiers: add a builder function and register in `PURSE_BUILDERS`
+- Pickup sparkle rate is 3/sec — increase if pickups need more visibility
+- Remaining not-started feature: AUDIO-001 (audio asset sourcing & integration)

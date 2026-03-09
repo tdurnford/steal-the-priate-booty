@@ -24,6 +24,10 @@ local Knit = require(Packages:WaitForChild("Knit"))
 local Signal = require(Packages:WaitForChild("GoodSignal"))
 local GameConfig = require(Shared:WaitForChild("GameConfig"))
 
+local ServerScriptService = game:GetService("ServerScriptService")
+local Server = ServerScriptService:WaitForChild("Server")
+local DoubloonModels = require(Server:WaitForChild("DoubloonModels"))
+
 local DoubloonService = Knit.CreateService({
   Name = "DoubloonService",
   Client = {
@@ -80,29 +84,9 @@ local MAX_PICKUPS_PER_SCATTER = 15
   @return The created Part
 ]]
 local function createPickupPart(position: Vector3, value: number): Part
-  local part = Instance.new("Part")
+  local part = DoubloonModels.buildPickup(position, value)
   part.Name = "DoubloonPickup_" .. nextPickupId
   nextPickupId = nextPickupId + 1
-
-  -- Small gold coin appearance
-  part.Shape = Enum.PartType.Cylinder
-  part.Size = Vector3.new(0.2, 1.0, 1.0)
-  -- Rotate so the flat face is up (cylinder axis along X by default)
-  part.CFrame = CFrame.new(position) * CFrame.Angles(0, 0, math.rad(90))
-  part.Color = Color3.fromRGB(255, 200, 50) -- Gold
-  part.Material = Enum.Material.SmoothPlastic
-  part.Anchored = true
-  part.CanCollide = false
-  part.CanQuery = false
-  part.CanTouch = false
-  part.CastShadow = false
-
-  -- Gold glow
-  local light = Instance.new("PointLight")
-  light.Color = Color3.fromRGB(255, 200, 50)
-  light.Brightness = 0.5
-  light.Range = 6
-  light.Parent = part
 
   -- Store the value as an attribute for debugging
   part:SetAttribute("DoubloonValue", value)

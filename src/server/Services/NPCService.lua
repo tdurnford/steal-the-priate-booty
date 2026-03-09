@@ -55,10 +55,14 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Packages = ReplicatedStorage:WaitForChild("Packages")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 
+local ServerScriptService = game:GetService("ServerScriptService")
+
 local Knit = require(Packages:WaitForChild("Knit"))
 local Signal = require(Packages:WaitForChild("GoodSignal"))
 local GameConfig = require(Shared:WaitForChild("GameConfig"))
 local SimplePath = require(Shared:WaitForChild("SimplePath"))
+local Server = ServerScriptService:WaitForChild("Server")
+local DoubloonModels = require(Server:WaitForChild("DoubloonModels"))
 
 local NPCService = Knit.CreateService({
   Name = "NPCService",
@@ -2088,9 +2092,9 @@ end
 
 -- Coin purse tier thresholds (same thresholds as LOOT-006 player visibility)
 local COIN_PURSE_THRESHOLDS = {
-  { min = 50, tier = 1, size = Vector3.new(0.6, 0.6, 0.6), color = Color3.fromRGB(139, 90, 43) },
-  { min = 200, tier = 2, size = Vector3.new(0.8, 0.8, 0.8), color = Color3.fromRGB(184, 134, 11) },
-  { min = 500, tier = 3, size = Vector3.new(1.0, 1.0, 1.0), color = Color3.fromRGB(255, 200, 50) },
+  { min = 50, tier = 1, tierName = "small" },
+  { min = 200, tier = 2, tierName = "medium" },
+  { min = 500, tier = 3, tierName = "large" },
 }
 
 --[[
@@ -2110,6 +2114,7 @@ end
 --[[
   Updates the coin purse visual on an NPC model.
   Creates, upgrades, or removes the purse Part as needed.
+  Uses DoubloonModels for detailed purse visuals.
 ]]
 local function updateCoinPurseVisual(entry: NPCEntry)
   local newTier = getCoinPurseTier(entry.carriedDoubloons)
@@ -2139,25 +2144,19 @@ local function updateCoinPurseVisual(entry: NPCEntry)
     return
   end
 
-  local purse = Instance.new("Part")
+  -- Build detailed purse model
+  local purse = DoubloonModels.buildPurse(def.tierName)
+  if not purse then
+    return
+  end
   purse.Name = "CoinPurse"
-  purse.Shape = Enum.PartType.Ball
-  purse.Size = def.size
-  purse.Color = def.color
-  purse.Material = Enum.Material.Fabric
-  purse.CanCollide = false
-  purse.CanQuery = false
-  purse.CanTouch = false
-  purse.CastShadow = false
-  purse.Massless = true
 
   -- Weld to the NPC's lower torso area (belt)
-  local weld = Instance.new("Weld")
-  weld.Part0 = rootPart
-  weld.Part1 = purse
-  -- Offset to the side of the hip (belt area)
-  weld.C0 = CFrame.new(-0.8, -0.5, 0.3)
-  weld.Parent = purse
+  local w = Instance.new("Weld")
+  w.Part0 = rootPart
+  w.Part1 = purse
+  w.C0 = CFrame.new(-0.8, -0.5, 0.3)
+  w.Parent = purse
 
   -- Add gold glow for medium/large purses
   if newTier >= 2 then

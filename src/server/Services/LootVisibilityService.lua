@@ -25,6 +25,10 @@ local Knit = require(Packages:WaitForChild("Knit"))
 local Signal = require(Packages:WaitForChild("GoodSignal"))
 local GameConfig = require(Shared:WaitForChild("GameConfig"))
 
+local ServerScriptService = game:GetService("ServerScriptService")
+local Server = ServerScriptService:WaitForChild("Server")
+local DoubloonModels = require(Server:WaitForChild("DoubloonModels"))
+
 local LootVisibilityService = Knit.CreateService({
   Name = "LootVisibilityService",
   Client = {
@@ -121,31 +125,27 @@ end
 
 --[[
   Creates and attaches the coin purse Part to a character's HumanoidRootPart.
+  Uses DoubloonModels for detailed purse visuals.
 ]]
-local function createPurse(character: Model, def: typeof(PURSE_DEFS.small))
+local function createPurse(character: Model, def: typeof(PURSE_DEFS.small), tier: string)
   local rootPart = character:FindFirstChild("HumanoidRootPart")
   if not rootPart then
     return
   end
 
-  local purse = Instance.new("Part")
+  -- Build detailed purse model from DoubloonModels
+  local purse = DoubloonModels.buildPurse(tier)
+  if not purse then
+    return
+  end
   purse.Name = PURSE_TAG
-  purse.Shape = Enum.PartType.Ball
-  purse.Size = def.size
-  purse.Color = def.color
-  purse.Material = Enum.Material.Fabric
-  purse.CanCollide = false
-  purse.CanQuery = false
-  purse.CanTouch = false
-  purse.CastShadow = false
-  purse.Massless = true
 
   -- Weld to belt area (left hip, slightly forward)
-  local weld = Instance.new("Weld")
-  weld.Part0 = rootPart
-  weld.Part1 = purse
-  weld.C0 = CFrame.new(-0.8, -0.5, 0.3)
-  weld.Parent = purse
+  local w = Instance.new("Weld")
+  w.Part0 = rootPart
+  w.Part1 = purse
+  w.C0 = CFrame.new(-0.8, -0.5, 0.3)
+  w.Parent = purse
 
   -- Gold PointLight for medium/large
   if def.lightBrightness > 0 then
@@ -308,7 +308,7 @@ local function applyTierVisuals(player: Player, tier: string)
     return
   end
 
-  createPurse(character, def)
+  createPurse(character, def, tier)
 
   if def.hasTrail then
     createTrail(character)
